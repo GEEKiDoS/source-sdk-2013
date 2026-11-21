@@ -219,7 +219,7 @@ struct LocalLight_t
 {
 	LocalLight_t() : projectionNear(0), projectionFar(0), faceCount(0), relevant(false), shadowRelevant(false),
 		bakedLightIndex(0), realtimeWeight(0), score(0), resident(false), desired(false), dynamic(false), castShadow(false), volumetric(false),
-		selectionAimValid(false)
+		selectionAimValid(false), spotlightPaired(false)
 	{
 		memset(faceVolumes,0,sizeof(faceVolumes));
 		selectionAim.Init();
@@ -240,7 +240,7 @@ struct LocalLight_t
 	bool volumetric;				// Editor-light opt-in (DeferredLight_t::volumetric); map lights use g_LightEntities.
 	Vector selectionAim;			// Static spot: first world surface on its axis (else the emitter); see BuildStaticSelectionAim.
 	bool selectionAimValid;
-	CHandle<C_Beam> volumeBeam;		// point_spotlight fake beam paired by ShadowMapsDX12_BeginVolumetrics (§9); map light_spot only.
+	bool spotlightPaired;			// At least one overlapping point_spotlight beam this main-volume scope (§9); map light_spot only.
 	CUtlVector<unsigned char> pvsClusters; // Precomputed influence/emitter clusters, never receiver-view dependent.
 };
 struct LocalPage_t
@@ -511,6 +511,9 @@ struct MapLightEntity_t { MapLightClass_t classname; int volumetric; }; // volum
 CUtlVector<MapLightEntity_t> g_LightEntities;
 // §9: live point_spotlight fake beams (FBEAM_POINT_SPOTLIGHT), registered from C_Beam::OnDataChanged/UpdateOnRemove.
 CUtlVector<CHandle<C_Beam>> g_SpotlightBeams;
+// §9: beam -> g_Locals index for the current main-volume scope. Many beams may share one light (multi-lamp fixtures).
+struct SpotlightPair_t { CHandle<C_Beam> beam; int light; };
+CUtlVector<SpotlightPair_t> g_SpotlightPairs;
 // True between ShadowMapsDX12_BeginVolumetrics/EndVolumetrics (the client's enabled main-volume scope).
 bool g_VolumeScope=false;
 
@@ -2518,8 +2521,8 @@ void CommitChart( CShadowViewData &data, ShadowCache_t &cache, int chartLight = 
 	}
 }
 
-// §8/§9 opt-in. Map lights: explicit _volumetric 1 on, explicit 0 off; absent light_spot on only while paired with a live
-// point_spotlight beam in this main-volume scope. Editor lights: the Volumetric checkbox. Residency/shadow state is not
+// §8/§9 opt-in. Map lights: explicit _volumetric 1 on, explicit 0 off; absent light_spot on only while a live
+// point_spotlight beam overlaps it in this main-volume scope. Editor lights: the Volumetric checkbox. Residency/shadow state is not
 // required: a record published without sampled charts is marched unshadowed by the volume pass. Requires the
 // screen-space-capable backend; the master switch owns g_VolumeScope.
 bool VolumetricLightEnabled( const LocalLight_t &local )
@@ -2529,7 +2532,7 @@ bool VolumetricLightEnabled( const LocalLight_t &local )
 	if ( local.bakedLightIndex>=(uint32)g_LightEntities.Count() ) return false;
 	const MapLightEntity_t &entity=g_LightEntities[local.bakedLightIndex];
 	if ( entity.volumetric>=0 ) return entity.volumetric==1;
-	return entity.classname==MAPLIGHT_SPOT && local.volumeBeam.Get()!=NULL;
+	return entity.classname==MAPLIGHT_SPOT && local.spotlightPaired;
 }
 
 bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
@@ -3730,7 +3733,7 @@ void ShadowMapsDX12_Shutdown()
 	}
 	ShadowMapsDX12_LevelShutdown();
 	for ( int i=0;i<g_ViewPool.Count();++i ) g_ViewPool[i]->Release();
-	g_ViewPool.Purge(); g_ViewStack.Purge(); g_SpotlightBeams.Purge();
+	g_ViewPool.Purge(); g_ViewStack.Purge(); g_SpotlightBeams.Purge(); g_SpotlightPairs.Purge();
 	g_Lighting=NULL; g_Highres=NULL;
 }
 struct MapLightSource_t { int sourceEntity, record; };
@@ -3896,7 +3899,7 @@ void ShadowMapsDX12_BeginClientLevelShutdown()
 	// Release fixture-owned renderables while their leaf/entity owners exist.
 	DestroySpawnedRenderables();
 	// Entities are torn down after this bracket; no beam can rejoin until the next map's OnDataChanged.
-	g_SpotlightBeams.RemoveAll();
+	g_SpotlightBeams.RemoveAll(); g_SpotlightPairs.RemoveAll();
 }
 void ShadowMapsDX12_EndClientLevelShutdown()
 {
@@ -4086,8 +4089,11 @@ bool ShadowMapsDX12_VolumetricSunEnabled()
 	return g_Sun>=0 && g_Sun<g_LightEntities.Count() && g_LightEntities[g_Sun].volumetric==1;
 }
 
-static const float kSpotlightPairDistanceSqr=32.0f*32.0f;
-static const float kSpotlightPairMinCos=0.98480775f; // cos(10 degrees)
+// A beam overlaps a light_spot when it starts near the emitter and its cone lies inside the light's. Retail maps aim the
+// cosmetic beam loosely and ring multi-lamp fixtures around one light, so both limits scale with the beam itself:
+// start within 32 units plus the beam width, axis within the light's outer cone plus the beam's half-spread. The server
+// keeps endWidth/length == SpotlightWidth/SpotlightLength, so the live spread is the authored one.
+static const float kSpotlightPairDistance=32.0f;
 
 // Marked, live, drawable beam. ShouldDraw covers NODRAW and the beam's own minimum DX level; DX12 is checked by the caller.
 bool SpotlightBeamCandidate( C_Beam *beam )
@@ -4095,89 +4101,78 @@ bool SpotlightBeamCandidate( C_Beam *beam )
 	return beam && (beam->GetBeamFlags() & FBEAM_POINT_SPOTLIGHT) && !beam->IsDormant() && !beam->IsMarkedForDeletion() &&
 		beam->ShouldDraw() && beam->GetBrightness()>0;
 }
-// Live attachment-aware geometry against the admitted light's position/travel direction (fixed policy: 32 units, 10 degrees).
-bool SpotlightBeamMatches( C_Beam *beam, const LocalLight_t &light, float &distanceSqr, float &angleError )
+// Live attachment-aware geometry against the admitted light's position, travel direction and outer cone.
+bool SpotlightBeamMatches( C_Beam *beam, const LocalLight_t &light, float &distanceSqr, float &angle )
 {
 	const Vector start=beam->GetAbsStartPos();
 	Vector axis=beam->GetAbsEndPos()-start;
-	if ( VectorNormalize(axis)<=0 ) return false;
+	const float length=VectorNormalize(axis);
+	if ( length<=0 ) return false;
+	const float reach=kSpotlightPairDistance+beam->GetWidth();
 	distanceSqr=(start-light.world.origin).LengthSqr();
-	if ( distanceSqr>kSpotlightPairDistanceSqr ) return false;
+	if ( distanceSqr>reach*reach ) return false;
 	Vector direction(light.selected.direction[0],light.selected.direction[1],light.selected.direction[2]);
 	VectorNormalize(direction);
-	const float cosine=DotProduct(axis,direction);
-	if ( cosine<kSpotlightPairMinCos ) return false;
-	angleError=1.0f-cosine;
-	return true;
+	angle=acosf( clamp( DotProduct(axis,direction), -1.0f, 1.0f ) );
+	const float limit=acosf( clamp( light.world.stopdot2, -1.0f, 1.0f ) )+atan2f( 0.5f*beam->GetEndWidth(), length );
+	return angle<=limit;
 }
-struct SpotlightEdge_t { float distanceSqr, angleError; int beamEntity, lightSource, beam, light; };
-int SpotlightEdgeCompare( const SpotlightEdge_t *a, const SpotlightEdge_t *b )
-{
-	if ( a->distanceSqr!=b->distanceSqr ) return a->distanceSqr<b->distanceSqr ? -1 : 1;
-	if ( a->angleError!=b->angleError ) return a->angleError<b->angleError ? -1 : 1;
-	if ( a->beamEntity!=b->beamEntity ) return a->beamEntity<b->beamEntity ? -1 : 1;
-	return a->lightSource<b->lightSource ? -1 : a->lightSource>b->lightSource ? 1 : 0;
-}
-CUtlVector<SpotlightEdge_t> g_SpotlightEdges;
-CUtlVector<unsigned char> g_SpotlightBeamUsed;
 
+// Admission rebuilds g_Locals outside the scope; a pair left over from an unclosed scope must not index the new array.
 void ClearSpotlightPairs()
 {
-	for ( int l=0;l<g_Locals.Count();++l ) g_Locals[l].volumeBeam.Term();
+	for ( int p=0;p<g_SpotlightPairs.Count();++p )
+		if ( g_SpotlightPairs[p].light<g_Locals.Count() ) g_Locals[g_SpotlightPairs[p].light].spotlightPaired=false;
+	g_SpotlightPairs.RemoveAll();
 }
-// Greedy deterministic one-to-one assignment of live marked beams to selected map light_spot sources whose
-// _volumetric is not explicit 0, independent of residency: a paired light that loses its shadow map restores its
-// beam instead of rematching. Storage is reused after warmup.
+// Each live marked beam picks its best overlapping selected map light_spot whose _volumetric is not explicit 0
+// (nearest start, then smallest axis angle, then lowest BSP source entity), independent of residency: a paired light
+// that loses its shadow map restores its beams instead of rematching. Storage is reused after warmup.
 void PairSpotlightBeams()
 {
 	ClearSpotlightPairs();
 	for ( int b=g_SpotlightBeams.Count()-1;b>=0;--b ) if ( !g_SpotlightBeams[b].Get() ) g_SpotlightBeams.FastRemove(b);
-	g_SpotlightEdges.RemoveAll();
 	for ( int b=0;b<g_SpotlightBeams.Count();++b )
 	{
 		C_Beam *beam=g_SpotlightBeams[b];
 		if ( !SpotlightBeamCandidate(beam) ) continue;
+		int best=-1; float bestDistanceSqr=0, bestAngle=0; int bestSource=0;
 		for ( int l=0;l<g_Locals.Count();++l )
 		{
 			const LocalLight_t &light=g_Locals[l];
 			if ( light.bakedLightIndex>=(uint32)g_LightEntities.Count() ) continue;
 			const MapLightEntity_t &entity=g_LightEntities[light.bakedLightIndex];
 			if ( entity.classname!=MAPLIGHT_SPOT || entity.volumetric==0 ) continue;
-			SpotlightEdge_t edge;
-			if ( !SpotlightBeamMatches(beam,light,edge.distanceSqr,edge.angleError) ) continue;
-			edge.beamEntity=beam->entindex(); edge.lightSource=g_State.lights[light.bakedLightIndex].sourceEntity;
-			edge.beam=b; edge.light=l;
-			g_SpotlightEdges.AddToTail(edge);
+			float distanceSqr, angle;
+			if ( !SpotlightBeamMatches(beam,light,distanceSqr,angle) ) continue;
+			const int source=g_State.lights[light.bakedLightIndex].sourceEntity;
+			if ( best>=0 && ( distanceSqr>bestDistanceSqr || ( distanceSqr==bestDistanceSqr &&
+				( angle>bestAngle || ( angle==bestAngle && source>=bestSource ) ) ) ) ) continue;
+			best=l; bestDistanceSqr=distanceSqr; bestAngle=angle; bestSource=source;
 		}
-	}
-	if ( !g_SpotlightEdges.Count() ) return;
-	g_SpotlightEdges.Sort(SpotlightEdgeCompare);
-	g_SpotlightBeamUsed.SetCount(g_SpotlightBeams.Count());
-	memset(g_SpotlightBeamUsed.Base(),0,g_SpotlightBeamUsed.Count());
-	for ( int e=0;e<g_SpotlightEdges.Count();++e )
-	{
-		const SpotlightEdge_t &edge=g_SpotlightEdges[e];
-		if ( g_SpotlightBeamUsed[edge.beam] || g_Locals[edge.light].volumeBeam.Get() ) continue;
-		g_SpotlightBeamUsed[edge.beam]=1; g_Locals[edge.light].volumeBeam=g_SpotlightBeams[edge.beam].Get();
+		if ( best<0 ) continue;
+		SpotlightPair_t &pair=g_SpotlightPairs[g_SpotlightPairs.AddToTail()];
+		pair.beam=beam; pair.light=best;
+		g_Locals[best].spotlightPaired=true;
 	}
 }
 // After the CPU packet is built: the paired beams this eligible main bracket replaces. Each needs the opt-in bit on its
-// published record (charted or not: an uncharted light is marched unshadowed), nonzero radiance, and the enabled
+// light's published record (charted or not: an uncharted light is marched unshadowed), nonzero radiance, and the enabled
 // main-volume scope with nonzero medium density/strength. Anything else leaves the stock beam visible.
 void PublishSuppressedBeams( CShadowViewData &data )
 {
 	data.suppressedBeams.RemoveAll();
 	const DX12VolumetricSettings *settings=g_VolumeScope && data.kind==SHADOWMAP_VIEW_MAIN ? ScreenSpaceDX12_GetVolumetricSettings() : NULL;
-	if ( !settings || !settings->control[2] || settings->medium[0]<=0 || settings->medium[1]<=0 ) return;
+	if ( !settings || !settings->control[2] || settings->medium[0]<=0 || settings->medium[1]<=0 || !g_SpotlightPairs.Count() ) return;
 	for ( int i=0;i<data.relevant.Count();++i )
 	{
 		if ( data.relevant[i] & kDynamicOwnerBit ) continue;
-		const LocalLight_t &light=g_Locals[data.relevant[i]];
-		if ( !light.volumeBeam.Get() ) continue;
+		if ( !g_Locals[data.relevant[i]].spotlightPaired ) continue;
 		const RuntimeShadowLightGpu &gpu=data.lights[i];
 		if ( !(gpu.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED) ) continue;
 		if ( gpu.radiance[0]<=0 && gpu.radiance[1]<=0 && gpu.radiance[2]<=0 ) continue;
-		data.suppressedBeams.AddToTail(light.volumeBeam);
+		for ( int p=0;p<g_SpotlightPairs.Count();++p )
+			if ( g_SpotlightPairs[p].light==data.relevant[i] ) data.suppressedBeams.AddToTail(g_SpotlightPairs[p].beam);
 	}
 }
 
@@ -4202,7 +4197,7 @@ void ShadowMapsDX12_RemoveSpotlightBeam( C_Beam *beam )
 	for ( int b=g_SpotlightBeams.Count()-1;b>=0;--b ) if ( g_SpotlightBeams[b].Get()==beam ) g_SpotlightBeams.FastRemove(b);
 }
 // True only while the current receiver bracket is a suppressing main view that listed this beam, and its live geometry
-// still matches its assigned light; pairs never change during drawing.
+// still overlaps its assigned light; pairs never change during drawing.
 bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam )
 {
 	if ( !g_VolumeScope || !g_ViewStack.Count() ) return false;
@@ -4211,11 +4206,11 @@ bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam )
 	int b=0;
 	for ( ;b<data.suppressedBeams.Count();++b ) if ( data.suppressedBeams[b].Get()==beam ) break;
 	if ( b==data.suppressedBeams.Count() ) return false;
-	for ( int l=0;l<g_Locals.Count();++l )
+	for ( int p=0;p<g_SpotlightPairs.Count();++p )
 	{
-		if ( g_Locals[l].volumeBeam.Get()!=beam ) continue;
-		float distanceSqr,angleError;
-		return SpotlightBeamCandidate(beam) && SpotlightBeamMatches(beam,g_Locals[l],distanceSqr,angleError);
+		if ( g_SpotlightPairs[p].beam.Get()!=beam ) continue;
+		float distanceSqr,angle;
+		return SpotlightBeamCandidate(beam) && SpotlightBeamMatches(beam,g_Locals[g_SpotlightPairs[p].light],distanceSqr,angle);
 	}
 	return false;
 }
