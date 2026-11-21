@@ -2350,6 +2350,23 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		d.forceFailure = true;
 		upscaler_fault_replays.SetValue( upscaler_fault_replays.GetInt() - 1 );
 	}
+	// Native TAAU can write the client's sampleable scene directly. The normal
+	// copy-back still supplies subsequent overlays and every non-compact path.
+	TextureRecord *post = nullptr;
+	if ( m_UpscalerKind == UpscalerKindDX12::Taau && !nNrLayers && !d.forceFailure )
+	{
+		post = FindTexture( m_hPostSceneOutput );
+		if ( post && post->width == static_cast<int>( nWidth ) && post->height == static_cast<int>( nHeight ) &&
+			post->mipLevels == 1 && post->copies == 1 && EnsureTextureResident( *post ) && post->resource &&
+			post->resource->GetDesc().Format == d.output->GetDesc().Format &&
+			( post->resource->GetDesc().Flags & D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS ) )
+		{
+			d.output = post->resource.Get();
+			d.outputBefore = post->subresourceStates[0];
+		}
+		else
+			post = nullptr;
+	}
 	const uint64_t nSerial = m_nUpscalerPendingSerial + 1;
 	d.frame = m_nFrameCounter;
 	d.serial = nSerial;
@@ -2374,7 +2391,15 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		pMotion->sampledStateValid = false;
 		++m_nTextureStateEpoch;
 	}
-	m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	if ( post )
+	{
+		post->subresourceStates[0] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		post->sampledStateValid = false;
+		post->gpuAuthoritativeSubresources[0] = 1;
+		++m_nTextureStateEpoch;
+	}
+	else
+		m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	m_nUpscalerQueuedFrame = m_nUpscalerLastDispatchFrame = m_nFrameCounter;
 	m_flUpscalerLastDispatchTime = flNow;
 	m_bUpscalerHistoryGap = false;
@@ -2389,6 +2414,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	m_UpscalerFrameJitter[1] = m_UpscalerJitter[1];
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	nStatus = 1 | ( static_cast<int>( m_UpscalerKind ) << 8 );
+	if ( post )
+		nStatus |= DX12_UPSCALE_STATUS_POST_SCENE;
 }
 
 //-----------------------------------------------------------------------------

@@ -179,6 +179,8 @@ enum DX12ViewFlags_t
 #define DX12_GBUFFER_PASS_VIEWMODEL     3
 #define DX12_UPSCALE_DISPATCH_RUN   1
 #define DX12_UPSCALE_DISPATCH_RESET 2
+// Provider wrote the client sampleable PostFXScene texture for this dispatch.
+#define DX12_UPSCALE_STATUS_POST_SCENE ( 1 << 16 )
 #define DX12_FRAMEGEN_DISPATCH_RUN   1
 #define DX12_FRAMEGEN_DISPATCH_RESET 2
 

@@ -63,6 +63,7 @@ public:
 		PBRDebugDX12_Init( pHardwareConfig );
 		PBRDebugDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 		ScreenSpaceDX12_Init( pHardwareConfig );
+		ScreenSpaceDX12_CreateSkyTargets( pMaterialSystem );
 		PostProcessDX12_Init( pHardwareConfig );
 		PostProcessDX12_CreateRenderTargets( pMaterialSystem, pHardwareConfig );
 		TerrorGlow_CreateRenderTargets( pMaterialSystem, pHardwareConfig );

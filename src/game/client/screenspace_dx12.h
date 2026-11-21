@@ -15,6 +15,11 @@ class IMatRenderContext;
 class IShaderAPIDX12ScreenSpace;
 class CViewSetup;
 struct DX12VolumetricSettings;
+class IMaterialSystem;
+class ITexture;
+class IMaterial;
+void ScreenSpaceDX12_CreateSkyTargets( IMaterialSystem *pMaterials );
+bool ScreenSpaceDX12_HalfSky( int w, int h, ITexture *&color, ITexture *&depth, IMaterial *&composite );
 
 void ScreenSpaceDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 void ScreenSpaceDX12_Shutdown();

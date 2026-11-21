@@ -1035,7 +1035,8 @@ private:
 	bool UpscalerJitterActive( bool bMotionActive ) const
 	{
 		return m_pDevice && !m_pDevice->Lighting().ShadowPassActive() && m_bUpscalerViewEligible && m_nUpscalerFrameToken == m_nFrameCounter && m_nUpscalerQueuedFrame != m_nFrameCounter &&
-		    ( m_UpscalerJitter[0] != 0.f || m_UpscalerJitter[1] != 0.f ) && ( bMotionActive || m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER ) &&
+		    ( m_UpscalerJitter[0] != 0.f || m_UpscalerJitter[1] != 0.f ) &&
+		    ( bMotionActive || m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER || m_RenderTargets[0] == m_hHalfSkyColor ) &&
 		    m_Matrices[MATERIAL_PROJECTION][3][3] == 0.f && m_Matrices[MATERIAL_PROJECTION][3][2] != 0.f && m_pDevice && m_pDevice->SceneSampleCount() == 1;
 	}
 
@@ -1472,6 +1473,8 @@ private:
 	double m_flUpscalerLastDispatchTime = 0.0;
 	UpscalerReplayResultDX12 m_UpscalerReplay[kUpscalerReplaySlots]{};
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pUpscalerOutput;
+	ShaderAPITextureHandle_t m_hPostSceneOutput = 0;
+	ShaderAPITextureHandle_t m_hHalfSkyColor = 0;
 	D3D12_RESOURCE_STATES m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
 	struct ComputePipelineDX12

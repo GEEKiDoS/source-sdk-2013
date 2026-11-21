@@ -278,7 +278,7 @@ static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post
 // afterwards the archived mat_postfx_dx12 is the user's choice.
 static ConVar mat_postfx_dx12_set( "mat_postfx_dx12_set", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "Set once the DX12 post stack was validated for this config" );
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
-static ConVar mat_postfx_taau_reduction( "mat_postfx_taau_reduction", "1", FCVAR_ARCHIVE, "Fuse TAAU output bloom/exposure reduction; 0 keeps the legacy exposure copy/query chain" );
+static ConVar mat_postfx_taau_reduction( "mat_postfx_taau_reduction", "0", FCVAR_ARCHIVE, "Produce compact bloom and the exposure meter from the reconstructed scene in one pass" );
 static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (default 300; MagicBloom's 100; 0 off, 25..400 useful)" );
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
@@ -404,7 +404,7 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	s_bRebaseBloom = s_pShaderAPIDX12 && s_pShaderAPIDX12->AdapterPerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
 		!CommandLine()->CheckParm( "-dx12novramfit" );
 	s_PostScene.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXScene", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
-		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
+		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE | TEXTUREFLAGS_NOMIP, 0 ) );
 	s_BloomDown.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( s_bRebaseBloom ? "_rt_PostFXBloomDownHalf" : "_rt_PostFXBloomDown", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_BloomUp.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( s_bRebaseBloom ? "_rt_PostFXBloomUpHalf" : "_rt_PostFXBloomUp", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
@@ -550,22 +550,39 @@ bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScal
 		x == 0 && y == 0 && w == s_PostScene->GetActualWidth() && h == s_PostScene->GetActualHeight();
 }
 
+ITexture *PostProcessDX12_ReduceTemporal( IMatRenderContext *context, int w, int h )
+{
+	const int status = UpscalerDX12_Status();
+	if ( !mat_postfx_taau_reduction.GetBool() || status <= 0 || !( status & DX12_UPSCALE_STATUS_POST_SCENE ) ||
+		( w & 7 ) || ( h & 7 ) || s_FlareInput->IsError() ||
+		s_FlareInput->GetActualWidth() != w / 4 || s_FlareInput->GetActualHeight() != h / 4 )
+		return NULL;
+	// Compact grade excludes flare: its quarter-size target is free for metering.
+	PIXEVENT( context, "TAAU bloom and meter" );
+	SetPostPass( s_BloomFirst, s_PostScene, 0, s_BloomDown, 3, exp2f( mat_postfx_exposure.GetFloat() ),
+		mat_postfx_bloom_threshold.GetFloat(), 4 );
+	const float extract[4] = { mat_postfx_bloom_boost.GetFloat(), 1.f, 1.f, 0.f };
+	SetVector4( s_BloomFirst, POST_PARAMS1, extract );
+	SetTexture( s_BloomFirst, POST_DST_TEXTURE2, s_FlareInput );
+	SetInt( s_BloomFirst, POST_DST_MIP2, 0 );
+	DrawCompute( context, s_BloomFirst );
+	return s_FlareInput;
+}
+
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
 	float flHorizontalFov, float flAspectRatio, ITexture *pOutput, const PostGradeDX12_t *pGrade, const PostMotionDX12_t *pMotion,
-	ITexture *pExposureCopy )
+	ITexture *pExposureCopy, bool reduced )
 {
 	if ( !PostProcessDX12_Active() || w <= 0 || h <= 0 )
 		return;
 
-	// The TAAU provider's output is already the complete reconstructed scene.  The compact
-	// bloom first pass consumes that result directly; only the explicitly disabled fusion
-	// mode may substitute the legacy histogram copy.
+	// The ordinary histogram copy is reusable only for the direct compact draw.
 	ITexture *pScene = s_PostScene;
-	if ( !mat_postfx_taau_reduction.GetBool() && pGrade && pExposureCopy && !pOutput && !pExposureCopy->IsError() &&
+	if ( pGrade && pExposureCopy && !pOutput && !pExposureCopy->IsError() &&
 		pExposureCopy->GetImageFormat() == s_PostScene->GetImageFormat() &&
 		pExposureCopy->GetActualWidth() == w && pExposureCopy->GetActualHeight() == h )
 		pScene = pExposureCopy;
-	else if ( pScene != pExposureCopy )
+	else if ( !reduced )
 	{
 		PIXEVENT( pRenderContext, "Post copy" );
 		Rect_t area = { x, y, w, h };
@@ -611,7 +628,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 			SetPostPass( first, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, 0.f, 1 << nDropFinest );
 			DrawCompute( pRenderContext, first );
 		}
-		else
+		else if ( !reduced )
 		{
 			PostMaterial_t &first = s_BloomFirst;
 			SetPostPass( first, pScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
