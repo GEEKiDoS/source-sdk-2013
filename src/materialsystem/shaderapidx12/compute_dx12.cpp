@@ -8,6 +8,7 @@
 #include "shaderdevice_dx12.h"
 #include "command_recorder_dx12.h"
 #include "tier0/dbg.h"
+#include "tier0/icommandline.h"
 #include <d3dcompiler.h>
 #include <cstring>
 #include <type_traits>
@@ -468,21 +469,38 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 	};
 	// Only these outputs are fully overwritten and subsequently read with explicit working-region bounds.
 	// AO terms stay nominal-sized: SSR's linear AO sampling can reach their unwritten border texels.
+	static const bool s_bDisableVramFit = CommandLine()->FindParm( "-dx12novramfit" ) != 0;
+	const bool bFitDepth = !s_bDisableVramFit && m_pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW;
 	const bool bGtaoMain = !V_stricmp( name, "gtao_main_cs51" );
+	const bool bGtaoViewDepth = bFitDepth && !V_stricmp( name, "gtao_viewdepth_cs51" );
 	const bool bMotionTileRaw = !V_stricmp( name, "motion_blur_tile_cs51" );
 	const bool bMotionTileDilate = !V_stricmp( name, "motion_blur_tile_dilate_cs51" );
 	const char *pszWorkingTarget = nullptr;
+	const char *pszAlternateTarget = nullptr;
 	ImageFormat workingFormat = IMAGE_FORMAT_UNKNOWN;
 	int nWorkingUav = 0, nWorkingWidth = 0, nWorkingHeight = 0;
-	if ( bGtaoMain && dispatch.m_nConstantBytes >= static_cast<int>( 2 * sizeof( int32_t ) ) )
+	if ( ( bGtaoMain || bGtaoViewDepth ) && dispatch.m_nConstantBytes >= static_cast<int>( 2 * sizeof( int32_t ) ) )
 	{
 		int32_t viewportSize[2];
 		memcpy( viewportSize, dispatch.m_pConstants, sizeof( viewportSize ) );
-		pszWorkingTarget = "_rt_GTAOEdges";
-		workingFormat = IMAGE_FORMAT_I8;
-		nWorkingUav = 1;
+		pszWorkingTarget = bGtaoMain ? "_rt_GTAOEdges" : "_rt_GTAOViewDepth";
+		workingFormat = bGtaoMain ? IMAGE_FORMAT_I8 : IMAGE_FORMAT_R32F;
+		nWorkingUav = bGtaoMain ? 1 : 0;
 		nWorkingWidth = viewportSize[0];
 		nWorkingHeight = viewportSize[1];
+	}
+	else if ( bFitDepth && !V_stricmp( name, "gtao_temporal_cs51" ) )
+	{
+		// Resize only the output side of the ping-pong. The temporal shader writes
+		// one pixel per lane; all later history loads clamp to the logical AO size.
+		// Using the dispatch footprint avoids duplicating its temporal cbuffer ABI.
+		const int nGroupSize = 8;
+		pszWorkingTarget = "_rt_GTAOHistoryDepth0";
+		pszAlternateTarget = "_rt_GTAOHistoryDepth1";
+		workingFormat = IMAGE_FORMAT_R32F;
+		nWorkingUav = 1;
+		nWorkingWidth = dispatch.m_nGroupsX <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / nGroupSize ? dispatch.m_nGroupsX * nGroupSize : 0;
+		nWorkingHeight = dispatch.m_nGroupsY <= D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION / nGroupSize ? dispatch.m_nGroupsY * nGroupSize : 0;
 	}
 	else if ( ( bMotionTileRaw || bMotionTileDilate ) && dispatch.m_nConstantBytes >= static_cast<int>( 4 * sizeof( uint32_t ) ) )
 	{
@@ -500,7 +518,8 @@ bool CShaderAPIDX12::Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch )
 		if ( resource.m_nKind == SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE && resource.m_nMip == 0 && resource.m_nMipCount <= 1 )
 		{
 			TextureRecord *record = FindTexture( resource.m_hTexture );
-			if ( record && !V_stricmp( record->name.Get(), pszWorkingTarget ) && record->format == workingFormat && record->requestedFormat == workingFormat &&
+			if ( record && ( !V_stricmp( record->name.Get(), pszWorkingTarget ) || ( pszAlternateTarget && !V_stricmp( record->name.Get(), pszAlternateTarget ) ) ) &&
+				record->format == workingFormat && record->requestedFormat == workingFormat &&
 				!DiscardResizeComputeTarget( *record, nWorkingWidth, nWorkingHeight ) )
 			{
 				WarnComputeOnce( name, "compute working target could not be resized" );

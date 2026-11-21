@@ -1870,6 +1870,22 @@ The memory reductions preserve formats and working pixels:
 - SSR reuses the captured scene's mip 0 for its signed RGBA16F delta after trace, the final reader of that scene copy.
   Resolve and temporal accumulation do not read it; the additive composite and the next frame's capture remain unchanged.
 - GTAO edges and motion-blur classification tiles allocate their declared working dimensions and are fully overwritten
-  before any bounded read. GTAO depth and AO term targets retain their original physical sizes: depth mip rounding and
-  SSR's linear AO border samples depend on those sizes.
+  before any bounded read. On low-tier adapters the GTAO view-depth target also fits the active 3D viewport, and
+  each temporal depth history fits the AO dispatch (rounded up to 8x8 groups). Only the output history is resized;
+  the input remains intact until its last read. `-dx12novramfit` keeps these three depth targets display-sized.
+  The GTAO depth pyramid and published AO terms retain their original physical sizes: mip rounding and SSR's
+  linear AO border samples depend on those sizes.
+
+The low adapter tier also fits steady-state memory from device start, including installs whose quality preset
+has already been recorded. It starts the bloom chains at the first mip actually read (half output resolution),
+packs small static geometry into separate vertex, index and prop-triangle pages, reuses eight-byte occlusion
+results within fence-retired readback pages, and uses smaller upload pages with a lower idle floor. It keeps the existing
+shadow-resolution preset. The high-resolution lightmap atlas converts eligible RGBA16F pages during upload to
+R11G11B10F color and R8 sun visibility, without changing the sidecar format or the directional pages. Radiance-only
+samples do not fetch the sun texture. `-dx12vramfullatlas` leaves the original RGBA16F atlas in place for comparison.
+
+One top mip is omitted for eligible managed block-compressed world/model textures with a top level of at least
+256 KiB. UI, dynamic textures, cubemaps, lightmaps and first-person weapon textures are not selected. Use
+`-dx12vramfullmips` to compare this choice in isolation, or `-dx12novramfit` to compare the unmodified allocations
+on the same low-tier build; both are startup switches. High-tier adapters keep the original allocations.
 
