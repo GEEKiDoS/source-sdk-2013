@@ -2500,10 +2500,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	float viewportScale[4] = { viewport.Width > 0 ? 1.f / viewport.Width : 1.f, viewport.Height > 0 ? -1.f / viewport.Height : -1.f, 0.f, 0.f };
 	if ( !geometryStage && UpscalerJitterActive( motionActive ) && viewport.Width > 0 && viewport.Height > 0 )
 	{
-		// The sky raster has half as many pixels, but tracks the same camera sample.
-		const float scale = m_hHalfSkyColor && m_RenderTargets[0] == m_hHalfSkyColor ? 1.f : 2.f;
-		viewportScale[2] = scale * m_UpscalerJitter[0] / viewport.Width;
-		viewportScale[3] = -scale * m_UpscalerJitter[1] / viewport.Height;
+		viewportScale[2] = 2.f * m_UpscalerJitter[0] / viewport.Width;
+		viewportScale[3] = -2.f * m_UpscalerJitter[1] / viewport.Height;
 		viewportScale[0] += viewportScale[2];
 		viewportScale[1] += viewportScale[3];
 	}

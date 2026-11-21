@@ -747,7 +747,6 @@ protected:
 	sky3dparams_t *	PreRender3dSkyboxWorld( SkyboxVisibility_t nSkyboxVisible );
 
 	sky3dparams_t *m_pSky3dParams;
-	bool m_bDeferred = false;
 };
 
 #if defined( L4D2 )
@@ -3083,10 +3082,6 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			cplane_t glassPlane;
 			bDeferSkybox = fogInfo.m_nVisibleFogVolume == -1 && !IsReflectiveGlassInView( viewRender, glassPlane );
 		}
-#if defined( L4D2 )
-		if ( skyWaterInfo.m_bReflectSkyboxOnly )
-			bDeferSkybox = false;
-#endif
 		CRendering3dView *pSavedDeferredSkybox = m_pDeferredSkybox;
 		m_pDeferredSkybox = NULL;
 #if defined( L4D2 )
@@ -6246,7 +6241,6 @@ void CSkyboxView::DrawInternal( view_id_t iSkyBoxViewID, bool bInvokePreAndPostR
 bool CSkyboxView::Setup( const CViewSetup &viewRender, int *pClearFlags, SkyboxVisibility_t *pSkyboxVisible, bool bDeferred )
 {
 	BaseClass::Setup( viewRender );
-	m_bDeferred = bDeferred;
 
 	// The skybox might not be visible from here
 	*pSkyboxVisible = ComputeSkyboxVisibility();
@@ -6299,34 +6293,7 @@ void CSkyboxView::Draw()
 	}
 #endif
 
-	IShaderAPIDX12ScreenSpace *pScreen = m_bDeferred ? ScreenSpaceDX12_GetAPI() : NULL;
-	IMaterial *pComposite = NULL;
-	const int halfWidth = ( width + 1 ) / 2;
-	const int halfHeight = ( height + 1 ) / 2;
-	if ( pScreen && !x && !y && r_skybox.GetBool() && r_3dsky.GetInt() == 1 &&
-		m_bDoBloomAndToneMapping && ScreenSpaceDX12_HalfSky( halfWidth, halfHeight, pRTColor, pRTDepth, pComposite ) )
-	{
-		const int fullWidth = width;
-		const int fullHeight = height;
-		width = halfWidth;
-		height = halfHeight;
-		m_ClearFlags = VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH;
-		DrawInternal( VIEW_3DSKY, true, pRTColor, pRTDepth );
-		width = fullWidth;
-		height = fullHeight;
-		// Mark the restored main depth, not the private sky depth. Filtering only
-		// sees sky colours; full-resolution coverage rejects every foreground sample.
-		pScreen->BeginSkybox();
-		pRenderContext->DrawScreenSpaceRectangle( pComposite, 0, 0, width, height,
-			0, 0, halfWidth - 1, halfHeight - 1, pRTColor->GetActualWidth(), pRTColor->GetActualHeight() );
-		pScreen->EndSkybox();
-		return;
-	}
-	if ( pScreen )
-		pScreen->BeginSkybox();
-	DrawInternal( VIEW_3DSKY, true, pRTColor, pRTDepth );
-	if ( pScreen )
-		pScreen->EndSkybox();
+	DrawInternal(VIEW_3DSKY, true, pRTColor, pRTDepth );
 }
 
 bool CViewRender::DrawDeferredSkybox()
@@ -6335,7 +6302,11 @@ bool CViewRender::DrawDeferredSkybox()
 	if ( !pSkybox )
 		return false;
 	m_pDeferredSkybox = NULL;
+	IShaderAPIDX12ScreenSpace *pScreenSpace = ScreenSpaceDX12_GetAPI();
+	Assert( pScreenSpace );
+	pScreenSpace->BeginSkybox();
 	AddViewToScene( pSkybox );
+	pScreenSpace->EndSkybox();
 	return true;
 }
 

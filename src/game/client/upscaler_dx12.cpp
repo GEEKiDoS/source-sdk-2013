@@ -245,8 +245,10 @@ bool UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup 
 
 	const bool bResetDispatch = bReset || s_bResetPending;
 	SubmitNrConfig( pRenderContext );
+	static ConVarRef reduction( "mat_postfx_taau_reduction" );
 	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_DISPATCH,
-		DX12_UPSCALE_DISPATCH_RUN | ( bResetDispatch ? DX12_UPSCALE_DISPATCH_RESET : 0 ) );
+		DX12_UPSCALE_DISPATCH_RUN | ( bResetDispatch ? DX12_UPSCALE_DISPATCH_RESET : 0 ) |
+		( bScaled && reduction.GetBool() ? DX12_UPSCALE_DISPATCH_POST_SCENE : 0 ) );
 	s_bResetPending = false;
 	// Under mat_queue_mode 2 the status lags the queued dispatch by the queue depth; it is a diagnostic, not a gate.
 	const int nStatus = UpscalerDX12_Status();

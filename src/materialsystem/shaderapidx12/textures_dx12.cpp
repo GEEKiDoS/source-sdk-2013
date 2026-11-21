@@ -1210,8 +1210,6 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	m_Textures.Insert( hTexture, pRecord );
 	if ( postScene )
 		m_hPostSceneOutput = hTexture;
-	if ( bRenderTarget && debugName && !V_stricmp( debugName, "_rt_HalfSkyColor" ) )
-		m_hHalfSkyColor = hTexture;
 	RegisterMapCubemap( *pRecord );
 	return hTexture;
 }

@@ -14,10 +14,6 @@
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "shaderapi/ishaderapidx12screenspace.h"
 #include "tier1/interface.h"
-#include "materialsystem/MaterialSystemUtil.h"
-#include "materialsystem/itexture.h"
-#include "materialsystem/imaterial.h"
-#include "tier1/keyvalues.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -59,9 +55,6 @@ static ConVar r_volumetric_sun_max_distance( "r_volumetric_sun_max_distance", "2
 namespace
 {
 IShaderAPIDX12ScreenSpace *s_pScreenSpace = nullptr;
-CTextureReference s_SkyColor, s_SkyDepth;
-CMaterialReference s_SkyComposite;
-ConVar r_sky_halfres( "r_sky_halfres", "0", FCVAR_ARCHIVE, "Shade deferred main-view 3D sky at half internal resolution" );
 bool s_bVolumetricScope = false;
 DX12VolumetricSettings s_VolumetricSettings = {};
 const uint32 kContactSteps[3] = { 16, 32, 60 };
@@ -81,51 +74,8 @@ void ScreenSpaceDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 	s_pScreenSpace = factory ? static_cast<IShaderAPIDX12ScreenSpace *>( factory( SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION, nullptr ) ) : nullptr;
 }
 
-void ScreenSpaceDX12_CreateSkyTargets( IMaterialSystem *pMaterials )
-{
-	if ( !s_pScreenSpace )
-		return;
-	int w, h;
-	pMaterials->GetBackBufferDimensions( w, h );
-	w = MAX( 1, ( w + 1 ) / 2 );
-	h = MAX( 1, ( h + 1 ) / 2 );
-	// This callback precedes initialization of the client's global materials pointer.
-	const int flags = TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT;
-	s_SkyColor.Init( pMaterials->CreateNamedRenderTargetTextureEx2( "_rt_HalfSkyColor", w, h, RT_SIZE_LITERAL,
-		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, flags, 0 ) );
-	s_SkyDepth.Init( pMaterials->CreateNamedRenderTargetTextureEx2( "_rt_HalfSkyDepth", w, h, RT_SIZE_LITERAL,
-		pMaterials->GetShadowDepthTextureFormat(), MATERIAL_RT_DEPTH_NONE, flags, 0 ) );
-	KeyValues *kv = new KeyValues( "DX12_PostFXRcas" );
-	kv->SetString( "$basetexture", "_rt_HalfSkyColor" );
-	kv->SetFloat( "$sharpness", -1.f );
-	IMaterial *material = pMaterials->CreateMaterial( "dx12/half_sky_composite", kv );
-	s_SkyComposite.Init( material );
-	if ( material )
-		material->DecrementReferenceCount();
-}
-
-bool ScreenSpaceDX12_HalfSky( int w, int h, ITexture *&color, ITexture *&depth, IMaterial *&composite )
-{
-	static ConVarRef wireframe( "mat_wireframe" ), fullbright( "mat_fullbright" ), postDebug( "mat_postfx_debug" );
-	static ConVarRef normals( "mat_pbr_showgbuffer" ), histogram( "mat_show_histogram" ), dump( "mat_dump_rts" );
-	if ( !r_sky_halfres.GetBool() || wireframe.GetInt() || fullbright.GetInt() || postDebug.GetInt() ||
-		normals.GetInt() || histogram.GetBool() || dump.GetBool() ||
-		ScreenSpaceDX12_ContactDebug() || !s_SkyColor.IsValid() || !s_SkyDepth.IsValid() || !s_SkyComposite.IsValid() ||
-		s_SkyColor->IsError() || s_SkyDepth->IsError() || s_SkyComposite->IsErrorMaterial() ||
-		w > s_SkyColor->GetActualWidth() || h > s_SkyColor->GetActualHeight() ||
-		w > s_SkyDepth->GetActualWidth() || h > s_SkyDepth->GetActualHeight() )
-		return false;
-	color = s_SkyColor;
-	depth = s_SkyDepth;
-	composite = s_SkyComposite;
-	return true;
-}
-
 void ScreenSpaceDX12_Shutdown()
 {
-	s_SkyComposite.Shutdown();
-	s_SkyColor.Shutdown();
-	s_SkyDepth.Shutdown();
 	if ( s_bVolumetricScope )
 		ShadowMapsDX12_EndVolumetrics();
 	s_bVolumetricScope = false;

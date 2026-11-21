@@ -1643,6 +1643,13 @@ views. Exposure still uses the original camera region and adaptation; the sparse
 density, not exposure bounds. Fades, vomit refraction, blurred vignettes and incompatible camera/target modes
 keep the legacy pass. Stencil-based metering keeps full density.
 
+`mat_postfx_taau_reduction` lets compact SDR post use native TAAU's sampleable output directly.
+An 8x8 compute group produces the first bloom/contrast level and an unthresholded quarter-size meter
+from the same scene samples. The existing histogram queries read that meter at stride 4; the player
+exposure controller, crop, bin ranges and pixel-count normalization are unchanged. Frames with
+intervening overlays or standalone velocity blur, other providers, debug/HDR output, and incompatible
+sizes retain the normal exposure copy and extraction.
+
 Motion blur remains independently switchable. Quality `-1` means **very low, four taps**, not disabled. After
 a successful temporal dispatch, eligible compact views gather along the center velocity in the composite,
 with render-region addressing and separate world/viewmodel rejection. This trades neighbor dilation on thin
