@@ -445,6 +445,8 @@ was most of the enhanced cost (c1m2 split probe: baked alone +2.2 ms, realtime a
 neither). An opaque PBR material (`BT_NONE` blend; for models the ENHANCED receiver) therefore records three snapshots,
 like Source's flashlight pass: A the single pass, B the baked/material pass, C the realtime pass, selected by the last
 static combo `LIGHTPASS` 0/1/2 of `pbr_model_ps51` / `pbr_world_ps51` (and its highres, early-depth and prepass twins).
+Mode 4 (low-tier preset) keeps the split for world and ordinary models, but selects A for
+infected materials: the same lighting with one fewer skinned colour draw per body part.
 Each draw renders A, or B then C (`Draw( false )` skips the others, so the cvar applies per draw without a re-snapshot):
 - B is the single pass without `PBR_GatherDirect`, `PBR_LocalLights`, the folded local ambient and `PBR_ProjectedSpots`,
   and writes every target A writes (depth, alpha, G-buffer, stencil).
