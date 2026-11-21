@@ -100,7 +100,7 @@ public:
 	{
 		Assert( m_bLAYERED && m_bNMS && m_bL4N && m_bALPHATEST && m_bLIGHTPASS );
 		AssertMsg( !( ( m_nLIGHTPASS == 2 ) && ( m_nALPHATEST == 1 ) ), "Invalid combo combination ( ( LIGHTPASS == 2 ) && ( ALPHATEST == 1 ) )" );
-		return ( 12 * m_nLAYERED ) + ( 24 * m_nNMS ) + ( 48 * m_nL4N ) + ( 96 * m_nALPHATEST ) + ( 192 * m_nLIGHTPASS ) + 0;
+		return ( 15 * m_nLAYERED ) + ( 30 * m_nNMS ) + ( 60 * m_nL4N ) + ( 120 * m_nALPHATEST ) + ( 240 * m_nLIGHTPASS ) + 0;
 	}
 };
 
@@ -127,7 +127,7 @@ public:
 
 	void SetSHADOWQUALITY( int i )
 	{
-		Assert( i >= 0 && i <= 3 );
+		Assert( i >= 0 && i <= 4 );
 		m_nSHADOWQUALITY = i;
 #ifdef _DEBUG
 		m_bSHADOWQUALITY = true;

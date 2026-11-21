@@ -2957,7 +2957,7 @@ logical=pbr_world_vs51 stage=vs source=pbr_world_vs51.fxc legacy=- legacyName=- 
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=12 present=480
+logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=15 present=600
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
@@ -3109,7 +3109,7 @@ logical=pbr_world_highres_vs51 stage=vs source=pbr_world_highres_vs51.fxc legacy
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=12 present=480
+logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=15 present=600
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -3228,7 +3228,7 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     legacyEntry=656,16,1,0,0,0,56
     legacyEntry=672,16,1,0,0,0,57
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=12 present=480
+logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earlydepth_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=15 present=600
   cbuffer=DX12HighresDrawConstants space=3 register=b0 size=320 layoutHash=0xf34fa2053d4039ab engine
     member=cHlightRoute type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cHlightModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -3402,7 +3402,7 @@ logical=pbr_model_vs51 stage=vs source=pbr_model_vs51.fxc legacy=- legacyName=- 
     legacyEntry=384,16,1,0,0,0,230
     legacyEntry=400,16,1,0,0,0,231
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=168 dynamic=24 present=3168
+logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- profile=native static=168 dynamic=30 present=3888
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
     member=cShadowView0 type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cShadowView1 type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -3527,7 +3527,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     legacyEntry=656,16,1,0,0,0,56
     legacyEntry=672,16,1,0,0,0,57
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=12 present=480
+logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=40 dynamic=15 present=600
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
@@ -3613,7 +3613,7 @@ logical=pbr_world_depthprepass_ps51 stage=ps source=pbr_world_depthprepass_ps51.
     legacyEntry=656,16,1,0,0,0,56
     legacyEntry=672,16,1,0,0,0,57
     bridge=WriteNativeCBuffer(api, block)
-logical=pbr_model_depthprepass_ps51 stage=ps source=pbr_model_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=168 dynamic=24 present=3168
+logical=pbr_model_depthprepass_ps51 stage=ps source=pbr_model_depthprepass_ps51.fxc legacy=- legacyName=- profile=native static=168 dynamic=30 present=3888
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none
