@@ -36,9 +36,17 @@ static void OnPbrOverrideChanged( IConVar *pVar, const char *, float )
 ConVar mat_pbr_override( "mat_pbr_override", "1", FCVAR_ARCHIVE,
 	"1 = route LightmappedGeneric/VertexLitGeneric/WorldVertexTransition through the PBR adapters", OnPbrOverrideChanged );
 
+static ConVar r_pbr_lean_lighting( "r_pbr_lean_lighting", "0", FCVAR_ARCHIVE,
+	"Use compact enhanced PBR lighting: bilinear atlas, L1 probes and narrow realtime shadow filters." );
 // Sun PCSS sample budget of the PBR receivers: the SHADOWQUALITY dynamic combo (native_src/shadow_pcss_disks.hlsli).
 ConVar r_shadowmap_filter_quality( "r_shadowmap_filter_quality", "1", FCVAR_ARCHIVE,
 	"Soft (PCSS) sun shadow sample budget, blocker search / filter taps: 0 low 8/8, 1 medium 8/16, 2 high 16/32, 3 extra 32/64", true, 0, true, 3 );
+// The extra SHADOWQUALITY value specializes only one filter budget, not a second tier axis.
+static int PbrReceiverQuality()
+{
+	return r_pbr_lean_lighting.GetBool() ? 4 : r_shadowmap_filter_quality.GetInt();
+}
+
 
 ConVar r_model_local_lights( "r_model_local_lights", "4", FCVAR_ARCHIVE,
 	"Enhanced model per-pixel local lights (1-4); 0 evaluates every local light", true, 0, true, 4 );
@@ -1296,7 +1304,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_model_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, bEnhanced ? r_shadowmap_filter_quality.GetInt() : 0 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, bEnhanced ? PbrReceiverQuality() : 0 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( LOCAL_LIGHTS, localLights );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_model_ps51 );
 		}
@@ -1313,7 +1321,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_world_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, r_shadowmap_filter_quality.GetInt() );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, PbrReceiverQuality() );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_world_ps51 );
 		}
 		DynamicCmdsOut.End();

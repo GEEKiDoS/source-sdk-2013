@@ -1804,7 +1804,11 @@ and frame generation keeps the native render size. A scale whose provider featur
 adapter (`r_quality_tier_adapter` records it) a low-tier adapter gets the low preset in `cdll_client_int.cpp`
 (`ApplyAdapterQualityTier`, native resolution: SMAA T2x anti-aliasing (`r_upscaler 5`), SSR and volumetric lighting
 off (SSR keeps a half-resolution trace if re-enabled), low GTAO, PCF sun shadows at low resolution, two realtime local
-lights, low bloom and 4-tap motion blur).
+lights, low bloom and 4-tap motion blur). Low also selects one main sun cascade shared by the weapon
+(`r_csm_cascades 1`, `r_shadowmap_viewmodel_self 0`). Lighting > Compact PBR lighting
+(`r_pbr_lean_lighting 1`) selects bilinear highres atlas and visibility sampling, spatial SH-L1 probes,
+isotropic GGX, no normal-map micro-shadowing, and a single bilinear comparison on the realtime sun/local charts.
+It omits the separate viewmodel screen-space contact pass, not the world contact mask or the flashlight.
 High-tier adapters keep the defaults. `-dx12adaptertier 0|1` forces the class.
 A config.cfg saved before `mat_postfx_dx12_set` existed gets `mat_postfx_dx12 1` once on the first level load
 (`PostProcessDX12_ValidateConfig`); later changes to `mat_postfx_dx12` stick. When the post stack cannot create its

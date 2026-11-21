@@ -1704,6 +1704,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 			addReceiver( ViewModelListRenderable( translucentViewModelList[i] ), false );
 		if ( hasReceiver )
 		{
+			PIXEVENT( pRenderContext, "Viewmodel shadow setup" );
 			const ShadowMapViewModelCasters_t viewModel = { selfCasters.Base(), selfCasters.Count(), receiverMins, receiverMaxs };
 			shadowScope.Begin( viewModelSetup, SHADOWMAP_VIEW_VIEWMODEL, maxReceiverDepth, &viewModel );
 		}
@@ -1732,6 +1733,7 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 				pViewModelBounce = ScreenSpaceDX12_ViewModelBounce();
 				if ( pViewModelContacts )
 				{
+					PIXEVENT( pRenderContext, "Viewmodel contact depth" );
 					const bool reuseMainDepth = m_bViewModelDepthInScene;
 					pViewModelContacts->BeginViewModelContacts( reuseMainDepth );
 					if ( !reuseMainDepth )
@@ -1747,15 +1749,25 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 
 			if ( pViewModelBounce )
 				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_VIEWMODEL );
-			DrawRenderablesInList( opaqueViewModelList );
+			{
+				PIXEVENT( pRenderContext, "Viewmodel opaque lighting" );
+				DrawRenderablesInList( opaqueViewModelList );
+			}
 			if ( pViewModelBounce )
 			{
+				PIXEVENT( pRenderContext, "Viewmodel bounce" );
 				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_END );
 				pViewModelBounce->DrawViewModelBounce();
 			}
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
+			{
+				PIXEVENT( pRenderContext, "Viewmodel velocity" );
 				DrawViewModelMotionVectors( viewRender, opaqueViewModelList, bUseDepthHack );
-			DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
+			}
+			{
+				PIXEVENT( pRenderContext, "Viewmodel transparency" );
+				DrawRenderablesInList( translucentViewModelList, STUDIO_TRANSPARENCY );
+			}
 			if ( pViewModelContacts )
 				pViewModelContacts->EndViewModelContacts();
 		}

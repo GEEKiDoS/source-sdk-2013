@@ -264,7 +264,7 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     r.style0BaseRGB = base.rgb;
     bool bakedSun = bakedPose && (ownerRecord.z & 8) != 0;
     r.sun = bakedSun ? saturate(base.a) : 1;
-#if PBR_WORLD_HIGHRES
+#if PBR_WORLD_HIGHRES && defined(HIGHRES_LIGHTMAP_BICUBIC)
     // Dilation is saturated to [0,1], so max(dilation,1) is exactly 1 without its four page samples. Its taps read
     // the texels of the bicubic footprint (all weights positive), so an exactly zero bicubic alpha has nothing to dilate.
     r.sunDilated = 1;
@@ -307,7 +307,7 @@ float3 HighresLightmap_RGB(HlightReceiver r, uint plane)
     }
     return rgb;
 }
-#if defined(HIGHRES_LIGHTMAP_BICUBIC)
+#if defined(HIGHRES_LIGHTMAP_BICUBIC) || defined(PBR_LEAN)
 // The weighted sum of a face's three bumped planes (weights.x .. z for planes 1 .. 3), equal to
 // sum( weights[i] * HighresLightmap_RGB( r, i + 1 ) ): the style slots are walked once for all planes, a plane with
 // weight exactly zero is not fetched, and tiles of the base tile's extent reuse its footprint.
@@ -317,7 +317,9 @@ float3 HighresLightmap_BumpedRGB(HlightReceiver r, float3 weights)
     float3 rgb = 0;
     uint count, stride;
     HlightTiles.GetDimensions(count, stride);
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
     HlightFootprint fp = r.footprint;
+#endif
     [loop] for (uint styleSlot = 0; styleSlot < 4; ++styleSlot)
     {
         uint style = (r.styles >> (styleSlot * 8)) & 255;
@@ -332,8 +334,12 @@ float3 HighresLightmap_BumpedRGB(HlightReceiver r, float3 weights)
             if (!(weight > 0.0) || tile == 0xffffffff) continue;
             if (tile >= count) { HighresLightmap_Reject(3, tile); continue; }
             HlightTileGpuDX12 loaded = HighresLightmap_LoadTile(tile);
+#if defined(HIGHRES_LIGHTMAP_BICUBIC)
             [branch] if (any(float2(loaded.size.xy) != fp.extent)) fp = HighresLightmap_Footprint(float2(loaded.size.xy), r.q);
             slotRGB += weight * HighresLightmap_Taps(loaded, fp).rgb;
+#else
+            slotRGB += weight * HighresLightmap_TileLoaded(loaded, r.q).rgb;
+#endif
         }
         rgb += slotRGB * cHlightStyles[style / 4][style % 4];
     }
