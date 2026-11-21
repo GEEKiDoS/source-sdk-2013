@@ -13,11 +13,15 @@ public:
 	DECLARE_CLASS( C_WeaponSpawn, C_BaseAnimating );
 	DECLARE_CLIENTCLASS();
 
+	C_WeaponSpawn();
+
 	virtual int ObjectCaps() OVERRIDE;
 	virtual ShadowType_t ShadowCastType() OVERRIDE { return SHADOWS_NONE; }
 	virtual bool IsUsable( C_BaseEntity *pUser );
 	virtual int GetUseType( C_BaseEntity *pUser ) OVERRIDE;
 	virtual int GetWeaponID() const { return m_weaponID; }
+	int GetWeaponVariant() const { return m_nWeaponVariant; }
+	virtual void ValidateModelIndex() OVERRIDE;
 	virtual CStudioHdr *OnNewModel() OVERRIDE;
 
 	float GetGlowRange() const { return m_flGlowRange; }
@@ -25,6 +29,7 @@ public:
 protected:
 	int m_weaponID;
 	float m_flGlowRange;
+	int m_nWeaponVariant;
 };
 
 class C_WeaponAmmoSpawn : public C_WeaponSpawn

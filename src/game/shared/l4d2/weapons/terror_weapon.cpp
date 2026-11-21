@@ -3,6 +3,7 @@
 #ifdef CLIENT_DLL
 #include "l4d2/player/c_terrorplayer.h"
 #include "l4d2/effects/terror_glow_scene.h"
+#include "l4d2/weapons/weapon_variants.h"
 #else
 #include "l4d2/player/terrorplayer.h"
 #endif
@@ -305,28 +306,35 @@ CTerrorPlayer *CTerrorWeapon::GetTerrorPlayerOwner() const
 
 const char *CTerrorWeapon::GetViewModel( int ) const
 {
+	const char *path = BaseClass::GetViewModel( 0 );
 	CBaseCombatCharacter *owner = GetOwner();
-	if ( !owner || !owner->IsPlayer() )
-		return BaseClass::GetViewModel( 0 );
-	CTerrorPlayer *player = static_cast< CTerrorPlayer * >( owner );
-	const int team = player->GetTeamNumber();
-	if ( team == TEAM_SURVIVOR || team == TEAM_L4D1_SURVIVOR )
+	CTerrorPlayer *player = owner && owner->IsPlayer() ? static_cast< CTerrorPlayer * >( owner ) : NULL;
+	if ( player )
 	{
-		const int character = player->GetSurvivorCharacter();
-		const CTerrorWeaponInfo &info = GetTerrorWpnData();
-		const bool dual = IsDualWielding();
-		return info.GetCharacterViewModel( GetSurvivorCharacterName( character ), dual );
-	}
-	if ( player->GetTeamNumber() != TEAM_INFECTED )
-		return BaseClass::GetViewModel( 0 );
+		const int team = player->GetTeamNumber();
+		if ( team == TEAM_SURVIVOR || team == TEAM_L4D1_SURVIVOR )
+		{
+			const int character = player->GetSurvivorCharacter();
+			const CTerrorWeaponInfo &info = GetTerrorWpnData();
+			const bool dual = IsDualWielding();
+			path = info.GetCharacterViewModel( GetSurvivorCharacterName( character ), dual );
+		}
+		else if ( team == TEAM_INFECTED )
+		{
 #ifdef CLIENT_DLL
-	const int zombieClass = player->GetZombieClass();
+			const int zombieClass = player->GetZombieClass();
 #else
-	const int infectedTeam = player->GetTeamNumber();
-	const int zombieClass = infectedTeam == TEAM_SURVIVOR || infectedTeam == TEAM_L4D1_SURVIVOR ? 9 : player->GetZombieClass();
+			const int infectedTeam = player->GetTeamNumber();
+			const int zombieClass = infectedTeam == TEAM_SURVIVOR || infectedTeam == TEAM_L4D1_SURVIVOR ? 9 : player->GetZombieClass();
 #endif
-	const CTerrorWeaponInfo &info = GetTerrorWpnData();
-	return info.GetCharacterViewModel( GetZombieClassName( zombieClass ), false );
+			const CTerrorWeaponInfo &info = GetTerrorWpnData();
+			path = info.GetCharacterViewModel( GetZombieClassName( zombieClass ), false );
+		}
+	}
+#ifdef CLIENT_DLL
+	path = WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_VIEW, path );
+#endif
+	return path;
 }
 
 Activity CTerrorWeapon::TranslatePlayerActivity( Activity activity )

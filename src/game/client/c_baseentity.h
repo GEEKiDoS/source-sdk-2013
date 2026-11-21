@@ -181,6 +181,11 @@ struct thinkfunc_t
 //-----------------------------------------------------------------------------
 // Purpose: Base client side entity object
 //-----------------------------------------------------------------------------
+#if defined( L4D2 )
+int WeaponVariants_ClientModelIndex( int variant, const char *role, const char *vanillaPath );
+const char *WeaponVariants_ClientOriginalModelPath( const char *path, char *originalPath, int originalPathSize );
+#endif
+
 class C_BaseEntity : public IClientEntity
 {
 // Construction
@@ -1183,6 +1188,12 @@ public:
 
 	// Sets the model from a model index 
 	void				SetModelByIndex( int nModelIndex );
+#if defined( L4D2 )
+	// A local presentation override, separate from the replicated model index.
+	int					GetRenderModelIndex() const { return m_nRenderModelIndexOverride != -1 ? m_nRenderModelIndexOverride : GetModelIndex(); }
+	bool				HasRenderModelIndexOverride() const { return m_nRenderModelIndexOverride != -1; }
+	void				SetRenderModelIndexOverride( int modelIndex ) { m_nRenderModelIndexOverride = modelIndex; }
+#endif
 
 	// Set model... (NOTE: Should only be used by client-only entities
 	// Returns false if the model name is bogus or otherwise can't be loaded
@@ -1513,6 +1524,9 @@ public:
 
 	// Object model index
 	short							m_nModelIndex;
+#if defined( L4D2 )
+	int								m_nRenderModelIndexOverride; // Not networked or predicted.
+#endif
 
 #ifdef TF_CLIENT_DLL
 	int								m_nModelIndexOverrides[MAX_VISION_MODES];

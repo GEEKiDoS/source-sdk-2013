@@ -6,6 +6,7 @@
 #include "filesystem.h"
 #include "l4d2/content/terror_provider_files.h"
 #include "l4d2/content/terror_addon_commands.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "tier0/memdbgon.h"
 
 ConVar mp_gamemode( "mp_gamemode", "coop", 
@@ -62,6 +63,7 @@ public:
 		if ( engine->IsConnected() ) return;
 #endif
 		TerrorMountAddons();
+		WeaponVariants_RebuildRegistry();
 	}
 	virtual void CreateAddonCommand( bool updatePaths ) OVERRIDE
 	{
@@ -101,6 +103,7 @@ void CTerrorModeDescription::Shutdown()
 bool CTerrorModeDescription::Init()
 {
 	TerrorMountAddons();
+	WeaponVariants_RebuildRegistry();
 	Shutdown();
 	if ( !Reload() ) return false;
 #ifndef CLIENT_DLL

@@ -24,6 +24,9 @@
 #endif
 #if defined( L4D2 )
 #include "animationlayer.h"
+#include "animation.h"
+#include "l4d2/weapons/weapon_csbase.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "datacache/imdlcache.h"
 #include "iinput.h"
 #include "l4d2/terror_shareddefs.h"
@@ -280,6 +283,12 @@ void C_BaseViewModel::UncorrectViewModelAttachment( Vector &vOrigin )
 // native active-user flag scopes; it does not replace the genuine camera query.
 void C_BaseViewModel::FireEvent( const Vector &origin, const QAngle &angles, int event, const char *options )
 {
+	if ( ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND || event == AE_CL_STOPSOUND ) && options )
+	{
+		const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( GetWeapon() );
+		if ( weapon )
+			options = WeaponVariants_ResolveSound( weapon->GetWeaponVariant(), options );
+	}
 	if ( ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND ) && GetOwner() )
 	{
 		CLocalPlayerFilter filter;
@@ -378,6 +387,9 @@ bool C_BaseViewModel::Interpolate( float currentTime )
 	const bool result = BaseClass::Interpolate( currentTime );
 	if ( !pHdr || !pHdr->IsValid() )
 		return result;
+
+	if ( m_bRefreshVariantLayer )
+		UpdateReceivedLayer();
 
 	C_BaseEntity *owner = GetOwner();
 	C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
@@ -920,13 +932,31 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 			GetAnimOverlay( i )->SetOrder( 15 );
 		}
 	}
+	UpdateReceivedLayer();
+	BaseClass::OnDataChanged( updateType );
+}
+
+void C_BaseViewModel::UpdateReceivedLayer()
+{
+	if ( GetNumAnimOverlays() != 4 || ( m_bRefreshVariantLayer && IsDynamicModelLoading() ) )
+		return;
+
+	const int networkSequence = m_nReceivedLayerSequence;
+	const bool modelChanged = m_bRefreshVariantLayer;
+	m_bRefreshVariantLayer = false;
+	if ( modelChanged )
+	{
+		// Overlay indices from the old model cannot be blended on the new one.
+		for ( int i = 0; i < 4; ++i )
+			GetAnimOverlay( i )->SetOrder( 15 );
+	}
 	if ( vm_fade.GetInt() != 0 &&
-		( m_nLastReceivedLayerSequence != m_nLayerSequence ||
+		( modelChanged || m_nLastReceivedLayerSequence != networkSequence ||
 		  m_flLastReceivedLayerStartTime != m_flLayerStartTime ||
 		  m_nLastReceivedLayer != m_nLayer ) )
 	{
 		m_flLastReceivedLayerStartTime = m_flLayerStartTime;
-		m_nLastReceivedLayerSequence = m_nLayerSequence;
+		m_nLastReceivedLayerSequence = networkSequence;
 		m_nLastReceivedLayer = m_nLayer;
 
 		C_BaseEntity *owner = GetOwner();
@@ -944,6 +974,13 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 		}
 
 		CAnimationLayer *layer = GetAnimOverlay( m_nLayer );
+		const int sequence = MapNetworkedSequence( networkSequence );
+		if ( sequence < 0 )
+		{
+			layer->SetWeight( 0.0f );
+			layer->SetOrder( 15 );
+			return;
+		}
 		CStudioHdr *pHdr = GetModelPtr();
 		bool canFadePrevious = false;
 		if ( pHdr && pHdr->IsValid() && layer->m_nSequence >= 0 && layer->m_nSequence < pHdr->GetNumSeq() )
@@ -972,10 +1009,10 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 		}
 
 		const float start = m_flLayerStartTime > now ? now : static_cast< float >( m_flLayerStartTime ); // C6C251 JBE includes unordered.
-		bool restart = layer->m_nSequence != m_nLayerSequence || layer->m_nOrder == 15;
+		bool restart = layer->m_nSequence != sequence || layer->m_nOrder == 15;
 		if ( !restart )
 		{
-			const double duration = static_cast< double >( SequenceDuration( GetModelPtr(), m_nLayerSequence ) );
+			const double duration = static_cast< double >( SequenceDuration( GetModelPtr(), sequence ) );
 			const float storedDuration = static_cast< float >( duration );
 			const float error = static_cast< float >( fabs( static_cast< double >( now ) -
 				( static_cast< double >( layer->m_flLayerAnimtime ) - static_cast< double >( static_cast< float >( layer->m_flCycle ) ) * duration ) ) );
@@ -989,7 +1026,7 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 		{
 			layer->SetCycle( 0.0f );
 			m_flOverlayPrevEventCycle[0] = -0.01f; // Native index0, even layer3.
-			layer->SetSequence( m_nLayerSequence );
+			layer->SetSequence( sequence );
 			layer->m_flPlaybackRate = static_cast< float >( GetEffectivePlaybackRate() );
 			layer->SetWeight( 1.0f );
 			layer->SetOrder( m_nLayer );
@@ -998,7 +1035,6 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 			m_nOldAnimationParity = m_nAnimationParity;
 		}
 	}
-	BaseClass::OnDataChanged( updateType );
 }
 #if defined( _MSC_VER )
 #pragma float_control( pop )
@@ -1015,6 +1051,9 @@ void C_BaseViewModel::OnDataChanged( DataUpdateType_t updateType )
 void C_BaseViewModel::PostDataUpdate( DataUpdateType_t updateType )
 {
 	BaseClass::PostDataUpdate(updateType);
+#if defined( L4D2 )
+	ApplyReceivedMainSequence();
+#endif
 	OnLatchInterpolatedVariables( LATCH_ANIMATION_VAR );
 }
 
@@ -1064,6 +1103,139 @@ RenderGroup_t C_BaseViewModel::GetRenderGroup()
 }
 #endif
 #if defined( L4D2 )
+// Compare sequences between studio models by exact label, then by activity.
+static int MapSequenceBetweenModels( CStudioHdr *source, CStudioHdr *target, int sequence )
+{
+	if ( !source || !target || !source->SequencesAvailable() || !target->SequencesAvailable() ||
+		sequence < 0 || sequence >= source->GetNumSeq() )
+		return -1;
+	if ( source == target )
+		return sequence;
+
+	const char *label = source->pSeqdesc( sequence ).pszLabel();
+	for ( int i = 0; i < target->GetNumSeq(); ++i )
+	{
+		if ( !V_stricmp( target->pSeqdesc( i ).pszLabel(), label ) )
+			return i;
+	}
+	const char *activity = source->pSeqdesc( sequence ).pszActivityName();
+	int match = -1;
+	int bestWeight = -1;
+	if ( *activity )
+	{
+		for ( int i = 0; i < target->GetNumSeq(); ++i )
+		{
+			const mstudioseqdesc_t &desc = target->pSeqdesc( i );
+			const int weight = abs( desc.actweight );
+			if ( weight > bestWeight && !V_stricmp( desc.pszActivityName(), activity ) )
+			{
+				match = i;
+				bestWeight = weight;
+			}
+		}
+	}
+	return match;
+}
+
+static const studiohdr_t *GetStudioHeaderForModelIndex( int index )
+{
+	const model_t *model = modelinfo->GetModel( index );
+	return model ? modelinfo->GetStudiomodel( model ) : NULL;
+}
+
+int C_BaseViewModel::MapPredictedWeaponSequence( CStudioHdr *weaponModel, int sequence )
+{
+	MDLCACHE_CRITICAL_SECTION();
+	return MapSequenceBetweenModels( weaponModel, GetModelPtr(), sequence );
+}
+
+int C_BaseViewModel::ToNetworkLayerSequence( int sequence )
+{
+	if ( !HasRenderModelIndexOverride() )
+		return sequence;
+
+	MDLCACHE_CRITICAL_SECTION();
+	const studiohdr_t *vanilla = GetStudioHeaderForModelIndex( GetModelIndex() );
+	if ( !vanilla )
+		return m_nReceivedLayerSequence;
+	CStudioHdr vanillaHdr( vanilla, mdlcache );
+	const int mapped = MapSequenceBetweenModels( GetModelPtr(), &vanillaHdr, sequence );
+	return mapped >= 0 && mapped <= 255 ? mapped : m_nReceivedLayerSequence;
+}
+
+int C_BaseViewModel::MapNetworkedSequence( int sequence )
+{
+	if ( GetRenderModelIndex() == GetModelIndex() )
+		return sequence;
+
+	MDLCACHE_CRITICAL_SECTION();
+	const studiohdr_t *vanilla = GetStudioHeaderForModelIndex( GetModelIndex() );
+	if ( !vanilla )
+		return -1;
+	CStudioHdr vanillaHdr( vanilla, mdlcache );
+	return MapSequenceBetweenModels( &vanillaHdr, GetModelPtr(), sequence );
+}
+
+void C_BaseViewModel::ValidateModelIndex()
+{
+	int index = -1;
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( GetWeapon() );
+	if ( weapon && weapon->GetWeaponVariant() != WEAPON_VARIANT_NONE )
+	{
+		const model_t *model = modelinfo->GetModel( GetModelIndex() );
+		if ( model )
+			index = WeaponVariants_ClientModelIndex( weapon->GetWeaponVariant(), WEAPON_VARIANT_ROLE_VIEW, modelinfo->GetModelName( model ) );
+	}
+
+	const int renderIndex = index != -1 ? index : GetModelIndex();
+	if ( modelinfo->GetModel( renderIndex ) != GetModel() &&
+		( index != -1 || GetRenderModelIndex() != GetModelIndex() ) )
+	{
+		m_bReceivedMainSequencePending = m_nReceivedMainSequence >= 0;
+		m_bRefreshVariantLayer = true;
+	}
+	SetRenderModelIndexOverride( index );
+	BaseClass::ValidateModelIndex();
+}
+
+void C_BaseViewModel::ReceiveMainSequence( int sequence )
+{
+	m_nReceivedMainSequence = sequence;
+	m_bReceivedMainSequencePending = true;
+}
+
+void C_BaseViewModel::ApplyReceivedMainSequence()
+{
+	if ( !m_bReceivedMainSequencePending || IsDynamicModelLoading() )
+		return;
+
+	MDLCACHE_CRITICAL_SECTION();
+	m_bReceivedMainSequencePending = false;
+	const int sequence = MapNetworkedSequence( m_nReceivedMainSequence );
+	// Keep the main pose valid even when the replacement has no matching activity.
+	const int resolved = sequence >= 0 ? sequence : 0;
+	m_nMappedMainSequence = resolved;
+	if ( resolved != GetSequence() )
+	{
+		SetSequence( resolved );
+		m_flAnimTime = gpGlobals->curtime;
+		SetCycle( 0.0f );
+	}
+}
+
+int C_BaseViewModel::RestoreData( const char *context, int slot, int type )
+{
+	const int result = BaseClass::RestoreData( context, slot, type );
+	// The authoritative prediction snapshot can be taken while the variant
+	// is still loading. Its sequence then belongs to the previous model.
+	// Restore the since-resolved base pose, not that stale snapshot number.
+	if ( slot == SLOT_ORIGINALDATA && type != PC_NON_NETWORKED_ONLY &&
+		HasRenderModelIndexOverride() && !m_bReceivedMainSequencePending &&
+		m_nMappedMainSequence >= 0 && GetSequence() != m_nMappedMainSequence )
+		SetSequence( m_nMappedMainSequence );
+	return result;
+}
+
 // C6AC90. Root C++ parent already CBaseAnimatingOverlay under L4D2; the wire
 // table remains NOBASE. Do not add an unrelated parity, owner or layer reset.
 CStudioHdr *C_BaseViewModel::OnNewModel()
@@ -1072,6 +1244,8 @@ CStudioHdr *C_BaseViewModel::OnNewModel()
 	m_flPreviousElapsedTime = 0.0f;
 	m_flMainSequenceCycle = 0.0f;
 	m_iCameraAttachment = LookupAttachment( "attach_camera" );
+	if ( model )
+		ApplyReceivedMainSequence();
 	return model;
 }
 

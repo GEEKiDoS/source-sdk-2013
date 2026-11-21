@@ -18,7 +18,7 @@ void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *player, matrix3x4_t *b
 	player->Interpolate( time );
 	if ( deathPose == -1 )
 	{
-		player->SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+		player->SetupBones( bones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, time );
 		player->InvalidateBoneCache();
 		player->SetupBones( NULL, -1, BONE_USED_BY_ANYTHING, time );
 		return;
@@ -35,7 +35,7 @@ void GetRagdollCurSequenceWithDeathPose( C_BaseAnimating *player, matrix3x4_t *b
 	player->SetSequence( deathPose );
 	player->SetCycle( (float)deathFrame * 0.16666667f );
 	player->SetAbsOrigin( deathOrigin );
-	player->SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+	player->SetupBones( bones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, time );
 	player->SetAbsOrigin( origin );
 	player->InvalidateBoneCache();
 	player->SetSequence( sequence );

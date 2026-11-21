@@ -7,6 +7,7 @@
 
 #include "l4d2/player/cs_player.h"
 #include "l4d2/terror_shareddefs.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "util_shared.h"
 #include "takedamageinfo.h"
 // Existing actual Music definition for embedded member
@@ -724,7 +725,7 @@ public:
 
 	virtual bool BumpWeapon(CBaseCombatWeapon *pWeapon) OVERRIDE;
 
-	CBaseEntity *GiveNamedItemInternal(const char *pszName,int nSubType,bool bForcePickup,CBaseEntity *pAppearanceSource);
+	CBaseEntity *GiveNamedItemInternal( const char *pszName, int nSubType, bool bForcePickup, CBaseEntity *pAppearanceSource, WeaponVariantIndex_t variant = WEAPON_VARIANT_NONE );
 
 	CTerrorWeapon *GetWeaponOfType(int nWeaponID) const;
 

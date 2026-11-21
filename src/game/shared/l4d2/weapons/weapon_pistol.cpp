@@ -7,6 +7,7 @@
 #ifdef CLIENT_DLL
 #include "l4d2/player/c_terrorplayer.h"
 #include "baseviewmodel_shared.h"
+#include "l4d2/weapons/weapon_variants.h"
 #define CPistol C_Pistol
 #else
 #include "l4d2/player/terrorplayer.h"
@@ -101,13 +102,23 @@ void CPistol::Precache()
 const char *CPistol::GetWorldModel() const
 {
 	// S:0x3DEA10: dropped/world identity remains the single pistol.
+#ifdef CLIENT_DLL
+	return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, GetTerrorWpnData().szWorldModel );
+#else
 	return GetTerrorWpnData().szWorldModel;
+#endif
 }
 
 const char *CPistol::GetPlayerModel() const
 {
 	// S:0x3DEA20: the carried model is the dual asset while wielding both.
+#ifdef CLIENT_DLL
+	if ( !m_isDualWielding )
+		return GetWorldModel();
+	return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_PLAYER, GetTerrorWpnData().m_szDualPlayerModel );
+#else
 	return m_isDualWielding ? GetTerrorWpnData().m_szDualPlayerModel : GetTerrorWpnData().szWorldModel;
+#endif
 }
 
 bool CPistol::Deploy()
@@ -311,6 +322,7 @@ void CPistol::Drop( const Vector &vecVelocity )
 		{
 			pOtherPistol->SetAbsOrigin( WorldSpaceCenter() );
 			pOtherPistol->AddSpawnFlags( SF_NORESPAWN );
+			pOtherPistol->SetWeaponVariant( GetWeaponVariant() );
 			DispatchSpawn( pOtherPistol );
 			IPhysicsObject *pPhysics = pOtherPistol->VPhysicsGetObject();
 			if ( pPhysics )

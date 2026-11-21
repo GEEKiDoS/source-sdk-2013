@@ -290,7 +290,7 @@ CBaseEntity *CTerrorPlayer::GiveNamedItem( const char *pszName, int nSubType )
 	return GiveNamedItemInternal( pszName, nSubType, false, NULL );
 }
 
-CBaseEntity *CTerrorPlayer::GiveNamedItemInternal( const char *pszName, int nSubType, bool bForcePickup, CBaseEntity *pAppearanceSource )
+CBaseEntity *CTerrorPlayer::GiveNamedItemInternal( const char *pszName, int nSubType, bool bForcePickup, CBaseEntity *pAppearanceSource, WeaponVariantIndex_t variant )
 {
 	if ( !pszName || !pszName[0] )
 		return NULL;
@@ -354,6 +354,7 @@ CBaseEntity *CTerrorPlayer::GiveNamedItemInternal( const char *pszName, int nSub
 	CTerrorWeapon *pWeapon = dynamic_cast< CTerrorWeapon * >( hEntity.Get() );
 	if ( pWeapon )
 	{
+		pWeapon->SetWeaponVariant( variant );
 		if ( nMelee != INVALID_MELEE_WEAPON_INFO_HANDLE )
 		{
 			CTerrorMeleeWeapon *pMelee = dynamic_cast< CTerrorMeleeWeapon * >( pWeapon );

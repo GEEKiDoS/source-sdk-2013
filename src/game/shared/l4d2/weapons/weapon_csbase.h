@@ -7,6 +7,7 @@
 
 #include "basecombatweapon_shared.h"
 #include "l4d2/weapons/terror_weapon_parse.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "l4d2/terror_shareddefs.h"
 
 #ifdef CLIENT_DLL
@@ -114,6 +115,8 @@ public:
 	const CTerrorWeaponInfo &GetTerrorWpnData() const;
 	void SetExtraPrimaryAmmo( int ammo );
 	int GetExtraPrimaryAmmo() const { return m_iExtraPrimaryAmmo; }
+	int GetWeaponVariant() const { return m_nWeaponVariant; }
+	void SetWeaponVariant( int variant );
 	CNetworkVar( int, m_iExtraPrimaryAmmo );
 protected:
 	bool PlayEmptySound(); // Genuine nonvirtual S24ECB0/C231710 false.
@@ -127,8 +130,10 @@ private:
 	float m_flOwnerPickupLockUntil; // S5368/C2604, real ctor store on both sides.
 	CCSPlayer *m_pDroppedWeaponOwner; // S5372/C2608, RAW pointer, not transfer EHANDLE.
 	int m_iNumPrimaryAmmoClips; // S5376/C2584, real ammo KeyValue owner.
+	CNetworkVar( int, m_nWeaponVariant );
 #ifndef CLIENT_DLL
 	bool m_bForcePickup; // S5380 only.
+	bool m_bWeaponVariantAssigned;
 #else
 	bool m_bCSAutoReloadAttempted; // C2520 only, ctor false / successful ReloadPrimaryClip true.
 	int m_iCrosshairAlpha; // C2576, Deploy80; no constructor store.

@@ -43,6 +43,7 @@ IMPLEMENT_SERVERCLASS_ST( CWeaponSpawn, DT_WeaponSpawn )
 	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
 	SendPropInt( SENDINFO( m_weaponID ), 8, 0 ),
 	SendPropFloat( SENDINFO( m_flGlowRange ), 0, SPROP_NOSCALE ),
+	SendPropInt( SENDINFO( m_nWeaponVariant ), WEAPON_VARIANT_NETWORK_BITS, SPROP_UNSIGNED ),
 END_SEND_TABLE()
 
 IMPLEMENT_SERVERCLASS_ST( CWeaponAmmoSpawn, DT_WeaponAmmoSpawn )
@@ -157,6 +158,8 @@ CWeaponSpawn::CWeaponSpawn()
 {
 	g_WeaponSpawns.AddToTail( this );
 	m_weaponID = 0;
+	m_nWeaponVariant = WEAPON_VARIANT_NONE;
+	m_bWeaponVariantAssigned = false;
 	m_nWeaponSkin = -1;
 	m_flGlowRange = 0.0f;
 	m_bReplacement = false;
@@ -169,6 +172,11 @@ CWeaponSpawn::~CWeaponSpawn()
 
 void CWeaponSpawn::SetWeaponID( int id )
 {
+	if ( id != m_weaponID )
+	{
+		m_nWeaponVariant = WEAPON_VARIANT_NONE;
+		m_bWeaponVariantAssigned = false;
+	}
 	m_weaponID = id;
 }
 
@@ -202,8 +210,28 @@ void CWeaponSpawn::Precache()
 	CBaseAnimating::Precache();
 }
 
+void CWeaponSpawn::SetWeaponVariant( int variant )
+{
+	m_nWeaponVariant = variant;
+	m_bWeaponVariantAssigned = true;
+}
+
+void CWeaponSpawn::SelectWeaponVariant()
+{
+	if ( m_bWeaponVariantAssigned || !GetWeaponID() )
+		return;
+
+	if ( GetWeaponID() == TERROR_WEAPON_MELEE )
+		SetWeaponVariant( WeaponVariants_ChooseForSpawn( CFmtStr( "melee:%s", GetWeaponSubType() ).Access() ) );
+	else
+		SetWeaponVariant( WeaponVariants_ChooseForSpawn( WeaponIDToClassname( GetWeaponID() ) ) );
+}
+
 void CWeaponSpawn::SetSpawnModel()
 {
+	// Shared by fixed/factory spawns and configurable spawns once the
+	// Director (or spawn_without_director) has selected the weapon type.
+	SelectWeaponVariant();
 	SetModel( GetWeaponModel() );
 	SetViewOffset( WorldSpaceCenter() - GetAbsOrigin() );
 	if ( m_nWeaponSkin >= 0 )
@@ -398,7 +426,7 @@ CBaseEntity *CWeaponSpawn::GiveToPlayer( CTerrorPlayer *pPlayer, const char *psz
 {
 	// S:29E410: skin changes happen after acquisition, not on the prototype.
 	CHandle< CWeaponSpawn > self = this;
-	CBaseEntity *pItem = pPlayer->GiveNamedItemInternal( pszClassname, 0, true, NULL );
+	CBaseEntity *pItem = pPlayer->GiveNamedItemInternal( pszClassname, 0, true, NULL, GetWeaponVariant() );
 	CWeaponSpawn *pSpawn = self.Get();
 	if ( pSpawn && pSpawn->m_nWeaponSkin >= 0 && pItem && pItem->GetBaseAnimating() )
 	{
@@ -520,6 +548,10 @@ bool CWeaponSpawn::AbsorbDroppedWeapon( CTerrorWeapon *pWeapon )
 	// S:2A0520. HasAnyUpgrades deliberately retains its mutating gun mask.
 	if ( !pWeapon || ( ( !HasSpawnFlags( SF_WEAPON_SPAWN_ABSORB_ANY ) || pWeapon->GetSlot() == 2 ) && pWeapon->HasAnyUpgrades() ) || ( pWeapon->GetSlot() == 2 && m_initialItemCount == m_itemCount ) )
 		return false;
+	// Absorbing destroys the weapon entity. Only merge a matching cosmetic
+	// identity, so a different variant can still be picked up unchanged.
+	if ( pWeapon->GetWeaponVariant() != GetWeaponVariant() )
+		return false;
 	if ( !m_itemCount )
 	{
 		RegisterVisibility();
@@ -624,7 +656,7 @@ void CWeaponSpawnConfigurable::Spawn()
 		if ( !m_bSpawnWithoutDirector )
 			TerrorGameRules()->RegisterWeaponSpawn( this );
 	}
-	if ( m_bSpawnWithoutDirector )
+	if ( m_bSpawnWithoutDirector && !m_weaponID )
 		SelectWeapon();
 	if ( self.Get() )
 		BaseClass::Spawn();
@@ -954,6 +986,9 @@ void CWeaponScavengeItemSpawn::InputSpawnScavengeItem( inputdata_t &inputdata )
 		return;
 	}
 	m_hItem = pItem;
+	CWeaponCSBase *pWeapon = dynamic_cast< CWeaponCSBase * >( pItem );
+	if ( pWeapon )
+		pWeapon->SetWeaponVariant( GetWeaponVariant() );
 	pItem->SetAbsOrigin( GetAbsOrigin() );
 	pItem->SetAbsAngles( GetAbsAngles() );
 	pItem->Precache();

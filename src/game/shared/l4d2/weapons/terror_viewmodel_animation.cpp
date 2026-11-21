@@ -43,7 +43,13 @@ void CBaseViewModel::SendTerrorLayerSequence( int nSequence )
 		if ( mapped != sequenceActivity )
 			nSequence = SelectWeightedSequence( mapped );
 	}
+#ifdef CLIENT_DLL
+	// Prediction compares against the server's sequence number, but the
+	// visible layer (below) uses the locally selected studio sequence.
+	m_nLayerSequence = ToNetworkLayerSequence( nSequence );
+#else
 	m_nLayerSequence = nSequence;
+#endif
 	m_nLayer = layer;
 	m_flLayerStartTime = gpGlobals->curtime;
 	m_nAnimationParity = ( m_nAnimationParity + 1 ) & 7;

@@ -2,6 +2,7 @@
 #include "cbase.h"
 #ifdef CLIENT_DLL
 #include "l4d2/player/c_terrorplayer.h"
+#include "l4d2/weapons/weapon_variants.h"
 #else
 #include "l4d2/player/terrorplayer.h"
 #include "l4d2/effects/survivor_death_model.h"
@@ -116,12 +117,20 @@ bool CItemDefibrillator::Deploy()
 
 const char *CItemDefibrillator::GetWorldModel() const
 {
+#ifdef CLIENT_DLL
+	return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, "models/w_models/weapons/w_eq_defibrillator.mdl" );
+#else
 	return "models/w_models/weapons/w_eq_defibrillator.mdl";
+#endif
 }
 
 const char *CItemDefibrillator::GetPlayerModel() const
 {
+#ifdef CLIENT_DLL
+	return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_PLAYER, "models/w_models/weapons/w_eq_defibrillator_paddles.mdl" );
+#else
 	return "models/w_models/weapons/w_eq_defibrillator_paddles.mdl";
+#endif
 }
 
 CBaseEntity *CItemDefibrillator::FindActionTarget( CTerrorPlayer *pPlayer, int mode )

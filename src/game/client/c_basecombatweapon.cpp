@@ -23,6 +23,10 @@
 #include "datacache/imdlcache.h"
 #include "l4d2/terror_shareddefs.h"
 #include "cliententitylist.h"
+#include "l4d2/weapons/weapon_csbase.h"
+#include "l4d2/weapons/weapon_variants.h"
+#include "cl_animevent.h"
+#include "eventlist.h"
 #include <xmmintrin.h>
 #endif
 // memdbgon must be the last include file in a .cpp file!!!
@@ -36,6 +40,44 @@ ClientWeaponList_t &GetClientWeaponList()
 
 #endif
 #if defined( L4D2 )
+// Only replacements are registered, never the normal fallback path. A model
+// index of -1 is invalid; client-only dynamic indices are negative, too.
+int WeaponVariants_ClientModelIndex( int variant, const char *role, const char *vanillaPath )
+{
+	if ( variant == WEAPON_VARIANT_NONE || !vanillaPath || !*vanillaPath )
+		return -1;
+	const char *path = WeaponVariants_ResolveModel( variant, role, vanillaPath );
+	if ( !V_stricmp( path, vanillaPath ) )
+		return -1;
+
+	int index = modelinfo->GetModelIndex( path );
+	if ( index == -1 )
+		index = modelinfo->RegisterDynamicModel( path, true );
+	return index != -1 && modelinfo->GetModel( index ) ? index : -1;
+}
+
+const char *WeaponVariants_ClientOriginalModelPath( const char *path, char *originalPath, int originalPathSize )
+{
+	static const char prefix[] = "models/variants/";
+	if ( path && !V_strnicmp( path, prefix, sizeof( prefix ) - 1 ) )
+	{
+		// The cache preserves the original path relative to models/.
+		const char *relative = V_strchr( path + sizeof( prefix ) - 1, '/' );
+		if ( relative )
+		{
+			V_snprintf( originalPath, originalPathSize, "models%s", relative );
+			return originalPath;
+		}
+	}
+	return path;
+}
+
+static int ResolveWeaponModelIndex( int variant, const char *role, int vanillaIndex )
+{
+	const model_t *model = modelinfo->GetModel( vanillaIndex );
+	return model ? WeaponVariants_ClientModelIndex( variant, role, modelinfo->GetModelName( model ) ) : -1;
+}
+
 extern ConVar cl_viewmodelsclonedasworld;
 
 #if defined( _MSC_VER )
@@ -62,7 +104,15 @@ private:
 C_CombatWeaponClone::C_CombatWeaponClone( C_BaseCombatWeapon *weapon )
 {
 	m_pOriginalWeapon = weapon;
-	InitializeAsClientEntity( weapon->GetWorldModel(), false ); // Native ignores bool.
+	const char *path = weapon->GetWorldModel();
+	const int modelIndex = weapon->GetWorldModelIndex();
+	const model_t *model = modelinfo->GetModel( modelIndex );
+	if ( model && modelIndex != weapon->m_iWorldModelIndex )
+	{
+		SetRenderModelIndexOverride( modelIndex );
+		path = modelinfo->GetModelName( model );
+	}
+	InitializeAsClientEntity( path, false );
 }
 
 C_CombatWeaponClone::~C_CombatWeaponClone()
@@ -91,7 +141,10 @@ void C_CombatWeaponClone::UpdateClone()
 	m_flPlaybackRate = static_cast< float >( m_pOriginalWeapon->GetEffectivePlaybackRate() );
 	const int worldIndex = m_pOriginalWeapon->GetWorldModelIndex();
 	if ( GetModelIndex() != worldIndex )
-		SetModelIndex( m_pOriginalWeapon->GetWorldModelIndex() ); // Genuine SECOND query.
+	{
+		SetRenderModelIndexOverride( worldIndex != m_pOriginalWeapon->m_iWorldModelIndex ? worldIndex : -1 );
+		SetModelIndex( worldIndex );
+	}
 	CStudioHdr *studio = GetModelPtr();
 	if ( studio && m_pOriginalWeapon->GetSequence() >= studio->GetNumSeq() )
 		SetSequence( 0 );
@@ -230,17 +283,59 @@ void C_BaseCombatWeapon::OnRestore()
 }
 
 #if defined( L4D2 )
-#if defined( L4D2 )
 int C_BaseCombatWeapon::GetWorldModelIndex()
 {
-	return m_iWorldModelIndex;
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	if ( !weapon || weapon->GetWeaponVariant() == WEAPON_VARIANT_NONE )
+		return m_iWorldModelIndex;
+
+	// A held pistol/defibrillator may have a distinct third-person model.
+	if ( GetOwner() )
+	{
+		const char *path = weapon->GetPlayerModel();
+		char original[MAX_PATH];
+		const char *vanillaPath = WeaponVariants_ClientOriginalModelPath( path, original, sizeof( original ) );
+		int index = WeaponVariants_ClientModelIndex( weapon->GetWeaponVariant(), WEAPON_VARIANT_ROLE_PLAYER, vanillaPath );
+		if ( index == -1 )
+			index = WeaponVariants_ClientModelIndex( weapon->GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, vanillaPath );
+		if ( index != -1 )
+			return index;
+	}
+	const int index = ResolveWeaponModelIndex( weapon->GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, m_iWorldModelIndex );
+	return index != -1 ? index : m_iWorldModelIndex;
 }
-#else
-int C_BaseCombatWeapon::GetWorldModelIndex()
+
+void C_BaseCombatWeapon::ValidateModelIndex()
 {
-	return m_iWorldModelIndex;
+	int index = -1;
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	if ( weapon && weapon->GetWeaponVariant() != WEAPON_VARIANT_NONE )
+	{
+		const int variant = weapon->GetWeaponVariant();
+		const int vanillaIndex = GetModelIndex();
+		if ( GetOwner() && vanillaIndex != m_iWorldModelIndex )
+		{
+			// A held weapon's hidden view model drives weapon timing. Leave it
+			// vanilla; C_BaseViewModel resolves the separate first-person entity.
+			index = ResolveWeaponModelIndex( variant, WEAPON_VARIANT_ROLE_PLAYER, vanillaIndex );
+		}
+		if ( index == -1 )
+			index = ResolveWeaponModelIndex( variant, WEAPON_VARIANT_ROLE_WORLD, vanillaIndex );
+	}
+	SetRenderModelIndexOverride( index );
+	BaseClass::ValidateModelIndex();
 }
-#endif
+
+void C_BaseCombatWeapon::FireEvent( const Vector &origin, const QAngle &angles, int event, const char *options )
+{
+	if ( event == AE_CL_PLAYSOUND || event == AE_CL_STOPSOUND || event == CL_EVENT_SOUND )
+	{
+		const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+		if ( weapon && options )
+			options = WeaponVariants_ResolveSound( weapon->GetWeaponVariant(), options );
+	}
+	BaseClass::FireEvent( origin, angles, event, options );
+}
 #else
 int C_BaseCombatWeapon::GetWorldModelIndex( void )
 {
@@ -267,11 +362,31 @@ int C_BaseCombatWeapon::GetWorldModelIndex( void )
 #if defined( _MSC_VER )
 #pragma float_control( precise, on, push )
 #endif
+void C_BaseCombatWeapon::SetWeaponClientModel( const char *path, const char *role )
+{
+	char original[MAX_PATH];
+	const char *vanillaPath = WeaponVariants_ClientOriginalModelPath( path, original, sizeof( original ) );
+	const int vanillaIndex = vanillaPath ? modelinfo->GetModelIndex( vanillaPath ) : -1;
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	const int index = weapon && role ? WeaponVariants_ClientModelIndex( weapon->GetWeaponVariant(), role, vanillaPath ) : -1;
+	SetRenderModelIndexOverride( index );
+	SetModelIndex( vanillaIndex );
+}
+
 void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 {
 	UpdateVisibility();
 	BaseClass::OnDataChanged( updateType );
 	C_BasePlayer *owner = ToBasePlayer( GetOwnerEntity() );
+	// The weapon's variant can change without a delta on its viewmodel entity.
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	if ( owner && weapon )
+	{
+		C_BaseViewModel *viewModel = owner->GetViewModel( m_nViewModelIndex, false );
+		if ( viewModel && viewModel->GetWeapon() == this &&
+			( weapon->GetWeaponVariant() != WEAPON_VARIANT_NONE || viewModel->HasRenderModelIndexOverride() ) )
+			viewModel->ValidateModelIndex();
+	}
 	if ( owner && owner->IsLocalPlayer() )
 	{
 		if ( m_iState != WEAPON_NOT_CARRIED && m_iOldState == WEAPON_NOT_CARRIED && ShouldDrawPickup() )
@@ -288,7 +403,7 @@ void C_BaseCombatWeapon::OnDataChanged( DataUpdateType_t updateType )
 	if ( !removeClone )
 	{
 		const int worldIndex = GetWorldModelIndex();
-		removeClone = GetModelIndex() == worldIndex;
+		removeClone = GetRenderModelIndex() == worldIndex;
 		if ( !removeClone )
 			removeClone = IsDormant();
 	}
@@ -767,7 +882,12 @@ int C_BaseCombatWeapon::CalcOverrideModelIndex()
 	}
 	else
 	{
+#if defined( L4D2 )
+		// Prediction restore must not write the presentation index into m_nModelIndex.
+		return m_iWorldModelIndex;
+#else
 		return GetWorldModelIndex();
+#endif
 	}
 }
 
@@ -796,12 +916,25 @@ void C_BaseCombatWeapon::GetToolRecordingState( KeyValues *msg )
 	if ( !ToolsEnabled() )
 		return;
 
+#if defined( L4D2 )
+	const int originalRenderIndex = GetRenderModelIndex();
+	const int worldRenderIndex = GetWorldModelIndex();
+	const bool changedRenderModel = originalRenderIndex != worldRenderIndex;
+	const bool hadRenderOverride = HasRenderModelIndexOverride();
+	if ( changedRenderModel )
+	{
+		SetRenderModelIndexOverride( worldRenderIndex );
+		SetModelPointer( modelinfo->GetModel( worldRenderIndex ) );
+	}
+#else
 	int nModelIndex = GetModelIndex();
 	int nWorldModelIndex = GetWorldModelIndex();
 	if ( nModelIndex != nWorldModelIndex )
 	{
 		SetModelIndex( nWorldModelIndex );
 	}
+
+#endif
 
 	BaseClass::GetToolRecordingState( msg );
 
@@ -820,10 +953,18 @@ void C_BaseCombatWeapon::GetToolRecordingState( KeyValues *msg )
 		}
 	}
 
+#if defined( L4D2 )
+	if ( changedRenderModel )
+	{
+		SetRenderModelIndexOverride( hadRenderOverride ? originalRenderIndex : -1 );
+		SetModelPointer( modelinfo->GetModel( originalRenderIndex ) );
+	}
+#else
 	if ( nModelIndex != nWorldModelIndex )
 	{
 		SetModelIndex( nModelIndex );
 	}
+#endif
 }
 #if defined( L4D2 )
 bool C_BaseCombatWeapon::IsCarriedByObservedPlayer()
@@ -857,7 +998,7 @@ void C_BaseCombatWeapon::UpdateOnRemove()
 int C_BaseCombatWeapon::LookupAttachment( const char *attachmentName )
 {
 	const int worldModelIndex = GetWorldModelIndex();
-	if ( worldModelIndex != GetModelIndex() )
+	if ( worldModelIndex != GetRenderModelIndex() )
 	{
 		const model_t *worldModel = modelinfo->GetModel( worldModelIndex );
 		if ( worldModel )
@@ -934,7 +1075,17 @@ void C_BaseCombatWeapon::EnsureCorrectRenderingModel()
 	C_BasePlayer *local = C_BasePlayer::GetLocalPlayer();
 	if ( !local || local != GetOwner() || local->ShouldDrawLocalPlayerModel() )
 	{
-		SetModelIndex( static_cast< short >( GetWorldModelIndex() ) );
+		const int worldIndex = GetWorldModelIndex();
+		if ( worldIndex == m_iWorldModelIndex )
+		{
+			SetRenderModelIndexOverride( -1 );
+			SetModelIndex( m_iWorldModelIndex );
+		}
+		else
+		{
+			SetRenderModelIndexOverride( worldIndex );
+			SetModelPointer( modelinfo->GetModel( worldIndex ) );
+		}
 		CStudioHdr *header = GetModelPtr();
 		if ( header && header->IsValid() && GetSequence() >= header->GetNumSeq() )
 			SetSequence( 0 );

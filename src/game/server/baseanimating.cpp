@@ -258,7 +258,8 @@ void *SendProxy_ClientSideAnimation( const SendProp *pProp, const void *pStruct,
 
 // SendTable stuff.
 IMPLEMENT_SERVERCLASS_ST(CBaseAnimating, DT_BaseAnimating)
-	SendPropInt		( SENDINFO(m_nForceBone), 8, 0 ),
+	// Signed: retain the no-bone sentinel (-1) and every 8-bit index.
+	SendPropInt		( SENDINFO(m_nForceBone), MAXSTUDIOBONEBITS + 1, 0 ),
 	SendPropVector	( SENDINFO(m_vecForce), -1, SPROP_NOSCALE ),
 
 	SendPropInt		( SENDINFO(m_nSkin), ANIMATION_SKIN_BITS),
@@ -3172,6 +3173,13 @@ void CBaseAnimating::LockStudioHdr()
 		if ( hStudioHdr != MDLHANDLE_INVALID )
 		{
 			const studiohdr_t *pStudioHdr = mdlcache->LockStudioHdr( hStudioHdr );
+			if ( pStudioHdr && pStudioHdr->numbones > MAXSTUDIOBONES )
+			{
+				Warning( "CBaseAnimating::LockStudioHdr: rejecting %s with %d bones (maximum supported is %d)\n",
+					pStudioHdr->pszName(), pStudioHdr->numbones, MAXSTUDIOBONES );
+				mdlcache->UnlockStudioHdr( hStudioHdr );
+				return;
+			}
 			CStudioHdr *pStudioHdrContainer = NULL;
 			if ( !m_pStudioHdr )
 			{
@@ -3222,7 +3230,8 @@ void CBaseAnimating::UnlockStudioHdr()
 CBoneCache *CBaseAnimating::GetBoneCache( void )
 {
 	CStudioHdr *pStudioHdr = GetModelPtr( );
-	Assert(pStudioHdr);
+	if ( !pStudioHdr )
+		return NULL;
 
 	CBoneCache *pcache = Studio_GetBoneCache( m_boneCacheHandle );
 	int boneMask = BONE_USED_BY_HITBOX | BONE_USED_BY_ATTACHMENT;

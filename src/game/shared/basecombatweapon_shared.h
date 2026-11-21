@@ -573,6 +573,11 @@ public:
 	WEAPON_FILE_INFO_HANDLE	GetWeaponFileInfoHandle() { return m_hWeaponFileInfo; }
 
 	virtual int				GetWorldModelIndex( void );
+#if defined( L4D2 )
+	virtual void ValidateModelIndex() OVERRIDE;
+	virtual void FireEvent( const Vector &origin, const QAngle &angles, int event, const char *options ) OVERRIDE;
+	void SetWeaponClientModel( const char *path, const char *role );
+#endif
 
 	virtual void			GetToolRecordingState( KeyValues *msg );
 

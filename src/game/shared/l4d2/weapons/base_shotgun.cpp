@@ -136,6 +136,8 @@ void CBaseShotgun::PlayReloadStage( Activity activity, TerrorPlayerAnimEvent eve
 	if ( !prediction->InPrediction() || prediction->IsFirstTimePredicted() )
 #endif
 		pPlayer->DoTerrorAnimationEvent( event, nShells );
+	// The remote reload sound is server-only; the first-person sequence's
+	// client sound event resolves the local variant, including the pump.
 	EmitTerrorWeaponReloadSound( pPlayer, this, event == TERROR_ANIMEVENT_RELOAD_END ? RELOAD_PUMP : RELOAD );
 	SendWeaponAnim( activity );
 	SetPlaybackRate( 1.0f / GetReloadAnimationScale() );

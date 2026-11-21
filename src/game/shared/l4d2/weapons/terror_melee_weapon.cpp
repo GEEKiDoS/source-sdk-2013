@@ -9,6 +9,7 @@
 #include "baseviewmodel_shared.h"
 #include "c_rumble.h"
 #include "datacache/imdlcache.h"
+#include "l4d2/weapons/weapon_variants.h"
 #else
 #include "l4d2/player/terrorplayer.h"
 #include "l4d2/player/terror_lagcompensation.h"
@@ -236,12 +237,20 @@ void CTerrorMeleeWeapon::Spawn()
 const char *CTerrorMeleeWeapon::GetViewModel( int viewmodelindex ) const
 {
 	const CMeleeWeaponInfo *pInfo = GetMeleeInfo();
+#ifdef CLIENT_DLL
+	if ( pInfo )
+		return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_VIEW, pInfo->m_szViewModel );
+#endif
 	return pInfo ? pInfo->m_szViewModel : BaseClass::GetViewModel( 0 );
 }
 
 const char *CTerrorMeleeWeapon::GetWorldModel() const
 {
 	const CMeleeWeaponInfo *pInfo = GetMeleeInfo();
+#ifdef CLIENT_DLL
+	if ( pInfo )
+		return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, pInfo->m_szPlayerModel );
+#endif
 	return pInfo ? pInfo->m_szPlayerModel : BaseClass::GetViewModel( 0 );
 }
 

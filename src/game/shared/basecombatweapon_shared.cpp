@@ -48,6 +48,8 @@
 
 #if defined( CLIENT_DLL ) && defined( L4D2 )
 #include "c_baseviewmodel.h"
+#include "l4d2/weapons/weapon_csbase.h"
+#include "l4d2/weapons/weapon_variants.h"
 extern ConVar z_tracer_particles;
 #endif
 
@@ -227,7 +229,11 @@ void CBaseCombatWeapon::Spawn( void )
 
 	if ( GetWorldModel() )
 	{
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		SetWeaponClientModel( GetWorldModel(), WEAPON_VARIANT_ROLE_WORLD );
+#else
 		SetModel( GetWorldModel() );
+#endif
 	}
 
 #if !defined( CLIENT_DLL )
@@ -318,6 +324,15 @@ void CBaseCombatWeapon::Precache( void )
 		// Precache models (preload to avoid hitch)
 		m_iViewModelIndex = 0;
 		m_iWorldModelIndex = 0;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		char originalView[MAX_PATH], originalWorld[MAX_PATH];
+		const char *viewModel = WeaponVariants_ClientOriginalModelPath( GetViewModel(), originalView, sizeof( originalView ) );
+		const char *worldModel = WeaponVariants_ClientOriginalModelPath( GetWorldModel(), originalWorld, sizeof( originalWorld ) );
+		if ( viewModel && viewModel[0] )
+			m_iViewModelIndex = CBaseEntity::PrecacheModel( viewModel );
+		if ( worldModel && worldModel[0] )
+			m_iWorldModelIndex = CBaseEntity::PrecacheModel( worldModel );
+#else
 		if ( GetViewModel() && GetViewModel()[0] )
 		{
 			m_iViewModelIndex = CBaseEntity::PrecacheModel( GetViewModel() );
@@ -326,6 +341,7 @@ void CBaseCombatWeapon::Precache( void )
 		{
 			m_iWorldModelIndex = CBaseEntity::PrecacheModel( GetWorldModel() );
 		}
+#endif
 
 		// Precache sounds, too
 		for ( int i = 0; i < NUM_SHOOT_SOUND_TYPES; ++i )
@@ -1108,14 +1124,23 @@ void CBaseCombatWeapon::Equip( CBaseCombatCharacter *pOwner )
 
 	if ( pOwner->IsPlayer() )
 	{
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		// The weapon entity uses the vanilla view model for prediction/timing.
+		SetWeaponClientModel( GetViewModel(), NULL );
+#else
 		SetModel( GetViewModel() );
+#endif
 	}
 	else
 	{
 		// Make the weapon ready as soon as any NPC picks it up.
 		m_flNextPrimaryAttack = gpGlobals->curtime;
 		m_flNextSecondaryAttack = gpGlobals->curtime;
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+		SetWeaponClientModel( GetWorldModel(), WEAPON_VARIANT_ROLE_WORLD );
+#else
 		SetModel( GetWorldModel() );
+#endif
 	}
 }
 
@@ -1275,6 +1300,14 @@ void CBaseCombatWeapon::SendViewModelAnim( int nSequence )
 
 	SetViewModel();
 	Assert( vm->ViewModelIndex() == m_nViewModelIndex );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	if ( GetModel() != vm->GetModel() && ( HasRenderModelIndexOverride() || vm->HasRenderModelIndexOverride() ) )
+	{
+		nSequence = vm->MapPredictedWeaponSequence( GetModelPtr(), nSequence );
+		if ( nSequence < 0 )
+			return;
+	}
+#endif
 	vm->SendViewModelMatchingSequence( nSequence );
 }
 
@@ -2267,6 +2300,11 @@ void CBaseCombatWeapon::WeaponSound( WeaponSound_t sound_type, float soundtime /
 
 	// If we have some sounds from the weapon classname.txt file, play a random one of them
 	const char *shootsound = GetShootSound( sound_type );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	if ( weapon && shootsound )
+		shootsound = WeaponVariants_ResolveSound( weapon->GetWeaponVariant(), shootsound );
+#endif
 	if ( !shootsound || !shootsound[0] )
 		return;
 
@@ -2330,6 +2368,11 @@ void CBaseCombatWeapon::StopWeaponSound( WeaponSound_t sound_type )
 
 	// If we have some sounds from the weapon classname.txt file, play a random one of them
 	const char *shootsound = GetShootSound( sound_type );
+#if defined( CLIENT_DLL ) && defined( L4D2 )
+	const CWeaponCSBase *weapon = dynamic_cast< const CWeaponCSBase * >( this );
+	if ( weapon && shootsound )
+		shootsound = WeaponVariants_ResolveSound( weapon->GetWeaponVariant(), shootsound );
+#endif
 	if ( !shootsound || !shootsound[0] )
 		return;
 	

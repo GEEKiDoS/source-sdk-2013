@@ -4,6 +4,7 @@
 #include "igameevents.h"
 #ifdef CLIENT_DLL
 #include "l4d2/player/c_terrorplayer.h"
+#include "l4d2/weapons/weapon_variants.h"
 #define CPainPills C_PainPills
 #else
 #include "l4d2/player/terrorplayer.h"
@@ -77,7 +78,11 @@ bool CPainPills::Deploy()
 {
 	CTerrorPlayer *pPlayer = GetTerrorPlayerOwner();
 	if ( pPlayer )
+#ifdef CLIENT_DLL
+		pPlayer->EmitSound( WeaponVariants_ResolveSound( GetWeaponVariant(), "PainPills.Deploy" ) );
+#else
 		pPlayer->EmitSound( "PainPills.Deploy" );
+#endif
 	return BaseClass::Deploy();
 }
 

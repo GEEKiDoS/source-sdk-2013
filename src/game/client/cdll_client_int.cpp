@@ -38,6 +38,7 @@
 #include "clienteffectprecachesystem.h"
 #include "soundenvelope.h"
 #if defined( L4D2 )
+#include "l4d2/studiorender_bone_limit.h"
 #include "l4d2/sound/terror_music.h"
 #include "l4d2/effects/terror_fx_shared.h"
 #include "l4d2/effects/terror_materials.h"
@@ -101,6 +102,7 @@
 #ifdef L4D2
 #include "toolframework/ienginetool.h"
 #include "l4d2/clientmode_terror.h"
+#include "l4d2/weapons/weapon_variants.h"
 #endif
 #include "hltvcamera.h"
 #if defined( REPLAY_ENABLED )
@@ -975,6 +977,8 @@ int CHLClient::Init( CreateInterfaceFn appSystemFactory, CreateInterfaceFn physi
 	ConnectTier2Libraries( &appSystemFactory, 1 );
 	ConnectTier3Libraries( &appSystemFactory, 1 );
 #if defined( L4D2 )
+	StudioRender_InitBoneLimit();
+
 	// Default to non-VAC operation unless explicitly overridden. This is not an
 	// offline-authentication bypass: insecure Internet servers still check Steam tickets.
 	if ( !CommandLine()->FindParm( "-secure" ) && !CommandLine()->FindParm( "-insecure" ) )
@@ -2098,6 +2102,11 @@ static void OnEffectStringTableChanged( void *object, INetworkStringTable *strin
 	PrecacheEffect( newString );
 	RequestCacheUsedMaterials();
 }
+
+static void OnWeaponVariantsStringTableChanged( void *, INetworkStringTable *, int, const char *, const void * )
+{
+	WeaponVariants_SyncNetworkTable();
+}
 #endif
 
 void OnMaterialStringTableChanged( void *object, INetworkStringTable *stringTable, int stringNumber, const char *newString, void const *newData )
@@ -2199,6 +2208,14 @@ void CHLClient::InstallStringTableCallback( const char *tableName )
 	{
 		g_pStringTableServerMapCycle = networkstringtable->FindTable( tableName );
 	}
+#ifdef L4D2
+	else if ( !Q_strcasecmp( tableName, WEAPON_VARIANTS_TABLE ) )
+	{
+		INetworkStringTable *pTable = networkstringtable->FindTable( tableName );
+		pTable->SetStringChangedCallback( NULL, OnWeaponVariantsStringTableChanged );
+		WeaponVariants_SyncNetworkTable();
+	}
+#endif
 #ifdef TF_CLIENT_DLL
 	else if ( !Q_strcasecmp( tableName, "ServerPopFiles" ) )
 	{

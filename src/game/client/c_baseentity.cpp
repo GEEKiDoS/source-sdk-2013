@@ -1180,6 +1180,9 @@ void C_BaseEntity::Clear( void )
 	m_vecViewOffset.Init();
 	m_vecBaseVelocity.Init();
 	m_nModelIndex = 0;
+#if defined( L4D2 )
+	m_nRenderModelIndexOverride = -1;
+#endif
 	m_flAnimTime = 0;
 	m_flSimulationTime = 0;
 	SetSolid( SOLID_NONE );
@@ -2026,7 +2029,11 @@ void C_BaseEntity::SetNetworkAngles( const QAngle& ang )
 void C_BaseEntity::SetModelIndex( int index_ )
 {
 	m_nModelIndex = index_;
+#if defined( L4D2 )
+	const model_t *pModel = modelinfo->GetModel( GetRenderModelIndex() );
+#else
 	const model_t *pModel = modelinfo->GetModel( m_nModelIndex );
+#endif
 	SetModelPointer( pModel );
 }
 
@@ -6367,6 +6374,14 @@ void C_BaseEntity::OnPostRestoreData()
 	// If our model index has changed, then make sure it's reflected in our model pointer.
 	// (Mostly superseded by new modelindex delta check in RestoreData, but I'm leaving it
 	// because it might be band-aiding any other missed calls to SetModelByIndex --henryg)
+#if defined( L4D2 )
+	if ( m_nRenderModelIndexOverride != -1 )
+	{
+		MDLCACHE_CRITICAL_SECTION();
+		ValidateModelIndex();
+		return;
+	}
+#endif
 	if ( GetModel() != modelinfo->GetModel( GetModelIndex() ) )
 	{
 		MDLCACHE_CRITICAL_SECTION();

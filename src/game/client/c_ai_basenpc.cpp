@@ -167,7 +167,7 @@ void C_AI_BaseNPC::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *d
 	GetRagdollCurSequenceWithDeathPose( this, delta1, gpGlobals->curtime, m_iDeathPose, m_iDeathFrame );
 	const float createTime = static_cast< float >( PhysGetSyncCreateTime() );
 	if ( createTime == gpGlobals->curtime )
-		SetupBones( current, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+		SetupBones( current, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
 	else
 		ForceSetupBonesAtTime( current, createTime );
 }

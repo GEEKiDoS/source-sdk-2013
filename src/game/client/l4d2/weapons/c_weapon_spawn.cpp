@@ -3,6 +3,7 @@
 #include "l4d2/weapons/c_weapon_spawn.h"
 #include "l4d2/player/c_terrorplayer.h"
 #include "l4d2/weapons/terror_weapon.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "l4d2/effects/terror_fx_shared.h"
 #include "ammodef.h"
 
@@ -14,6 +15,8 @@ static ConVar weapon_spawn_fade_distance( "weapon_spawn_fade_distance", "1000", 
 IMPLEMENT_CLIENTCLASS_DT( C_WeaponSpawn, DT_WeaponSpawn, CWeaponSpawn )
 	RecvPropInt( RECVINFO( m_weaponID ) ),
 	RecvPropFloat( RECVINFO( m_flGlowRange ) ),
+	// Signedness and width come from the server SendPropInt (unsigned, 12 bits).
+	RecvPropInt( RECVINFO( m_nWeaponVariant ), SPROP_UNSIGNED ),
 END_RECV_TABLE()
 
 IMPLEMENT_CLIENTCLASS_DT( C_WeaponAmmoSpawn, DT_WeaponAmmoSpawn, CWeaponAmmoSpawn )
@@ -21,6 +24,24 @@ END_RECV_TABLE()
 
 IMPLEMENT_CLIENTCLASS_DT( C_WeaponScavengeItemSpawn, DT_ScavengeItemSpawn, CWeaponScavengeItemSpawn )
 END_RECV_TABLE()
+
+C_WeaponSpawn::C_WeaponSpawn()
+	: m_nWeaponVariant( WEAPON_VARIANT_NONE )
+{
+}
+
+void C_WeaponSpawn::ValidateModelIndex()
+{
+	int index = -1;
+	if ( GetWeaponVariant() != WEAPON_VARIANT_NONE )
+	{
+		const model_t *model = modelinfo->GetModel( GetModelIndex() );
+		if ( model )
+			index = WeaponVariants_ClientModelIndex( GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, modelinfo->GetModelName( model ) );
+	}
+	SetRenderModelIndexOverride( index );
+	BaseClass::ValidateModelIndex(); // Calls OnNewModel/fade setup if the render pointer changed.
+}
 
 int C_WeaponSpawn::ObjectCaps()
 {

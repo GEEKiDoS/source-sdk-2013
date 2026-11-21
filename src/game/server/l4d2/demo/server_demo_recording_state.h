@@ -36,9 +36,11 @@ struct ServerDemoBaseEntityState_t
 // They are not casts of target actor layout or the public client tool structs.
 struct ServerDemoBoneState_t
 {
+	// Native recording payload, independent of the live studio bone limit.
+	static constexpr int kMaxBones = 128;
 	unsigned short m_nNativePrefix;
 	unsigned short m_nBoneCountAndOwnership;
-	unsigned char m_BoneData[3588];
+	unsigned char m_BoneData[28 * kMaxBones + 4];
 };
 
 struct ServerDemoAnimatingState_t

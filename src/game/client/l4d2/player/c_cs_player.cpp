@@ -192,7 +192,7 @@ void C_CSPlayer::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *del
 	}
 	ForceSetupBonesAtTime( delta0, gpGlobals->curtime - boneDt );
 	GetRagdollCurSequenceWithDeathPose( this, delta1, gpGlobals->curtime, m_iDeathPose, m_iDeathFrame );
-	SetupBones( current, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+	SetupBones( current, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
 }
 #if defined( _MSC_VER )
 #pragma float_control( pop )

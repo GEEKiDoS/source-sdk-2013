@@ -20,6 +20,7 @@
 #include "l4d2/terror_message_text.h"
 #ifdef CLIENT_DLL
 #include "baseviewmodel_shared.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "particle_property.h"
 #include "particle_parse.h"
 #include "particles_new.h"
@@ -957,7 +958,8 @@ void EmitTerrorWeaponReloadSound( CTerrorPlayer *player, CWeaponCSBase *weapon, 
 	}
 	CBaseEntity::EmitSound( filter, weapon->entindex(), weapon->GetCSWpnData().aShootSounds[sound] );
 #endif
-	// The corresponding original client helper is a genuine nullsub.
+	// The owner and in-eye observers hear the viewmodel sound event instead.
+	// Do not emit a second client reload sound here (including shotgun stages).
 }
 
 #pragma float_control( precise, on, push )
@@ -1397,11 +1399,11 @@ static bool IsLocalGunShotSoundSuppressed( CTerrorPlayer *player )
 
 // C2F30F0: the actual shotgun sound path reached by the viewmodel event.
 static void EmitGunViewmodelShotSound( CTerrorPlayer *player, int playerIndex, WeaponSound_t sound,
-	const Vector &origin, const CTerrorWeaponInfo *info, float soundTime )
+	const Vector &origin, const CTerrorWeaponInfo *info, int weaponVariant, float soundTime )
 {
 	if ( !info )
 		return;
-	const char *name = info->aShootSounds[sound];
+	const char *name = WeaponVariants_ResolveSound( weaponVariant, info->aShootSounds[sound] );
 	if ( !name || !name[0] )
 		return;
 	CBroadcastRecipientFilter filter;
@@ -1438,7 +1440,7 @@ bool CTerrorGun::OnFireEvent( C_BaseViewModel *viewModel, const Vector &origin, 
 					const CTerrorWeaponInfo *info = GetTerrorWeaponInfo( GetWeaponID() );
 					const Vector &shootOrigin = owner->Weapon_ShootPosition();
 					const int playerIndex = owner->entindex();
-					EmitGunViewmodelShotSound( owner, playerIndex, SINGLE, shootOrigin, info, gpGlobals->curtime );
+					EmitGunViewmodelShotSound( owner, playerIndex, SINGLE, shootOrigin, info, GetWeaponVariant(), gpGlobals->curtime );
 					DelayLocalGunShotSound( owner );
 				}
 			}

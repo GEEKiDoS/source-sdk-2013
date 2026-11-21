@@ -6,6 +6,7 @@
 #endif
 #include "l4d2/mem_zero_on_new.h"
 #include "tier1/utlmap.h"
+#include "tier1/utlstring.h"
 #include "tier1/utlvector.h"
 #include "l4d2/gamerules/mapinfo.h"
 #include "l4d2/weapons/weapon_spawn.h"
@@ -77,6 +78,7 @@ private:
 		int weaponOrMeleeID;
 		int count;
 		int spawnFlags;
+		CUtlString weaponVariantKey;
 	};
 	struct SavedItemSet
 	{

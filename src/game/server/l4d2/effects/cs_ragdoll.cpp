@@ -12,7 +12,7 @@ IMPLEMENT_SERVERCLASS_ST_NOBASE( CCSRagdoll, DT_CSRagdoll )
 	SendPropVector( SENDINFO( m_vecRagdollOrigin ), -1, SPROP_COORD_MP ),
 	SendPropEHandle( SENDINFO( m_hPlayer ) ),
 	SendPropInt( SENDINFO( m_nModelIndex ), 12 ),
-	SendPropInt( SENDINFO( m_nForceBone ), 8 ),
+	SendPropInt( SENDINFO( m_nForceBone ), MAXSTUDIOBONEBITS + 1 ), // Signed, including -1.
 	SendPropVector( SENDINFO( m_vecForce ), -1, SPROP_NOSCALE ),
 	SendPropVector( SENDINFO( m_vecRagdollVelocity ), -1, SPROP_NOSCALE ),
 	SendPropInt( SENDINFO( m_iDeathPose ), 13 ),

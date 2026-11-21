@@ -70,6 +70,8 @@ void SaveWeapon( KeyValues *data, int id, CTerrorWeapon *weapon )
 	data->AddSubKey( saved );
 	saved->SetInt( "weaponID", id );
 	saved->SetInt( "weaponskin", weapon->m_nSkin );
+	if ( const char *key = WeaponVariants_GetKey( weapon->GetWeaponVariant() ) )
+		saved->SetString( "weaponVariantKey", key );
 	if ( id == TERROR_WEAPON_MELEE )
 	{
 		CTerrorMeleeWeapon *melee = dynamic_cast< CTerrorMeleeWeapon * >( weapon );
@@ -99,7 +101,8 @@ void RestoreWeapon( CTerrorPlayer *player, int id, KeyValues *data )
 	if ( !id ) return;
 	CFmtStr ordinaryName( "weapon_%s", WeaponIDToAlias( id ) );
 	const char *name = data->GetInt( "meleeWeapon", 0 ) ? data->GetString( "meleeWeaponName", "" ) : ordinaryName.Access();
-	CWeaponCSBase *weapon = dynamic_cast< CWeaponCSBase * >( player->GiveNamedItemInternal( name, data->GetInt( "reloaded", 0 ), true, NULL ) );
+	const WeaponVariantIndex_t variant = WeaponVariants_FindIndexByKey( data->GetString( "weaponVariantKey", "" ) );
+	CWeaponCSBase *weapon = dynamic_cast< CWeaponCSBase * >( player->GiveNamedItemInternal( name, data->GetInt( "reloaded", 0 ), true, NULL, variant ) );
 	if ( !weapon ) { Warning( "Couldn't give unknown weapon %d\n", id ); return; }
 	weapon->m_nSkin = data->GetInt( "weaponskin", 0 );
 	CTerrorGun *gun = weapon->GetTerrorGun();

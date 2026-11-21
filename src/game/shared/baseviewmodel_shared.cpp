@@ -12,6 +12,7 @@
 #include "animation.h"
 #include "l4d2/weapons/terror_weapon.h"
 #include "l4d2/terror_shareddefs.h"
+#include "l4d2/weapons/weapon_variants.h"
 #endif
 #if defined( L4D2 ) && !defined( CLIENT_DLL )
 #include "l4d2/weapons/terror_weapon.h"
@@ -80,6 +81,10 @@ CBaseViewModel::CBaseViewModel()
 	m_nOldAnimationParity = 0;
 	SetRenderWithViewModels( true ); // Native507, Move's SOLE actual root owner.
 	m_iCameraAttachment = -1;
+	m_nReceivedMainSequence = -1;
+	m_nReceivedLayerSequence = 0;
+	m_bReceivedMainSequencePending = false;
+	m_bRefreshVariantLayer = false;
 #else
 	m_nOldAnimationParity = 0;
 	m_EntClientFlags |= ENTCLIENTFLAG_ALWAYS_INTERPOLATE;
@@ -359,7 +364,13 @@ void CBaseViewModel::SetWeaponModel( const char *modelName, CBaseCombatWeapon *w
 		m_hWeapon = weapon;
 	// Resolved-NULL equality deliberately preserves an already-invalid stale
 	// raw handle; do NOT change this to an unconditional assignment/extra reset.
-	SetModel( modelName );
+	char original[MAX_PATH];
+	const char *vanillaPath = WeaponVariants_ClientOriginalModelPath( modelName, original, sizeof( original ) );
+	const int vanillaIndex = vanillaPath ? modelinfo->GetModelIndex( vanillaPath ) : -1;
+	const CWeaponCSBase *terrorWeapon = dynamic_cast< const CWeaponCSBase * >( weapon );
+	const int variantIndex = terrorWeapon ? WeaponVariants_ClientModelIndex( terrorWeapon->GetWeaponVariant(), WEAPON_VARIANT_ROLE_VIEW, vanillaPath ) : -1;
+	SetRenderModelIndexOverride( variantIndex );
+	SetModelIndex( vanillaIndex );
 	MDLCACHE_CRITICAL_SECTION();
 	CStudioHdr *model = GetModelPtr();
 	if ( model && model->IsValid() )
@@ -749,6 +760,12 @@ static void RecvProxy_ViewModelEffects( const CRecvProxyData *pData, void *pStru
 	static_cast< CBaseViewModel * >( pStruct )->SetEffects( pData->m_Value.m_Int & ~EF_NODRAW );
 }
 
+static void RecvProxy_ViewModelLayerSequence( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	RecvProxy_Int32ToInt32( pData, pStruct, pOut );
+	static_cast< CBaseViewModel * >( pStruct )->ReceiveLayerSequence( pData->m_Value.m_Int );
+}
+
 // Whole C226F0. Generic real handle decoding FIRST; preserve layer0. This does
 // NOT compare old/new weapons, reset main cycle or write m_flAnimTime.
 static void RecvProxy_Weapon( const CRecvProxyData *pData, void *pStruct, void *pOut )
@@ -828,7 +845,7 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	RecvPropInt		(RECVINFO(m_nBody)),
 	RecvPropInt		(RECVINFO(m_nSequence), 0, RecvProxy_SequenceNum ),
 #if defined( L4D2 )
-	RecvPropInt( RECVINFO( m_nLayerSequence ) ),
+	RecvPropInt( RECVINFO( m_nLayerSequence ), 0, RecvProxy_ViewModelLayerSequence ),
 	RecvPropInt( RECVINFO( m_nLayer ) ),
 #endif
 	RecvPropInt		(RECVINFO(m_nViewModelIndex)),
@@ -896,6 +913,9 @@ END_PREDICTION_DATA()
 void RecvProxy_SequenceNum( const CRecvProxyData *pData, void *pStruct, void *pOut )
 {
 	CBaseViewModel *model = (CBaseViewModel *)pStruct;
+#if defined( L4D2 )
+	model->ReceiveMainSequence( pData->m_Value.m_Int );
+#else
 	if (pData->m_Value.m_Int != model->GetSequence())
 	{
 		MDLCACHE_CRITICAL_SECTION();
@@ -904,6 +924,7 @@ void RecvProxy_SequenceNum( const CRecvProxyData *pData, void *pStruct, void *pO
 		model->m_flAnimTime = gpGlobals->curtime;
 		model->SetCycle(0);
 	}
+#endif
 }
 
 //-----------------------------------------------------------------------------

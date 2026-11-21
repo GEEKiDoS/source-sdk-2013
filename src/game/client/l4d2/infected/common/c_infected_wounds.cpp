@@ -278,8 +278,8 @@ void C_Infected::EmitGibs( C_BaseAnimating *pSource, bool bEmitParticles )
 			if ( !pGib )
 				return;
 			pGib->AddEffects( EF_NOSHADOW | EF_NORECEIVESHADOW );
-			matrix3x4_t sourceDelta0[128], sourceCurrent[128];
-			matrix3x4_t gibDelta0[128], gibCurrent[128];
+			matrix3x4_t sourceDelta0[MAXSTUDIOBONES], sourceCurrent[MAXSTUDIOBONES];
+			matrix3x4_t gibDelta0[MAXSTUDIOBONES], gibCurrent[MAXSTUDIOBONES];
 			GetRagdollBoneDeltaArrays( sourceDelta0, sourceCurrent, 0.1f );
 			pGib->SetModel( cutout.m_szGibModel[m_nNextGib] );
 

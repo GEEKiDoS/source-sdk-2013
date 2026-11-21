@@ -8,6 +8,7 @@
 #include "items.h"
 #include "l4d2/weapons/terror_melee_weapon_parse.h"
 #include "l4d2/weapons/response_rules_weapon_source.h"
+#include "l4d2/weapons/weapon_variants.h"
 #include "l4d2/entities/visibility_monitor.h"
 #include "tier1/utlvector.h"
 
@@ -68,6 +69,8 @@ public:
 	void SetItemCount( int count ) { m_itemCount = count; }
 	int GetWeaponSkin() const { return m_nWeaponSkin; }
 	void SetWeaponSkin( int value ) { m_nWeaponSkin = value; }
+	int GetWeaponVariant() const { return m_nWeaponVariant; }
+	void SetWeaponVariant( int variant );
 	void SetGlowRange( float value ) { m_flGlowRange = value; }
 	virtual int GetUseType( CBaseEntity *user ) OVERRIDE;
 	const char *GetWeaponName() const;
@@ -82,11 +85,16 @@ protected:
 	void RetireEmptySpawn();
 
 	CNetworkVar( int, m_weaponID );
+	CNetworkVar( int, m_nWeaponVariant );
 	CNetworkVar( float, m_flGlowRange );
 	int m_itemCount;
 	int m_nWeaponSkin;
 	int m_initialItemCount;
 	bool m_bReplacement;
+
+private:
+	void SelectWeaponVariant();
+	bool m_bWeaponVariantAssigned;
 };
 
 class CWeaponSpawnConfigurable : public CWeaponSpawn

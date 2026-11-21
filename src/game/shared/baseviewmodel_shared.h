@@ -152,6 +152,12 @@ public:
 
 #if defined( L4D2 )
 	virtual CStudioHdr *OnNewModel() OVERRIDE;
+	virtual void ValidateModelIndex() OVERRIDE;
+	int RestoreData( const char *context, int slot, int type ) OVERRIDE;
+	void ReceiveMainSequence( int sequence );
+	void ReceiveLayerSequence( int sequence ) { m_nReceivedLayerSequence = sequence; }
+	int MapPredictedWeaponSequence( CStudioHdr *weaponModel, int sequence );
+	int ToNetworkLayerSequence( int sequence );
 	virtual void CalcViewModelCamera( Vector &origin, QAngle &angles, float &fov );
 	virtual unsigned char OverrideAlphaModulation( unsigned char alpha ) OVERRIDE;
 	virtual int GetMuzzleFlashAttachment( bool dual, bool right );
@@ -241,6 +247,14 @@ private:
 	int m_nClientViewModelState; // Native3060; genuine private32-bit ctor-1.
 	int m_iCameraAttachment; // Native3064; genuine ctor-1/model callback writer.
 	QAngle m_angViewModelCamera; // Native3068..3076; constructor write omitted.
+	int m_nReceivedMainSequence;
+	int m_nMappedMainSequence = -1; // Authoritative base pose in the local render model.
+	int m_nReceivedLayerSequence;
+	bool m_bReceivedMainSequencePending;
+	bool m_bRefreshVariantLayer;
+	int MapNetworkedSequence( int sequence );
+	void ApplyReceivedMainSequence();
+	void UpdateReceivedLayer();
 #endif
 #endif
 

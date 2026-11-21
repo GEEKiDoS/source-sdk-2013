@@ -3638,7 +3638,7 @@ void C_BasePlayer::ForceSetupBonesAtTimeFakeInterpolation( matrix3x4_t *bones, f
 	const Vector temporaryOrigin( velocity.x * offset + origin.x,
 		velocity.y * offset + origin.y, velocity.z * offset + origin.z );
 	SetLocalOrigin( temporaryOrigin );
-	SetupBones( bones, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime + offset );
+	SetupBones( bones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, gpGlobals->curtime + offset );
 	m_flCycle = cycle;
 	SetLocalOrigin( origin );
 }
@@ -3685,7 +3685,7 @@ void C_BasePlayer::GetRagdollInitBoneArrays( matrix3x4_t *delta0, matrix3x4_t *d
 	ForceSetupBonesAtTimeFakeInterpolation( delta1, 0.0f );
 	const float createTime = static_cast< float >( PhysGetSyncCreateTime() );
 	if ( createTime == gpGlobals->curtime )
-		SetupBones( current, 128, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
+		SetupBones( current, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, gpGlobals->curtime );
 	else
 		ForceSetupBonesAtTimeFakeInterpolation( current, createTime - gpGlobals->curtime );
 }

@@ -17,6 +17,7 @@
 #include "l4d2/player/terror_playeranimstate.h"
 #ifndef CLIENT_DLL
 #include "l4d2/director/zombie_spawn.h"
+#include "l4d2/weapons/terror_melee_weapon.h"
 #include "te_effect_dispatch.h"
 #endif
 #include <xmmintrin.h>
@@ -145,10 +146,12 @@ IMPLEMENT_NETWORKCLASS_ALIASED( WeaponCSBase, DT_WeaponCSBase )
 BEGIN_NETWORK_TABLE( CWeaponCSBase, DT_WeaponCSBase )
 #ifdef CLIENT_DLL
 	RecvPropInt( RECVINFO( m_iExtraPrimaryAmmo ) ),
+	RecvPropInt( RECVINFO( m_nWeaponVariant ) ),
 #else
 	SendPropExclude( "DT_AnimTimeMustBeFirst", "m_flAnimTime" ),
 	SendPropExclude( "DT_BaseAnimating", "m_nSequence" ),
 	SendPropInt( SENDINFO( m_iExtraPrimaryAmmo ), 32 ),
+	SendPropInt( SENDINFO( m_nWeaponVariant ), WEAPON_VARIANT_NETWORK_BITS, SPROP_UNSIGNED ),
 #endif
 END_NETWORK_TABLE()
 
@@ -180,6 +183,7 @@ static CUtlVector< CWeaponCSBase * > g_TerrorWeapons; // Native SERVER83A6F8 onl
 
 CWeaponCSBase::CWeaponCSBase()
 {
+	m_nWeaponVariant = WEAPON_VARIANT_NONE;
 #ifdef CLIENT_DLL
 	SetPredictionEligible( true ); // C430C0; server equivalent is genuine nullsub_8.
 #endif
@@ -191,6 +195,7 @@ CWeaponCSBase::CWeaponCSBase()
 #ifndef CLIENT_DLL
 	g_TerrorWeapons.AddToTail( this );
 	m_bForcePickup = false; // S5380, NO client state or matching client virtual.
+	m_bWeaponVariantAssigned = false;
 #else
 	m_bCSAutoReloadAttempted = false; // C2520 only, real CS ctor store.
 #endif
@@ -205,9 +210,27 @@ CWeaponCSBase::~CWeaponCSBase()
 #endif
 }
 
+void CWeaponCSBase::SetWeaponVariant( int variant )
+{
+	m_nWeaponVariant = variant;
+#ifndef CLIENT_DLL
+	m_bWeaponVariantAssigned = true;
+#endif
+}
+
 #ifndef CLIENT_DLL
 void CWeaponCSBase::Spawn()
 {
+	// Bare world weapons bypass CWeaponSpawn. Inventory creation and
+	// transition restore assign explicitly, including WEAPON_VARIANT_NONE.
+	if ( !m_bWeaponVariantAssigned )
+	{
+		const CTerrorMeleeWeapon *melee = dynamic_cast< const CTerrorMeleeWeapon * >( this );
+		if ( melee )
+			SetWeaponVariant( WeaponVariants_ChooseForSpawn( CFmtStr( "melee:%s", melee->GetMeleeWeaponScriptName() ).Access() ) );
+		else
+			SetWeaponVariant( WeaponVariants_ChooseForSpawn( GetClassname() ) );
+	}
 	BaseClass::Spawn(); // S04CC40 first.
 	CollisionProp()->UseTriggerBounds( true, 0.5f );
 	SetCollisionGroup( COLLISION_GROUP_WEAPON ); // original value11.
@@ -806,10 +829,14 @@ void CWeaponCSBase::ProcessMuzzleFlashEvent()
 #ifndef CLIENT_DLL
 CBaseEntity *CWeaponCSBase::Respawn()
 {
-	CBaseEntity *pNewWeapon = CBaseEntity::Create( GetClassname(),
+	CBaseEntity *pNewWeapon = CBaseEntity::CreateNoSpawn( GetClassname(),
 		g_pGameRules->VecWeaponRespawnSpot( this ), GetAbsAngles(), GetOwner() );
 	if ( pNewWeapon )
 	{
+		CWeaponCSBase *pWeapon = dynamic_cast< CWeaponCSBase * >( pNewWeapon );
+		if ( pWeapon )
+			pWeapon->SetWeaponVariant( GetWeaponVariant() );
+		DispatchSpawn( pNewWeapon );
 		pNewWeapon->AddEffects( EF_NODRAW );
 		pNewWeapon->SetTouch( NULL );
 		pNewWeapon->SetThink( &CWeaponCSBase::AttemptToMaterialize );

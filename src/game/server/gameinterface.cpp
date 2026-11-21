@@ -171,6 +171,7 @@ IUploadGameStats *gamestatsuploader = NULL;
 #include "l4d2/director/terror_director.h"
 #include "l4d2/director/zombiemanager.h"
 #include "l4d2/ui/instructor/tutor.h"
+#include "l4d2/weapons/weapon_variants.h"
 #endif
 
 // memdbgon must be the last include file in a .cpp file!!!
@@ -1709,6 +1710,11 @@ void CServerGameDLL::CreateNetworkStringTables( void )
 	Assert( GetParticleSystemIndex( "error" ) == 0 );
 
 	CreateNetworkStringTables_GameRules();
+
+#if defined( L4D2 )
+	networkstringtable->CreateStringTable( WEAPON_VARIANTS_TABLE, WEAPON_VARIANTS_TABLE_MAX );
+	WeaponVariants_SyncNetworkTable();
+#endif
 
 	// Set up save/load utilities for string tables
 	g_VguiScreenStringOps.Init( g_pStringTableVguiScreen );

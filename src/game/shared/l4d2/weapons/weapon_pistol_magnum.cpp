@@ -7,6 +7,7 @@
 #ifdef CLIENT_DLL
 #include "l4d2/player/c_terrorplayer.h"
 #include "baseviewmodel_shared.h"
+#include "l4d2/weapons/weapon_variants.h"
 #endif
 #ifdef L4D2
 #include "precache_register.h"
@@ -89,12 +90,20 @@ void CMagnumPistol::Precache()
 
 const char *CMagnumPistol::GetWorldModel() const
 {
+#ifdef CLIENT_DLL
+	return WeaponVariants_ResolveModel( GetWeaponVariant(), WEAPON_VARIANT_ROLE_WORLD, GetTerrorWpnData().szWorldModel );
+#else
 	return GetTerrorWpnData().szWorldModel;
+#endif
 }
 
 const char *CMagnumPistol::GetPlayerModel() const
 {
+#ifdef CLIENT_DLL
+	return GetWorldModel();
+#else
 	return GetTerrorWpnData().szWorldModel;
+#endif
 }
 
 bool CMagnumPistol::Deploy()

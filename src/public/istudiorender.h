@@ -238,7 +238,9 @@ struct GetTriangles_MaterialBatch_t
 struct GetTriangles_Output_t
 {
 	CUtlVector<GetTriangles_MaterialBatch_t> m_MaterialBatches;
-	matrix3x4_t m_PoseToWorld[MAXSTUDIOBONES];
+	// The closed studiorender DLL writes this output; preserve its 128-bone ABI.
+	static constexpr int kPoseToWorldCount = 128;
+	matrix3x4_t m_PoseToWorld[kPoseToWorldCount];
 };
 
 

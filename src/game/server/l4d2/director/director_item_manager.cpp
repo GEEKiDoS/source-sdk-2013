@@ -939,6 +939,8 @@ void CDirectorItemManager::SaveRevisit()
 			if ( spawn )
 			{
 				item.count = spawn->GetItemCount();
+				if ( const char *key = WeaponVariants_GetKey( spawn->GetWeaponVariant() ) )
+					item.weaponVariantKey = key;
 				if ( type == 21 )
 					item.weaponOrMeleeID = spawn->GetWeaponID();
 			}
@@ -1034,6 +1036,7 @@ void CDirectorItemManager::RestoreRevisit( RevisitMap *map )
 				++healingItems;
 				break;
 			}
+			spawn->SetWeaponVariant( WeaponVariants_FindIndexByKey( item.weaponVariantKey.Get() ) );
 			DispatchSpawn( spawn );
 		}
 	}

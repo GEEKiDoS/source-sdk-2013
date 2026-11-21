@@ -79,14 +79,14 @@ Studio models are position independent, so the cache manager can move them.
 #define	MAXSTUDIOFLEXVERTS	1000
 #endif
 #define MAXSTUDIOSKINS		32		// total textures
-#define MAXSTUDIOBONES		128		// total bones actually used
+#define MAXSTUDIOBONES		256		// total bones actually used
 #define MAXSTUDIOFLEXDESC	1024	// maximum number of low level flexes (actual morph targets)
 #define MAXSTUDIOFLEXCTRL	96		// maximum number of flexcontrollers (input sliders)
 #define MAXSTUDIOPOSEPARAM	24
 #define MAXSTUDIOBONECTRLS	4
 #define MAXSTUDIOANIMBLOCKS 256
 
-#define MAXSTUDIOBONEBITS	7		// NOTE: MUST MATCH MAXSTUDIOBONES
+#define MAXSTUDIOBONEBITS	8		// NOTE: MUST MATCH MAXSTUDIOBONES
 
 // NOTE!!! : Changing this number also changes the vtx file format!!!!!
 #define MAX_NUM_BONES_PER_VERT 3
@@ -1245,7 +1245,7 @@ struct mstudioboneweight_t
 {
 	DECLARE_BYTESWAP_DATADESC();
 	float	weight[MAX_NUM_BONES_PER_VERT];
-	char	bone[MAX_NUM_BONES_PER_VERT]; 
+	unsigned char bone[MAX_NUM_BONES_PER_VERT];
 	byte	numbones;
 
 //	byte	material;
@@ -1854,7 +1854,7 @@ struct virtualmodel_t
 // 'thin' vertex data, used to do model decals (see Studio_CreateThinVertexes())
 struct thinModelVertices_t
 {
-	void Init( int numBoneInfluences, Vector *positions, unsigned short *normals, float *boneWeights, char *boneIndices )
+	void Init( int numBoneInfluences, Vector *positions, unsigned short *normals, float *boneWeights, unsigned char *boneIndices )
 	{
 		Assert( positions != NULL );
 		Assert( normals   != NULL );
@@ -1888,7 +1888,7 @@ struct thinModelVertices_t
 		Assert( ( boneWeights.numbones >= 1 ) && ( boneWeights.numbones <= m_numBoneInfluences ) );
 		int    numStoredWeights = max( 0, ( m_numBoneInfluences - 1 ) );
 		float *pBaseWeight	= m_boneWeights + vertIndex*numStoredWeights;
-		char  *pBaseIndex	= m_boneIndices + vertIndex*m_numBoneInfluences;
+		unsigned char *pBaseIndex	= m_boneIndices + vertIndex*m_numBoneInfluences;
 		for ( int i = 0; i < m_numBoneInfluences; i++ )
 		{
 			pBaseIndex[i] = boneWeights.bone[i];
@@ -1958,7 +1958,7 @@ private:
 		Assert( ( m_numBoneInfluences <= 0 ) || ( m_boneIndices != NULL ) );
 		int    numStoredWeights = max( 0, ( m_numBoneInfluences - 1 ) );
 		float *pBaseWeight	= m_boneWeights + vertIndex*numStoredWeights;
-		char  *pBaseIndex	= m_boneIndices + vertIndex*m_numBoneInfluences;
+		const unsigned char *pBaseIndex = m_boneIndices + vertIndex*m_numBoneInfluences;
 		float  sum			= 0.0f;
 		for (int i = 0;i < MAX_NUM_BONES_PER_VERT;i++)
 		{
@@ -1977,7 +1977,7 @@ private:
 
 	int				m_numBoneInfluences;// Number of bone influences per vertex, N
 	float			*m_boneWeights;		// This array stores (N-1) weights per vertex (unless N is zero)
-	char			*m_boneIndices;		// This array stores N indices per vertex
+	unsigned char	*m_boneIndices;		// This array stores N indices per vertex
 	Vector			*m_vecPositions;
 	unsigned short	*m_vecNormals;		// Normals are compressed into 16 bits apiece (see PackNormal_UBYTE4() )
 };

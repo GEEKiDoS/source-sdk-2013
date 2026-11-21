@@ -115,8 +115,12 @@ void CServerDemoFile::WriteBaseAnimating( KeyValues *message )
 {
 	ServerDemoAnimatingState_t *state = static_cast< ServerDemoAnimatingState_t * >( message->GetPtr( "baseanimating" ) );
 	if ( !state ) return;
-	m_pBuffer->Write( &state->m_nFieldMask, 8 );
 	unsigned long long mask = state->m_nFieldMask;
+	const int boneCount = ( mask & 0x100000 ) ? ( state->m_Bones.m_nBoneCountAndOwnership & 0x7FFF ) : 0;
+	// Keep the native recording layout and omit poses that cannot fit it.
+	if ( boneCount > ServerDemoBoneState_t::kMaxBones )
+		mask &= ~0x100000ULL;
+	m_pBuffer->Write( &mask, 8 );
 	if ( mask & 1 ) m_pBuffer->Write( &state->m_nSkin, 2 );
 	if ( mask & 2 ) m_pBuffer->Write( &state->m_nBody, 2 );
 	if ( mask & 4 ) m_pBuffer->Write( &state->m_nSequence, 2 );
@@ -129,7 +133,7 @@ void CServerDemoFile::WriteBaseAnimating( KeyValues *message )
 	if ( mask & 0x200 ) m_pBuffer->Write( &state->m_nFrameCount, 4 );
 	if ( mask & 0x100000 )
 	{
-		unsigned short bytes = (unsigned short)( 28 * ( state->m_Bones.m_nBoneCountAndOwnership & 0x7FFF ) + 2 );
+		unsigned short bytes = (unsigned short)( 28 * boneCount + 2 );
 		m_pBuffer->Write( &bytes, 2 );
 		m_pBuffer->Write( &state->m_Bones, bytes );
 	}

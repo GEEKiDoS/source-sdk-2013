@@ -69,6 +69,7 @@
 #if defined( L4D2 )
 #include "l4d2/infected/common/c_infected.h"
 #include "l4d2/effects/terror_materials.h"
+#include "l4d2/studiorender_bone_limit.h"
 #endif
 // memdbgon must be the last include file in a .cpp file!!!
 #if defined( L4D2 )
@@ -1218,10 +1219,15 @@ void C_BaseAnimating::LockStudioHdr()
 		m_hStudioHdr = MDLHANDLE_INVALID;
 		return;
 	}
-	if ( pStudioHdr->numbones > MAXSTUDIOBONES )
+#if defined( L4D2 )
+	const int nBoneLimit = StudioRender_GetBoneLimit();
+#else
+	const int nBoneLimit = 128; // Unpatched studiorender.
+#endif
+	if ( pStudioHdr->numbones > nBoneLimit )
 	{
 		Warning( "C_BaseAnimating::LockStudioHdr: rejecting %s with %d bones (maximum supported is %d)\n",
-			pStudioHdr->pszName(), pStudioHdr->numbones, MAXSTUDIOBONES );
+			pStudioHdr->pszName(), pStudioHdr->numbones, nBoneLimit );
 		mdlcache->UnlockStudioHdr( m_hStudioHdr );
 		m_hStudioHdr = MDLHANDLE_INVALID;
 		return;
@@ -1315,18 +1321,33 @@ CStudioHdr *C_BaseAnimating::OnNewModel()
 
 	m_AutoRefModelIndex.Clear();
 
-	if ( !GetModel() || modelinfo->GetModelType( GetModel() ) != mod_studio )
+	if ( !GetModel() )
 		return NULL;
+#if defined( L4D2 )
+	// A freshly registered client-only model has not been typed or loaded yet.
+	// Its first dynamic reference below starts the load.
+	if ( modelinfo->GetModelType( GetModel() ) != mod_studio &&
+		!( HasRenderModelIndexOverride() && IsClientOnlyModelIndex( GetRenderModelIndex() ) ) )
+		return NULL;
+#else
+	if ( modelinfo->GetModelType( GetModel() ) != mod_studio )
+		return NULL;
+#endif
 
 	// Reference (and thus start loading) dynamic model
 	int nNewIndex = m_nModelIndex;
+#if defined( L4D2 )
+	// The local presentation index can be a valid negative dynamic index.
+	nNewIndex = GetRenderModelIndex();
+#endif
+	const int nRenderIndex = nNewIndex;
 	if ( modelinfo->GetModel( nNewIndex ) != GetModel() )
 	{
 		// XXX what's authoritative? the model pointer or the model index? what a mess.
 		nNewIndex = modelinfo->GetModelIndex( modelinfo->GetModelName( GetModel() ) );
 		Assert( nNewIndex < 0 || modelinfo->GetModel( nNewIndex ) == GetModel() );
 		if ( nNewIndex < 0 )
-			nNewIndex = m_nModelIndex;
+			nNewIndex = nRenderIndex;
 	}
 
 	m_AutoRefModelIndex = nNewIndex;
@@ -5243,7 +5264,7 @@ void C_BaseAnimating::ForceSetupBonesAtTime( matrix3x4_t *bones, float time )
 	Interpolate( time );
 	if ( !m_bClientSideAnimation )
 	{
-		SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+		SetupBones( bones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, time );
 		return;
 	}
 	const float savedCycle = GetCycle(); // AFTER Interpolate, as in original.
@@ -5267,7 +5288,7 @@ void C_BaseAnimating::ForceSetupBonesAtTime( matrix3x4_t *bones, float time )
 	if ( cycle > 1.0f ) cycle = 1.0f;
 	else if ( cycle < 0.0f ) cycle = 0.0f;
 	SetCycle( cycle );
-	SetupBones( bones, 128, BONE_USED_BY_ANYTHING, time );
+	SetupBones( bones, MAXSTUDIOBONES, BONE_USED_BY_ANYTHING, time );
 	SetCycle( savedCycle );
 }
 #if defined( _MSC_VER )
@@ -5459,9 +5480,9 @@ C_BaseAnimating *C_BaseAnimating::BecomeRagdollOnClient( int category )
 		// Original sets source sequence AFTER creating its copy, before197.
 		if ( GetSequence() == -1 )
 			SetSequence( 0 );
-		matrix3x4_t delta0[128];
-		matrix3x4_t delta1[128];
-		matrix3x4_t current[128];
+		matrix3x4_t delta0[MAXSTUDIOBONES];
+		matrix3x4_t delta1[MAXSTUDIOBONES];
+		matrix3x4_t current[MAXSTUDIOBONES];
 		const float boneDt = 0.1f;
 		GetRagdollInitBoneArrays( delta0, delta1, current, boneDt );
 		// Do not branch on SetupBones/array/Init success and do not release on a
@@ -5604,7 +5625,11 @@ void C_BaseAnimating::OnDataChanged( DataUpdateType_t updateType )
 
 	// UNDONE: The base class does this as well.  So this is kind of ugly
 	// but getting a model by index is pretty cheap...
+#if defined( L4D2 )
+	const model_t *pModel = modelinfo->GetModel( GetRenderModelIndex() );
+#else
 	const model_t *pModel = modelinfo->GetModel( GetModelIndex() );
+#endif
 	
 	if ( pModel != GetModel() )
 	{

@@ -103,6 +103,15 @@ public:
 		m_data->SetInt( "currentMagazine", weapon->Clip1() );
 		m_data->SetInt( "extraAmmo", weapon->GetExtraPrimaryAmmo() );
 		m_data->SetInt( "weaponskin", weapon->m_nSkin );
+		if ( const char *key = WeaponVariants_GetKey( weapon->GetWeaponVariant() ) )
+			m_data->SetString( "weaponVariantKey", key );
+	}
+	virtual void BeforeSpawn( CBaseEntity *entity ) OVERRIDE
+	{
+		SavedEntity::BeforeSpawn( entity );
+		CWeaponCSBase *weapon = dynamic_cast< CWeaponCSBase * >( entity );
+		if ( weapon )
+			weapon->SetWeaponVariant( WeaponVariants_FindIndexByKey( m_data->GetString( "weaponVariantKey", "" ) ) );
 	}
 	virtual void AfterSpawn( CBaseEntity *entity ) OVERRIDE
 	{
@@ -134,7 +143,7 @@ public:
 	}
 	virtual void BeforeSpawn( CBaseEntity *entity ) OVERRIDE
 	{
-		SavedEntity::BeforeSpawn( entity );
+		SavedWeapon::BeforeSpawn( entity );
 		CTerrorGun *gun = dynamic_cast< CTerrorGun * >( entity );
 		if ( gun && !m_data->GetInt( "reloaded", 0 ) ) gun->m_inInitialPickup = true;
 	}
@@ -165,7 +174,7 @@ public:
 		CTerrorMeleeWeapon *weapon = dynamic_cast< CTerrorMeleeWeapon * >( entity );
 		MeleeWeaponInfoHandle_t handle = m_data->GetInt( "melee_weapon", 0 );
 		if ( weapon && handle != INVALID_MELEE_WEAPON_INFO_HANDLE ) weapon->SetMeleeWeaponInfo( handle );
-		SavedEntity::BeforeSpawn( entity );
+		SavedWeapon::BeforeSpawn( entity );
 	}
 };
 class SavedWeaponSpawn : public SavedEntity
@@ -180,6 +189,8 @@ public:
 		m_data->SetString( "model", STRING( spawn->GetModelName() ) );
 		m_data->SetInt( "weaponID", spawn->GetWeaponID() );
 		m_data->SetInt( "weaponskin", spawn->GetWeaponSkin() );
+		if ( const char *key = WeaponVariants_GetKey( spawn->GetWeaponVariant() ) )
+			m_data->SetString( "weaponVariantKey", key );
 	}
 	virtual void BeforeSpawn( CBaseEntity *entity ) OVERRIDE
 	{
@@ -191,6 +202,7 @@ public:
 			spawn->SetModelName( AllocPooledString( GetModel() ) );
 			spawn->SetWeaponID( m_data->GetInt( "weaponID", 0 ) );
 			spawn->SetWeaponSkin( m_data->GetInt( "weaponskin", 0 ) );
+			spawn->SetWeaponVariant( WeaponVariants_FindIndexByKey( m_data->GetString( "weaponVariantKey", "" ) ) );
 		}
 		else
 		{

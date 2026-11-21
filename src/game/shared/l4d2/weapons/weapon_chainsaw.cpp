@@ -11,6 +11,7 @@
 #include "soundenvelope.h"
 #ifdef CLIENT_DLL
 #include "c_recipientfilter.h"
+#include "l4d2/weapons/weapon_variants.h"
 #else
 #include "recipientfilter.h"
 #endif
@@ -218,6 +219,7 @@ void CChainsaw::StartSound( CSoundPatch *&sound, const char *name )
 	StopSound( sound );
 #ifdef CLIENT_DLL
 	CPASFilter filter( owner->GetAbsOrigin() );
+	name = WeaponVariants_ResolveSound( GetWeaponVariant(), name );
 #else
 	CPASAttenuationFilter filter( owner, 0.8f );
 #endif
