@@ -37,7 +37,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
 		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom exposure / summed layers and lens flare scale" )
-		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity (screened into the bloom)" )
+		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 1 0]", "Lens dirt, veiling and native bloom sample mip" )
 		SHADER_PARAM( LENS, SHADER_PARAM_TYPE_VEC4, "[0 0 0 1]", "Brown-Conrady k1, k2, lateral CA, zoom-to-fill" )
 		SHADER_PARAM( CAMERA, SHADER_PARAM_TYPE_VEC4, "[1 1 0 1]", "Tan half FOV x/y, vignette strength, radius" )
 		SHADER_PARAM( SENSOR, SHADER_PARAM_TYPE_VEC4, "[0 8 0.001 0]", "Sensor strength, full well, black level and noise" )
@@ -144,7 +144,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				nFlags |= kFlagSkipBloom;
 			const float output[4] = { params[OUTSCALE]->GetFloatValue(), static_cast<float>( nFlags ), static_cast<float>( params[DEBUGVIEW]->GetIntValue() ), static_cast<float>( nLookups ) };
 			const float lutWeights[4] = { info.m_flDefaultWeight, info.m_pLookupWeights[0], info.m_pLookupWeights[1], info.m_pLookupWeights[2] };
-			const float lutWeight4[4] = { info.m_pLookupWeights[3], params[OUTPUT]->GetVecValue()[1], 0.0f, 0.0f };
+			const float lutWeight4[4] = { info.m_pLookupWeights[3], params[OUTPUT]->GetVecValue()[1], pPost[3], 0.0f };
 			DX12SetPixelShaderConstant( 0, params[PARAMS0]->GetVecValue() );
 			DX12SetPixelShaderConstant( 1, dirtPeak );
 			DX12SetPixelShaderConstant( 2, output );

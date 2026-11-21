@@ -130,11 +130,12 @@ public:
 
 	ID3D12Device *NativeDevice() const { return m_pNativeDevice; }
 
-	void SetNativeResourceVersion( uint64_t nVersion, size_t nBytes, ID3D12Device *pDevice )
+	void SetNativeResourceVersion( uint64_t nVersion, size_t nBytes, ID3D12Device *pDevice, D3D12_GPU_VIRTUAL_ADDRESS address )
 	{
 		m_nNativeResourceVersion = nVersion;
 		m_nNativeResourceBytes = nBytes;
 		m_pNativeDevice = pDevice;
+		m_nNativeAddress = address;
 	}
 
 	// Last transient upload of this buffer's contents: reusable while version, fence and epoch match.
@@ -155,11 +156,10 @@ public:
 		m_nRetainedFence = fence;
 		m_nRetainedEpoch = epoch;
 		m_pRetainedResource = m_pResource.Get();
-		m_nRetainedAddress = m_pResource->GetGPUVirtualAddress();
 	}
 
-	// GPU address of the retained resource; valid while IsRetainedFor holds.
-	D3D12_GPU_VIRTUAL_ADDRESS RetainedAddress() const { return m_nRetainedAddress; }
+	// Includes the immutable slice offset within the backing resource.
+	D3D12_GPU_VIRTUAL_ADDRESS NativeAddress() const { return m_nNativeAddress; }
 
 	void MarkModified();
 
@@ -182,7 +182,7 @@ protected:
 	size_t m_nNativeResourceBytes = 0;
 	ID3D12Device *m_pNativeDevice = nullptr;
 	ID3D12Resource *m_pRetainedResource = nullptr;
-	D3D12_GPU_VIRTUAL_ADDRESS m_nRetainedAddress = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_nNativeAddress = 0;
 	uint64_t m_nRetainedFence = 0, m_nRetainedEpoch = 0;
 	TransientUploadDX12 m_TransientUpload{};
 	mutable uint32_t m_SwapOffsets[MAX_VERTEX_INPUTS_DX12] = {};
@@ -240,11 +240,12 @@ public:
 
 	ID3D12Device *NativeDevice() const { return m_pNativeDevice; }
 
-	void SetNativeResourceVersion( uint64_t nVersion, size_t nBytes, ID3D12Device *pDevice )
+	void SetNativeResourceVersion( uint64_t nVersion, size_t nBytes, ID3D12Device *pDevice, D3D12_GPU_VIRTUAL_ADDRESS address )
 	{
 		m_nNativeResourceVersion = nVersion;
 		m_nNativeResourceBytes = nBytes;
 		m_pNativeDevice = pDevice;
+		m_nNativeAddress = address;
 	}
 
 	bool IsRetainedFor( uint64_t fence, uint64_t epoch ) const { return m_nRetainedFence == fence && m_nRetainedEpoch == epoch && m_pRetainedResource == m_pResource.Get(); }
@@ -254,11 +255,10 @@ public:
 		m_nRetainedFence = fence;
 		m_nRetainedEpoch = epoch;
 		m_pRetainedResource = m_pResource.Get();
-		m_nRetainedAddress = m_pResource->GetGPUVirtualAddress();
 	}
 
-	// GPU address of the retained resource; valid while IsRetainedFor holds.
-	D3D12_GPU_VIRTUAL_ADDRESS RetainedAddress() const { return m_nRetainedAddress; }
+	// Includes the immutable slice offset within the backing resource.
+	D3D12_GPU_VIRTUAL_ADDRESS NativeAddress() const { return m_nNativeAddress; }
 
 	struct TransientUploadDX12
 	{
@@ -285,7 +285,7 @@ private:
 	size_t m_nNativeResourceBytes = 0;
 	ID3D12Device *m_pNativeDevice = nullptr;
 	ID3D12Resource *m_pRetainedResource = nullptr;
-	D3D12_GPU_VIRTUAL_ADDRESS m_nRetainedAddress = 0;
+	D3D12_GPU_VIRTUAL_ADDRESS m_nNativeAddress = 0;
 	uint64_t m_nRetainedFence = 0, m_nRetainedEpoch = 0;
 	TransientUploadDX12 m_TransientUpload{};
 	bool m_bModifyingWritable = false;

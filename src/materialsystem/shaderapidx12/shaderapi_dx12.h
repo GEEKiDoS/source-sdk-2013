@@ -513,6 +513,7 @@ public:
 		uint32 highresPage = 0xffffffffu;
 		uint64 highresLayoutGeneration = 0;
 		int width = 0, height = 0, depth = 1, mipLevels = 1, copies = 1;
+		int firstSourceMip = 0;
 		int currentCopy = 0;
 		bool switchNeeded = false;
 		size_t bytesPerCopy = 0;
@@ -1201,6 +1202,11 @@ private:
 	struct OcclusionQueryDX12;
 	CUtlVector<OcclusionQueryDX12 *> m_OcclusionQueries;
 	CUtlVector<OcclusionQueryDX12 *> m_ActiveOcclusionQueries;
+	enum { OCCLUSION_PAGE_BYTES = 65536, OCCLUSION_PAGE_SLOTS = OCCLUSION_PAGE_BYTES / sizeof( uint64_t ), OCCLUSION_MAX_PAGES = 4 };
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_OcclusionReadbackPages[OCCLUSION_MAX_PAGES];
+	CUtlVector<int> m_OcclusionReadbackFreeSlots;
+	int m_nOcclusionReadbackSlots = 0;
+	void RecycleOcclusionQuery( OcclusionQueryDX12 *query );
 	bool AddOcclusionQuerySegment( OcclusionQueryDX12 *query );
 	bool BeginOcclusionQuerySegment( OcclusionQueryDX12 *query );
 	void EndOcclusionQuerySegment( OcclusionQueryDX12 *query );

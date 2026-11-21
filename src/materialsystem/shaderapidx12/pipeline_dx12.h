@@ -75,7 +75,7 @@ struct PipelineKeyDX12
 class CPipelineCacheDX12
 {
 public:
-	bool Initialize( ID3D12Device *pDevice );
+	bool Initialize( ID3D12Device *pDevice, bool lowTier );
 	void Shutdown();
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 
@@ -90,6 +90,16 @@ public:
 	// Borrowed upload resource, retained through nRetireFence; offset is a multiple of nStride.
 	bool UploadStructured( const void *pData, size_t nBytes, uint32_t nStride, uint64_t nRetireFence, ID3D12Resource **ppResource, uint64_t *pOffset );
 	void RetainExternalResource( ID3D12Resource *pResource, uint64_t nRetireFence );
+	// Recording-owner append cursors only. Each consumer owns the backing resource,
+	// retains it through its draw fence, and binds the returned slice address.
+	struct StaticBufferPage
+	{
+		Microsoft::WRL::ComPtr<ID3D12Resource> resource;
+		size_t used = 0;
+	};
+	bool CopyStaticBuffer( CCommandRecorderDX12 *list, StaticBufferPage *page, ID3D12Resource *source,
+		size_t sourceOffset, size_t bytes, D3D12_RESOURCE_STATES drawState, const char *name,
+		Microsoft::WRL::ComPtr<ID3D12Resource> &resource, D3D12_GPU_VIRTUAL_ADDRESS &address );
 	bool EnsureGeometryBuffer( CCommandRecorderDX12 *pList, CVertexBufferDX12 &buffer, size_t nUsedBytes, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
 	bool EnsureIndexBuffer( CCommandRecorderDX12 *pList, CIndexBufferDX12 &buffer, size_t nUsedBytes, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress );
 
@@ -336,6 +346,9 @@ private:
 		uint64_t lastUseFence = 0;
 		bool destroyed = false;
 	};
+
+	bool m_bVramFit = false;
+	StaticBufferPage m_VertexPage, m_IndexPage;
 
 	struct UploadPage
 	{

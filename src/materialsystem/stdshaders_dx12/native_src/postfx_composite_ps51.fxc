@@ -13,6 +13,7 @@ cbuffer PostComposite : register( b1, space1 )
 {
 	// x scene scale, y bloom exposure / summed layers, z lens flare scale
 	float4 gSceneBloomFlare; // @legacy ps:c0
+	// w is the native bloom sample mip.
 	float4 gDirtPeak; // @legacy ps:c1
 	float4 gOutput; // @legacy ps:c2
 	float4 gLutWeights; // @legacy ps:c3
@@ -273,7 +274,7 @@ float3 BodycamEdgeOptics( float2 sceneSize, float2 center, float2 outputRay, flo
 	float mipBlend = saturate( log2( stretch ) ) * smoothstep( 0.0, 2.0, availablePx );
 	[branch] if ( mipBlend > 0.0 )
 	{
-		float3 prefiltered = SampleMip( gPrefilter, sceneUv, 1 ) / max( gSceneBloomFlare.x, 1e-6 );
+		float3 prefiltered = SampleMip( gPrefilter, sceneUv, (int)gDirtPeak.w ) / max( gSceneBloomFlare.x, 1e-6 );
 		const float3 lumaWeights = float3( 0.2126, 0.7152, 0.0722 );
 		c = max( 0.0, c + ( dot( prefiltered, lumaWeights ) - dot( c, lumaWeights ) ) * mipBlend );
 	}
@@ -360,7 +361,7 @@ float4 BodycamComposite( PS_INPUT input )
 	[branch] if ( field > rho0 && ( (uint)gOutput.y & 8 ) == 0 )
 	{
 		// The mip contains a sum of unit-gain blur levels. Split direct and scattered energy.
-		float3 scatter = SampleMip( gBloom, sceneUv, 1 );
+		float3 scatter = SampleMip( gBloom, sceneUv, (int)gDirtPeak.w );
 		float weight = gDirtPeak.z * smoothstep( rho0, 0.86, field );
 		c = c * ( 1.0 - weight * gSceneBloomFlare.w ) + scatter * weight;
 	}
@@ -427,7 +428,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 	// two in-quad neighbors have already read their centers. Exchange before
 	// the velocity branch so moving lanes also supply their unblurred colors.
 	float3 center = 0, inner = 0;
-	[branch] if ( gDirtPeak.w > 0 )
+	[branch] if ( gLutWeight4.z > 0 )
 	{
 		center = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
 		inner = QuadReadAcrossX( center ) + QuadReadAcrossY( center );
@@ -465,7 +466,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 	}
 	// Sharpen scene detail once, before the nonlinear curve. Bound the correction
 	// relative to the center to avoid a bright neighbor ringing into a dark pixel.
-	[branch] if ( !moving && gDirtPeak.w > 0 )
+	[branch] if ( !moving && gLutWeight4.z > 0 )
 	{
 		int2 pixel = int2( input.projPos.xy );
 		uint w, h;
@@ -475,7 +476,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 		float3 ring = inner + gScene.Load( int3( clamp( pixel + int2( outer.x, 0 ), 0, edge ), 0 ) ).rgb +
 			gScene.Load( int3( clamp( pixel + int2( 0, outer.y ), 0, edge ), 0 ) ).rgb;
 		float3 detail = clamp( center - 0.25 * ring, -0.5 * center, 0.5 * center );
-		scene += detail * gDirtPeak.w * gSceneBloomFlare.x;
+		scene += detail * gLutWeight4.z * gSceneBloomFlare.x;
 	}
 	float3 bloomT = 0;
 	float base = 0;
@@ -486,7 +487,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 		base = field.a;
 	}
 	else if ( ( flags & 8 ) == 0 )
-		bloomT = BloomTonemap( max( SampleMip( gBloom, sceneUv, (uint)gSceneBloomFlare.w ), 0 ) * gSceneBloomFlare.y );
+		bloomT = BloomTonemap( max( SampleMip( gBloom, sceneUv, (uint)gDirtPeak.w ), 0 ) * gSceneBloomFlare.y );
 	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
 	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
