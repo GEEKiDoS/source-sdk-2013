@@ -38,6 +38,7 @@ cases = [
     ('steady_q2', '', ''),
     ('steady_q1', 'mat_postfx_bloom_quality 1', 'mat_postfx_bloom_quality 2'),
     ('steady_q0', 'mat_postfx_bloom_quality 0', 'mat_postfx_bloom_quality 2'),
+    ('lut', 'ent_fire pf_lut Enable', 'ent_fire pf_lut Disable'),
     ('contrast', controller('SetLocalContrastStrength', 2), controller('SetLocalContrastStrength', .5)),
     ('grain', controller('SetGrainStrength', 4), controller('SetGrainStrength', 1)),
     ('top', controller('SetTopVignetteStrength', 3), controller('SetTopVignetteStrength', 1)),
@@ -50,7 +51,14 @@ cases = [
 ]
 
 try:
-    smoke.launch('c1m2_streets', ['-noborder', '-dx12stats', '-dx12statsframes', '30', '+fps_max', '60'])
+    if 'lut' in sys.argv:
+        # Deliberate channel permutation makes a missing lookup visible.
+        path = bench.MOD / 'pf_channel_swap.raw'
+        smoke.files.remember(path)
+        path.write_bytes(bytes(value * 255 // 31 for b in range(32) for g in range(32)
+                               for r in range(32) for value in (b, g, r)))
+    flags = ['-dx12debug'] if '--debug' in sys.argv else []
+    smoke.launch('c1m2_streets', ['-noborder', '-dx12stats', '-dx12statsframes', '30', *flags, '+fps_max', '60'])
     command(bench.HYGIENE + ';fps_max 0;god 1;r_ssr 0;r_volumetric 0;r_upscaler 3;r_upscaler_scale .667')
     # Activation precedes local player takeover; console echoes alone are not proof.
     deadline = time.monotonic() + 180
@@ -68,6 +76,8 @@ try:
     smoke.settle(.5)
     command('ent_fire pf_dof SetNearFocusDepth 20;ent_fire pf_dof SetFarFocusDepth 70;ent_fire pf_dof SetFarBlurDepth 200')
     command('ent_create env_fade targetname pf_fade duration 1 holdtime 8 rendercolor "80 20 100" renderamt 165 spawnflags 0')
+    if 'lut' in sys.argv:
+        command('mat_colorcorrection 1;ent_create color_correction targetname pf_lut filename pf_channel_swap.raw minfalloff -1 maxfalloff -1 maxweight 1 StartDisabled 1')
     command('ent_create env_fade targetname pf_clear duration 1 holdtime 0 rendercolor "80 20 100" renderamt 165 spawnflags 1')
     command('script NetProps.SetPropEntity(GetListenServerHost(),"m_hPostProcessCtrl",Entities.FindByName(null,"pf_controller"))')
     command(controller('SetFadeTime', .25) + ';' + controller('SetLocalContrastStrength', .5) + ';' + controller('SetVignetteStart', .3) + ';' + controller('SetVignetteEnd', .9))
@@ -76,7 +86,10 @@ try:
     for effect, enter, leave in cases:
         if selection and effect not in selection:
             continue
-        for mode, compact, stride in [('normal', 1, 4), ('extra', 0, 1)]:
+        pairs = [('normal', 1, 4), ('extra', 0, 1)]
+        if '--repeat' in sys.argv:
+            pairs += [('normal2', 1, 4), ('extra2', 0, 1), ('normal3', 1, 4), ('extra3', 0, 1)]
+        for mode, compact, stride in pairs:
             prefix = effect + '_' + mode
             command(f'mat_postfx_compact {compact};mat_postfx_meter_stride {stride}')
             smoke.settle(1)
@@ -101,6 +114,10 @@ try:
             phase(prefix + '_exit')
             smoke.settle(1.5)
             phase(prefix + '_after')
+    if '--debug' in sys.argv:
+        smoke.changelevel('c1m1_hotel')
+        smoke.settle(8)
+        shutil.copy2(smoke.jpeg('after_changelevel'), out)
     smoke.quit()
 finally:
     smoke.finish()

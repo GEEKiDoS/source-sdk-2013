@@ -1,9 +1,9 @@
 # PostFeatures report
 
-Branch `perf/PostFeatures`; commit `42a318ae49`.
+Branch `perf/PostFeatures` on `perf/integ2`. `42a318ae49`: bloom quality 1/2. `e265a33b0d`: real depth and network transmission for DOF. `4e5e556df1`: compact blurred vignette and particle-driven vomit.
 
-Completed: retail/native post audit in `audit.md`; removed the compact fuse restriction requiring `mat_postfx_bloom_quality == 0`, so compact composition remains eligible at bloom quality 1 and 2 using the existing populated/rebased mip selection.
+On a fixed street view at 1920×1080 output (FSR at 0.667), the fallback reference showed Normal at 2.203 ms steady, 3.116 ms with blurred vignette and 4.155 ms with actual vomit (`cmd it`). Both exceeded the 0.5-ms event threshold. The native implementation keeps the packed luminance field and composes the radial blur or particle refraction and tint before the LUT. All three native bloom qualities retain the rebased storage layout.
 
-Audit conclusion: LUT, grain, ordinary vignette, local contrast, native AgX/bloom, motion blur and glow are represented. Blurred vignette/distant blur, top vignette, fade-to-black, explicit view fades, vomit refraction, transition blur and Terror DOF are not all represented by the compact shader. Existing code falls back to legacy TerrorEnginePost/client paths for several. This report does not claim native implementation for those features.
+The client and shader pass the controller lanes as one frame snapshot. View fades and controller fade-to-black remain with the legacy grade; UI/stats transition blur still runs in its original client stage. In the captured entry/exit sequences these matched Extra without an additional flash. DOF had been disabled in both modes because DX12 reports integer HDR. It now reads the actual scene depth, not opaque-material alpha; the controller is transmitted even outside the PVS.
 
-Verification: this partial pass was not rebuilt or feature-isolated in-game. No Normal-vs-Extra feature screenshots are claimed. Parent evidence is in `C:/l4d2_work/perf1050/PostLean/`.
+Evidence: `C:/l4d2_work/perf1050/PostFeatures/report.md`, `shots/` and the raw `samples.json` in each capture directory. The full shader-pack, shader DLLs, client and server built under the machine lock. The DX12 debug run with blur, vomit and DOF changed level and exited normally without reported debug-layer errors. The optional DX9 capture did not acquire a local camera, so DX9 image equivalence has not been measured.
