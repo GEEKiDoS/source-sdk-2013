@@ -1808,7 +1808,7 @@ static void ApplyAdapterQualityTier()
 		{ "r_shadowmap_filter", "0" },
 		{ "r_shadowmap_filter_quality", "0" },
 		{ "r_shadowmap_resolution", "0" },
-		{ "r_shadowmap_max_realtime_lights", "2" },
+		{ "r_shadowmap_max_realtime_lights", "1" },
 		{ "mat_postfx_bloom_quality", "0" },
 		{ "mat_postfx_meter_stride", "4" },
 		{ "mat_postfx_compact", "1" },
