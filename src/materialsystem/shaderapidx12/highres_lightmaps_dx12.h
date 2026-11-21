@@ -11,9 +11,10 @@ namespace shaderapidx12
 class CShaderDeviceDX12;
 class CShaderAPIDX12;
 // space3: t0 R32_UINT face IDs, t1 faces (132 bytes), t2 tiles (12 bytes),
-// t3 lazily resident RGBA32F native dynamic page, t4..t7 power-of-two cropped RGBA16F arrays.
-// b0: uint4 route (bit0 enabled/bit1 dynamic,pageWidth,pageHeight,page+1), float4 modelToWorld[3],
+// t3 native dynamic page, t4..t7 color arrays, t8..t11 optional R8_UNORM sun arrays.
+// b0: uint4 route (bit0 enabled/bit1 dynamic/bits4..7 separate sun per group,pageWidth,pageHeight,page+1), float4 modelToWorld[3],
 // float4 lightstyles[16]; s0 linear-clamp. One immutable table per native page/recording.
+enum { HIGHRES_ATLAS_SRV_COUNT = 12 };
 struct HlightFaceGpuDX12
 {
     uint32 owner[4]; // packed 16-bit origin S/T, extent S/T; flags/count; pose/overflow offset

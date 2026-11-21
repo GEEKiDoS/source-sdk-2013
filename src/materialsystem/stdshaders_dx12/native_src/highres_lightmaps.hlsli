@@ -11,7 +11,7 @@ struct HlightFaceGpuDX12
     float4 bakedModelToWorld[3];
 };
 struct HlightTileGpuDX12 { uint4 address; uint4 size; }; // Expanded invocation-local address, never a whole GPU record.
-Texture2D<uint> HlightFaceIds : register(t0, space3);
+Texture2D<uint> HlightOwnerIds : register(t0, space3); // Required binding name identifies the split-sun-capable ABI.
 StructuredBuffer<HlightFaceGpuDX12> HlightFaces : register(t1, space3);
 StructuredBuffer<uint3> HlightTiles : register(t2, space3); // kind/slice/page exponents, packed origin, packed extent
 Texture2D<float4> HlightDynamic : register(t3, space3);
@@ -19,6 +19,10 @@ Texture2DArray<float4> HlightPages2048 : register(t4, space3);
 Texture2DArray<float4> HlightPages4096 : register(t5, space3);
 Texture2DArray<float4> HlightPages8192 : register(t6, space3);
 Texture2DArray<float4> HlightPages16384 : register(t7, space3);
+Texture2DArray<float> HlightSun0 : register(t8, space3);
+Texture2DArray<float> HlightSun1 : register(t9, space3);
+Texture2DArray<float> HlightSun2 : register(t10, space3);
+Texture2DArray<float> HlightSun3 : register(t11, space3);
 RWByteAddressBuffer HlightFailure : register(u0, space3);
 SamplerState HlightLinear : register(s0, space3);
 cbuffer DX12HighresDrawConstants : register(b0, space3)
@@ -103,13 +107,18 @@ void HighresLightmap_Page4(uint kind, float slice, float2 uv0, float2 uv1, float
     c0 = 0; c1 = 0; c2 = 0; c3 = 0;
     switch (kind)
     {
-#define HIGHRES_PAGE4(pages) \
+#define HIGHRES_PAGE4(group, pages, sun) \
+    case group: \
         c0 = pages.SampleLevel(HlightLinear, float3(uv0, slice), 0); c1 = pages.SampleLevel(HlightLinear, float3(uv1, slice), 0); \
-        c2 = pages.SampleLevel(HlightLinear, float3(uv2, slice), 0); c3 = pages.SampleLevel(HlightLinear, float3(uv3, slice), 0)
-    case 0: HIGHRES_PAGE4(HlightPages2048); break;
-    case 1: HIGHRES_PAGE4(HlightPages4096); break;
-    case 2: HIGHRES_PAGE4(HlightPages8192); break;
-    case 3: HIGHRES_PAGE4(HlightPages16384); break;
+        c2 = pages.SampleLevel(HlightLinear, float3(uv2, slice), 0); c3 = pages.SampleLevel(HlightLinear, float3(uv3, slice), 0); \
+        [branch] if (cHlightRoute.x & (16u << group)) { \
+            c0.a = sun.SampleLevel(HlightLinear, float3(uv0, slice), 0); c1.a = sun.SampleLevel(HlightLinear, float3(uv1, slice), 0); \
+            c2.a = sun.SampleLevel(HlightLinear, float3(uv2, slice), 0); c3.a = sun.SampleLevel(HlightLinear, float3(uv3, slice), 0); \
+        } break
+    HIGHRES_PAGE4(0, HlightPages2048, HlightSun0);
+    HIGHRES_PAGE4(1, HlightPages4096, HlightSun1);
+    HIGHRES_PAGE4(2, HlightPages8192, HlightSun2);
+    HIGHRES_PAGE4(3, HlightPages16384, HlightSun3);
 #undef HIGHRES_PAGE4
     default: HighresLightmap_Reject(4, kind); break;
     }
@@ -158,10 +167,14 @@ float4 HighresLightmap_TileLoaded(HlightTileGpuDX12 tile, float2 q)
     float3 location = float3(uv, tile.address.y);
     switch(tile.address.x)
     {
-    case 0: return HlightPages2048.SampleLevel(HlightLinear, location, 0);
-    case 1: return HlightPages4096.SampleLevel(HlightLinear, location, 0);
-    case 2: return HlightPages8192.SampleLevel(HlightLinear, location, 0);
-    case 3: return HlightPages16384.SampleLevel(HlightLinear, location, 0);
+#define HIGHRES_PAGE(group, pages, sun) \
+    case group: { float4 c = pages.SampleLevel(HlightLinear, location, 0); \
+        [branch] if (cHlightRoute.x & (16u << group)) c.a = sun.SampleLevel(HlightLinear, location, 0); return c; }
+    HIGHRES_PAGE(0, HlightPages2048, HlightSun0);
+    HIGHRES_PAGE(1, HlightPages4096, HlightSun1);
+    HIGHRES_PAGE(2, HlightPages8192, HlightSun2);
+    HIGHRES_PAGE(3, HlightPages16384, HlightSun3);
+#undef HIGHRES_PAGE
     }
     HighresLightmap_Reject(4, tile.address.x); return 0;
 #endif
@@ -218,7 +231,7 @@ HlightReceiver HighresLightmap_Begin(float2 baseUV, float2 vertexUV)
     // quad on a surface without one, for example). It keeps the native lighting the legacy shader produced there, as an
     // explicitly unlit owner does; only in-page addressing failures are atlas faults.
     if (any(owner < 0) || any(owner >= int2(cHlightRoute.yz))) { r.nativeOnly = 1; return r; }
-    uint faceId = HlightFaceIds.Load(int3(owner, 0));
+    uint faceId = HlightOwnerIds.Load(int3(owner, 0));
     hlightLocation.w = faceId;
     uint count, stride;
     HlightFaces.GetDimensions(count, stride);
