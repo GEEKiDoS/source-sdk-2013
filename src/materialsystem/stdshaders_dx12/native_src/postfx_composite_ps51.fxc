@@ -27,6 +27,9 @@ cbuffer PostComposite : register( b1, space1 )
 	float4 gContrast; // @legacy ps:c11
 	float4 gFinish; // @legacy ps:c12
 	float4 gMotion; // @legacy ps:c13
+	float4 gController; // @legacy ps:c14
+	float4 gVomitColor1; // @legacy ps:c16
+	float4 gVomitColor2; // @legacy ps:c17
 };
 Texture2D<float4> gScene : register( t0 );
 Texture2D<float4> gBloom : register( t1 );
@@ -56,6 +59,8 @@ Texture2D<float4> gVignette : register( t12 );
 SamplerState gNoiseSampler : register( s11 );
 SamplerState gVignetteSampler : register( s12 );
 Texture2D<float4> gVelocity : register( t13 );
+Texture2D<float4> gVomit : register( t14 );
+SamplerState gVomitSampler : register( s14 );
 
 float4 CompactVelocity( float2 uv )
 {
@@ -413,6 +418,15 @@ float4 main( PS_INPUT input ) : SV_Target0
 #else
 	float2 uv = input.vUv0;
 	uint flags = (uint)gOutput.y;
+	float2 screenUv = uv;
+	float coverage = 0;
+	[branch] if ( ( flags & 64 ) != 0 )
+	{
+		float3 particle = gVomit.SampleLevel( gVomitSampler, uv, 0 ).rgb;
+		coverage = particle.b;
+		float2 displaced = uv + ( particle.rg - 0.5 ) * gVomitColor1.w;
+		uv = min( abs( displaced ), 2.0 - displaced );
+	}
 	float2 sceneUv = uv;
 #if CAMERA_MODEL
 	float2 sceneSize;
@@ -428,7 +442,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 	// two in-quad neighbors have already read their centers. Exchange before
 	// the velocity branch so moving lanes also supply their unblurred colors.
 	float3 center = 0, inner = 0;
-	[branch] if ( gLutWeight4.z > 0 )
+	[branch] if ( gLutWeight4.z > 0 && ( flags & 64 ) == 0 )
 	{
 		center = gScene.SampleLevel( gSceneSampler, uv, 0 ).rgb;
 		inner = QuadReadAcrossX( center ) + QuadReadAcrossY( center );
@@ -466,7 +480,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 	}
 	// Sharpen scene detail once, before the nonlinear curve. Bound the correction
 	// relative to the center to avoid a bright neighbor ringing into a dark pixel.
-	[branch] if ( !moving && gLutWeight4.z > 0 )
+	[branch] if ( !moving && gLutWeight4.z > 0 && ( flags & 64 ) == 0 )
 	{
 		int2 pixel = int2( input.projPos.xy );
 		uint w, h;
@@ -530,9 +544,15 @@ float4 main( PS_INPUT input ) : SV_Target0
 	{
 		const float3 luma = float3( 0.299, 0.587, 0.114 );
 		base = lerp( base, 1.0, dot( saturate( bloomT ), luma ) );
-		float radial = smoothstep( gContrast.z, gContrast.w, length( uv * 2 - 1 ) );
+		[branch] if ( ( flags & 64 ) != 0 )
+		{
+			float3 tint = lerp( gVomitColor1.rgb, gVomitColor2.rgb, coverage );
+			e = lerp( e * lerp( 1.0, tint, coverage ), tint * base, coverage );
+		}
+		float radial = smoothstep( gContrast.z, gContrast.w, length( screenUv * 2 - 1 ) );
 		float contrast = lerp( gContrast.x, gContrast.y, radial );
 		e += max( ( dot( e, luma ) - base ) * contrast, contrast >= 0 ? 0 : -1 );
+		e = lerp( e, base.xxx, radial * gController.x );
 	}
 	if ( ( flags & 4 ) != 0 && lutCount != 0 )
 	{
@@ -548,13 +568,13 @@ float4 main( PS_INPUT input ) : SV_Target0
 	{
 		if ( gFinish.z != 0 )
 		{
-			float v = gVignette.SampleLevel( gVignetteSampler, uv * ( 31.0 / 32.0 ) + 0.5 / 32.0, 0 ).r;
+			float v = gVignette.SampleLevel( gVignetteSampler, screenUv * ( 31.0 / 32.0 ) + 0.5 / 32.0, 0 ).r;
 			e *= lerp( 1.0, saturate( v * 0.55 + 0.46 ), gFinish.z );
 		}
 		if ( gFinish.x > 0 )
 		{
-			float n0 = gNoise.SampleLevel( gNoiseSampler, uv * 10.0 + gFinish.y, 0 ).g;
-			float n1 = gNoise.SampleLevel( gNoiseSampler, uv.yx * 20.0 - gFinish.y, 0 ).g;
+			float n0 = gNoise.SampleLevel( gNoiseSampler, screenUv * 10.0 + gFinish.y, 0 ).g;
+			float n1 = gNoise.SampleLevel( gNoiseSampler, screenUv.yx * 20.0 - gFinish.y, 0 ).g;
 			float n = gNoise.SampleLevel( gNoiseSampler, float2( n0, n1 ), 0 ).g;
 			float shadow = pow( 1.0 - saturate( dot( e, float3( 0.2125, 0.7154, 0.0721 ) ) ), 12.0 );
 			e += ( n * 0.3 - 0.15 ) * gFinish.x * ( 0.8 * shadow + 0.2 );

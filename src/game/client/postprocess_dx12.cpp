@@ -79,6 +79,10 @@ enum CompositeVar_t
 	COMPOSITE_VIGNETTE,
 	COMPOSITE_VELOCITY,
 	COMPOSITE_MOTION,
+	COMPOSITE_CONTROLLER,
+	COMPOSITE_VOMIT,
+	COMPOSITE_VOMIT_COLOR1,
+	COMPOSITE_VOMIT_COLOR2,
 	COMPOSITE_VAR_COUNT
 };
 
@@ -86,7 +90,8 @@ static const char *const s_CompositeVarNames[COMPOSITE_VAR_COUNT] =
 {
 	"$scene", "$bloom", "$flare", "$glare", "$dirt", "$awb", "$prefilter", "$bloomenabled", "$flareenabled", "$glareenabled",
 	"$dirtenabled", "$outscale", "$peak", "$debugview", "$params0", "$params1", "$lens", "$camera", "$sensor",
-	"$awbparams", "$viewrect", "$bodycam", "$output", "$contrast", "$finish", "$noise", "$vignette", "$velocity", "$motion"
+	"$awbparams", "$viewrect", "$bodycam", "$output", "$contrast", "$finish", "$noise", "$vignette", "$velocity", "$motion",
+	"$controller", "$vomit", "$vomitcolor1", "$vomitcolor2"
 };
 
 
@@ -817,6 +822,13 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( pGrade )
 	{
 		SetVector4( composite, COMPOSITE_CONTRAST, pGrade->contrast );
+		SetVector4( composite, COMPOSITE_CONTROLLER, pGrade->controller );
+		if ( pGrade->pVomit )
+		{
+			SetTexture( composite, COMPOSITE_VOMIT, pGrade->pVomit );
+			SetVector4( composite, COMPOSITE_VOMIT_COLOR1, pGrade->vomitColor1 );
+			SetVector4( composite, COMPOSITE_VOMIT_COLOR2, pGrade->vomitColor2 );
+		}
 		// Disabled grade effects have no input texture. SetTextureValue requires one.
 		if ( pGrade->pNoise )
 			SetTexture( composite, COMPOSITE_NOISE, pGrade->pNoise );
