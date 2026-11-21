@@ -371,6 +371,9 @@ public:
 		GRADE_NOISE_TEXTURE,
 		GRADE_VIGNETTE_TEXTURE,
 		GRADE_BLOOM_ENABLE,
+		GRADE_VOMIT_COLOR1,
+		GRADE_VOMIT_COLOR2,
+		GRADE_VOMIT_REFRACT,
 		GRADE_VAR_COUNT
 	};
 
@@ -412,7 +415,7 @@ public:
 		static const char *const names[GRADE_VAR_COUNT] = {
 			"$allowlocalcontrast", "$localcontrastenable", "$allownoise", "$noiseenable",
 			"$allowvignette", "$vignetteenable", "$noisetexture", "$internal_vignettetexture",
-			"$bloomenable" };
+			"$bloomenable", "$vomitcolor1", "$vomitcolor2", "$vomitrefractscale" };
 		// Material reloads replace the variables, even while m_Engine remains valid.
 		IMaterialVar *pVar = m_Engine->FindVarFast( names[var], &m_nGradeVarTokens[var] );
 		return pVar && pVar->IsDefined() ? pVar : NULL;
@@ -3078,12 +3081,13 @@ static ConVar mat_postprocess_y( "mat_postprocess_y", "1" );
 
 #if defined( L4D2 )
 
-// Only fold the ordinary gameplay grade. The full pass still owns particle
-// refraction, fades and blurred vignettes, including controller transitions.
+// Snapshot the controller lanes on the client thread; the material proxy is
+// not the owner of fade state and may not have bound on this frame.
 static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
 {
 	const float *values = static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() )->GetPostProcessValues();
-	if ( g_TerrorPostFadeType || values[4] != 0.f || values[5] != 0.f || Terror_HasVomitScreenSpaceParticles() )
+	// View fades and controller fades keep their exact Extra composition.
+	if ( g_TerrorPostFadeType || values[5] != 0.f )
 		return false;
 	IMaterial *post = g_TerrorPostMaterials.GetEnginePost();
 	if ( !post || post->IsErrorMaterial() || V_stricmp( post->GetShaderName(), "TerrorEnginePost" ) )
@@ -3115,6 +3119,7 @@ static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
 	grade.finish[1] = fmodf( gpGlobals->curtime, 1000.f );
 	grade.finish[2] = vignette ? values[7] : 0.f;
 	grade.finish[3] = 1.f;
+	grade.controller[0] = local && values[4] > 0.f ? values[4] : 0.f;
 	grade.pNoise = NULL;
 	grade.pVignette = NULL;
 	if ( grade.finish[0] > 0.f )
@@ -3131,8 +3136,54 @@ static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
 			return false;
 		grade.pVignette = vignetteTexture->GetTextureValue();
 	}
-	return ( grade.finish[0] <= 0.f || ( grade.pNoise && !grade.pNoise->IsError() ) ) &&
-		( grade.finish[2] == 0.f || ( grade.pVignette && !grade.pVignette->IsError() ) );
+	if ( ( grade.finish[0] > 0.f && ( !grade.pNoise || grade.pNoise->IsError() ) ) ||
+		( grade.finish[2] != 0.f && ( !grade.pVignette || grade.pVignette->IsError() ) ) )
+		return false;
+	grade.pVomit = NULL;
+	if ( Terror_HasVomitScreenSpaceParticles() )
+	{
+		IMaterialVar *pColor1 = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_VOMIT_COLOR1 );
+		IMaterialVar *pColor2 = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_VOMIT_COLOR2 );
+		IMaterialVar *pRefract = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_VOMIT_REFRACT );
+		if ( !pColor1 || !pColor2 || !pRefract )
+			return false;
+		grade.pVomit = materials->FindTexture( "_rt_SmallFB0", TEXTURE_GROUP_RENDER_TARGET );
+		if ( !grade.pVomit || grade.pVomit->IsError() )
+			return false;
+		pColor1->GetVecValue( grade.vomitColor1, 3 );
+		pColor2->GetVecValue( grade.vomitColor2, 3 );
+		grade.vomitColor1[3] = pRefract->GetFloatValue();
+		grade.controller[3] = 1.f;
+		// Coverage/refraction come from the same live first-person PCF as Extra.
+		// The packed field already contains scene luma; only clear the PCF canvas.
+		CMatRenderContextPtr ctx( materials );
+		ctx->PushRenderTargetAndViewport( grade.pVomit );
+		ctx->ClearColor4ub( 128, 128, 0, 0 );
+		ctx->ClearBuffers( true, false, false );
+		ctx->PopRenderTargetAndViewport();
+		Terror_RenderVomitScreenSpaceParticles( ctx );
+	}
+	return true;
+}
+
+// Read the actual per-view producer state, not the last material proxy bind.
+CON_COMMAND_F( mat_postfx_report_grade, "Report the current L4D2 controller lanes and active screen effects.", FCVAR_CHEAT )
+{
+	const float *v = static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() )->GetPostProcessValues();
+	Msg( "PostFX grade: %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f fade %d %.3f vomit %d dof %d transition %.3f controllerDOF %d farRadius %.3f\n",
+		v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], g_TerrorPostFadeType, g_TerrorPostFade[3],
+		Terror_HasVomitScreenSpaceParticles(), Terror_IsDepthOfFieldEnabled( view->GetViewSetup() ),
+		static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() )->GetTransitionFadeScale(),
+		g_TerrorDOFState.enabled, g_TerrorDOFState.farBlurRadius );
+}
+
+CON_COMMAND_F( mat_postfx_test_transition, "Exercise the transition blur: 1 begin, 0 end.", FCVAR_CHEAT )
+{
+	ClientModeTerrorNormal *mode = static_cast<ClientModeTerrorNormal *>( GetClientModeNormal() );
+	if ( args.ArgC() > 1 && atoi( args[1] ) != 0 )
+		mode->StartTransitionFade( true );
+	else
+		mode->StopTransitionFade();
 }
 
 static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int h,bool postVGui,float bloomScale,bool engineBloom)

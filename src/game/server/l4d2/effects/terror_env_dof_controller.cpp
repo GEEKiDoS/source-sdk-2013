@@ -8,6 +8,9 @@ public:
 	DECLARE_SERVERCLASS();
 	DECLARE_DATADESC();
 	void Spawn() OVERRIDE { SetSolid( SOLID_NONE ); SetMoveType( MOVETYPE_NONE ); }
+	// A controller changes the camera, not a visible model. Its state must
+	// reach the client even if its point origin is outside the current PVS.
+	int UpdateTransmitState() OVERRIDE { return SetTransmitState( FL_EDICT_ALWAYS ); }
 	// S0B9640 is the native nullsub itself. No scheduled interpolation exists.
 	void UpdateParamBlend() {}
 	void InputSetNearBlurDepth( inputdata_t &data ) { m_flNearBlurDepth = data.value.Float(); }

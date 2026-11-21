@@ -47,6 +47,10 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
 		SHADER_PARAM( CONTRAST, SHADER_PARAM_TYPE_VEC4, "[0 0 0 1]", "Legacy center and edge contrast, radial interval" )
 		SHADER_PARAM( FINISH, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Legacy noise, time, vignette and grade enable" )
+		SHADER_PARAM( CONTROLLER, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Blurred vignette and particle mask enable" )
+		SHADER_PARAM( VOMIT, SHADER_PARAM_TYPE_TEXTURE, "", "Particle refraction and coverage mask" )
+		SHADER_PARAM( VOMITCOLOR1, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0.15]", "First particle tint and refraction" )
+		SHADER_PARAM( VOMITCOLOR2, SHADER_PARAM_TYPE_VEC4, "[0 1 0 0]", "Second particle tint" )
 		SHADER_PARAM( NOISE, SHADER_PARAM_TYPE_TEXTURE, "", "Authored grain" )
 		SHADER_PARAM( VIGNETTE, SHADER_PARAM_TYPE_TEXTURE, "", "Authored vignette" )
 		SHADER_PARAM( VELOCITY, SHADER_PARAM_TYPE_TEXTURE, "", "Resolved temporal velocity" )
@@ -80,7 +84,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			pShaderShadow->EnableDepthTest( false );
 			pShaderShadow->EnableDepthWrites( false );
 			pShaderShadow->EnableSRGBWrite( false );
-			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER13; ++nSampler )
+			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER14; ++nSampler )
 				pShaderShadow->EnableTexture( static_cast<Sampler_t>( nSampler ), true );
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, nullptr, 0 );
 			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
@@ -135,6 +139,14 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 					BindTexture( SHADER_SAMPLER12, VIGNETTE, -1 );
 				DX12SetPixelShaderConstant( 11, params[CONTRAST]->GetVecValue() );
 				DX12SetPixelShaderConstant( 12, pFinish );
+				DX12SetPixelShaderConstant( 14, params[CONTROLLER]->GetVecValue() );
+				if ( params[CONTROLLER]->GetVecValue()[3] != 0.f )
+				{
+					nFlags |= 64;
+					BindTexture( SHADER_SAMPLER14, VOMIT, -1 );
+					DX12SetPixelShaderConstant( 16, params[VOMITCOLOR1]->GetVecValue() );
+					DX12SetPixelShaderConstant( 17, params[VOMITCOLOR2]->GetVecValue() );
+				}
 			}
 			if ( params[DIRTENABLED]->GetIntValue() )
 				nFlags |= kFlagDirt;

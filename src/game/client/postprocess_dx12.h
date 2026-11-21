@@ -19,12 +19,18 @@ struct PostGradeDX12_t
 {
 	float contrast[4]; // center, edge, vignette start and end
 	float finish[4]; // grain, phase, top vignette, enabled
+	float controller[4]; // x: blurred vignette strength, w: particle mask valid
+	float vomitColor1[4]; // RGB tint and refraction scale
+	float vomitColor2[4];
+	ITexture *pVomit;
 	ITexture *pNoise;
 	ITexture *pVignette;
 };
 
 bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale );
 ITexture *PostProcessDX12_ReduceTemporal( IMatRenderContext *context, int w, int h );
+bool PostProcessDX12_HasDOFInput();
+void PostProcessDX12_PrepareDOFInput( IMatRenderContext *ctx, ITexture *full, int x, int y, int w, int h, float nearZ, float farZ );
 
 void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 // Main-thread initialization retains all post materials and primes their variable tokens before queued rendering.
