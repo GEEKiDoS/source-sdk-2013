@@ -120,7 +120,7 @@ cbuffer DX12LightingViewConstantsV1 : register(b0, space2)
     float4 cViewForward; // xyz, w = 0
     float4 cCascadeSplits; // s1..s4
     float4 cCascadeBlend; // w1..w3, 0
-    float4 cShadowDepthRecords[DX12_SHADOW_SUN_MAP_COUNT]; // near, far, worldUnitsPerTexel, 0
+    float4 cShadowDepthRecords[DX12_SHADOW_SUN_MAP_COUNT]; // near, far, worldUnitsPerTexel, viewmodel axial bias in texels
     row_major float4x4 cSunWorldToClip[DX12_SHADOW_CSM_CASCADES];
     row_major float4x4 cStaticSunWorldToClip;
     uint4 cCascadeRects[DX12_SHADOW_CSM_CASCADES]; // slotX, slotY, slotSize, 0

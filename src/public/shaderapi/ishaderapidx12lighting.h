@@ -210,7 +210,7 @@ struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL tw
 	float	cViewForward[4];			// xyz; receiverDistance = dot(positionWS - eye, xyz); w = shadow filter dither: 0 off, 1 + noise index (shadow_dither.hlsli)
 	float	cCascadeSplits[4];			// s1, s2, s3, s4 (= f)
 	float	cCascadeBlend[4];			// w1, w2, w3 half blend widths at interior splits; w = 0
-	float	cShadowDepthRecords[DX12_SHADOW_SUN_MAP_COUNT][4];	// near, far, worldUnitsPerTexel, 0 (CSM0..3, static sun 4)
+	float	cShadowDepthRecords[DX12_SHADOW_SUN_MAP_COUNT][4];	// near, far, worldUnitsPerTexel, axial bias in texels (viewmodel self only)
 	float	cSunWorldToClip[DX12_SHADOW_CSM_CASCADES][16];		// rendered projection * view per cascade
 	float	cStaticSunWorldToClip[16];
 	uint32	cCascadeRects[DX12_SHADOW_CSM_CASCADES][4];			// slotX, slotY, slotSize, 0 inside the cascade atlas

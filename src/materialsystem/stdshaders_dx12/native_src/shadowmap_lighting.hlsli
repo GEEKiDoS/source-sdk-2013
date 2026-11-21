@@ -346,12 +346,21 @@ float ShadowMap_PerspectiveDistance( float z, float n, float f )
 	return n / ( 1.0 - z * ( 1.0 - n / f ) );
 }
 
+float3 ShadowMap_SunReceiverCenter( float3 p, float3 planeNormal, float4 depth )
+{
+	// The private self-shadow cascade biases along the light ray so that it
+	// cannot move a back-facing receiver behind its own triangle. The actual
+	// plane normal still determines the slope at each comparison tap.
+	const float3 offset = depth.w > 0.0 ? -cSunTravel.xyz * depth.w : planeNormal * 0.5;
+	return p + offset * depth.z;
+}
+
 bool ShadowMap_SunProjectionValid( row_major float4x4 worldToClip, float4 depth, uint size, float3 p, float3 normal )
 {
 	bool result = false;
 	if ( !( depth.y <= depth.x || depth.z <= 0.0 || !ShadowMap_InCore( mul( worldToClip, float4( p, 1.0 ) ), size ) ) )
 	{
-		float4 centerClip = mul( worldToClip, float4( p + normal * ( 0.5 * depth.z ), 1.0 ) );
+		float4 centerClip = mul( worldToClip, float4( ShadowMap_SunReceiverCenter( p, normal, depth ), 1.0 ) );
 		result = centerClip.w > 0.0 && centerClip.z >= 0.0 && centerClip.z <= centerClip.w;
 	}
 	return result;
@@ -405,7 +414,7 @@ ShadowMapSunChart ShadowMap_MakeSunChart( uint mapIndex, float3 p, float3 normal
 	c.depth = cShadowDepthRecords[mapIndex];
 	c.valid = ShadowMap_SunSlotInitialized( mapIndex ) && ShadowMap_SunProjectionValid( worldToClip, c.depth, c.rect.z, p, normal );
 	float planeDenominator = dot( normal, cSunTravel.xyz );
-	c.clipCenter = mul( worldToClip, float4( p + normal * ( 0.5 * c.depth.z ), 1.0 ) );
+	c.clipCenter = mul( worldToClip, float4( ShadowMap_SunReceiverCenter( p, normal, c.depth ), 1.0 ) );
 	c.centerAxial = c.depth.x;
 	c.atlasSize = 1.0;
 	if ( c.valid )

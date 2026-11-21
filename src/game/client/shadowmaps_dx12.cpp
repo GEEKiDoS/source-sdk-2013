@@ -2772,6 +2772,9 @@ bool AddViewModelSelfShadow( CShadowViewData &data, const SunCascadeTargets_t &s
 		scene.skyClip=NULL; scene.skyRegion=-1;
 		++g_FrameDepthRenders; ++data.stats.depthRenders; ++data.stats.dynamicRedraws;
 		ViewRender_DrawShadowMapScene(scene);
+		// Axial bias always moves the comparison toward the sun. Normal bias
+		// moves back-facing triangles away from it at a smooth terminator.
+		constants.cShadowDepthRecords[i][3]=0.5f;
 	}
 	if ( !data.Lease(g_ViewModelSelfSun) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 	data.packet.cascadeAtlasTarget=g_ViewModelSelfSun;

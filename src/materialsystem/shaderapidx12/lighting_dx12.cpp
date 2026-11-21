@@ -2612,7 +2612,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				if ( !csmValid || !csmSlot || emptyMatrix || rect[2] != csmSlot || rect[3] ||
 					( rect[0] != 0 && rect[0] != csmSlot ) || ( rect[1] != 0 && rect[1] != csmSlot ) ||
 					!RectFits( rect[0], rect[1], rect[2], rect[2], atlas, atlas ) ||
-					depth[1] <= depth[0] || depth[2] <= 0 || depth[3] ) failure = kPacketError;
+					depth[1] <= depth[0] || depth[2] <= 0 || depth[3] < 0 || depth[3] > 1 ) failure = kPacketError;
 				else { ++initializedCascades; csmExtent = MAX( csmExtent, MAX( rect[0], rect[1] ) + rect[2] ); }
 			}
 			if ( !failure && csmValid && !initializedCascades ) failure = kPacketError;

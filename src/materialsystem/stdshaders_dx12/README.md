@@ -357,6 +357,11 @@ wall-clipping correction; additional viewmodel fixtures were stopped.
 L4D2 clamps the effective viewmodel FOV below the 179-degree shadow frustum
 limit, before and after aspect scaling. A saved value of 180 remains a valid
 console setting but cannot reach the rectilinear projection at its singularity.
+The viewmodel's private self-shadow cascade biases the sun comparison half a
+texel toward the light, rather than along the geometric face normal. This
+keeps smooth shading across back-facing triangles at the sun terminator while
+retaining the exact receiver-plane slope for the filter taps. World cascades
+and the static sun map retain their normal bias.
 
 Client-local archived `r_shadowmap_force_physics_shadows` defaults to zero.
 At one, native enhanced-map caster queries override authored `EF_NOSHADOW`
