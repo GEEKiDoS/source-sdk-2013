@@ -193,6 +193,14 @@ static const Choice_t kQuality3[] =
 	{ "#GraphicsOptions_High", { 2, 0, 0, 0, 0 } },
 };
 
+// Native stack enable, compact composition, exposure sampling interval.
+static const Choice_t kPostQuality[] =
+{
+	{ "#GraphicsOptions_Off", { 0, 0, 1, 0, 0 } },
+	{ "#GraphicsOptions_Low", { 1, 1, 4, 0, 0 } },
+	{ "#GraphicsOptions_High", { 1, 0, 1, 0, 0 } },
+};
+
 static const Choice_t kMotionQuality[] =
 {
 	{ "#GraphicsOptions_MotionVeryLow", { -1, 0, 0, 0, 0 } },
@@ -226,6 +234,7 @@ static const Choice_t kUpscaler[] =
 	{ "#GraphicsOptions_FSRAA", { 3, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_XeSSAA", { 4, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_SMAAT2x", { 5, 0, 0, 0, 0 } },
+	{ "Lightweight TAAU", { 6, 0, 0, 0, 0 } },
 };
 
 // Temporal upscaler render scale per axis (r_upscaler_scale); below native the upscaler reconstructs the full resolution.
@@ -334,7 +343,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_FlashlightBounce", TAB_LIGHTING, ROW_CHECK, { "r_flashlight_bounce", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 
-	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_COMBO, { "mat_postfx_dx12", "mat_postfx_compact", "mat_postfx_meter_stride", NULL, NULL }, kPostQuality, ARRAYSIZE( kPostQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 400, 5, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },

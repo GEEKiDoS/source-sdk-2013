@@ -6,6 +6,7 @@
 #include "cbase.h"
 #include "postprocess_dx12.h"
 #include "upscaler_dx12.h"
+#include "motionvectors_dx12.h"
 #include "materialsystem/imaterialsystemhardwareconfig.h"
 #include "materialsystem/imaterialsystem.h"
 #include "materialsystem/imaterial.h"
@@ -13,6 +14,7 @@
 #include "materialsystem/MaterialSystemUtil.h"
 #include "materialsystem/itexture.h"
 #include "shaderapi/ishaderapidx12.h"
+#include "tier0/icommandline.h"
 #include "tier1/interface.h"
 #include "tier1/keyvalues.h"
 #include "fmtstr.h"
@@ -71,6 +73,12 @@ enum CompositeVar_t
 	COMPOSITE_VIEW_RECT,
 	COMPOSITE_BODYCAM,
 	COMPOSITE_OUTPUT,
+	COMPOSITE_CONTRAST,
+	COMPOSITE_FINISH,
+	COMPOSITE_NOISE,
+	COMPOSITE_VIGNETTE,
+	COMPOSITE_VELOCITY,
+	COMPOSITE_MOTION,
 	COMPOSITE_VAR_COUNT
 };
 
@@ -78,7 +86,7 @@ static const char *const s_CompositeVarNames[COMPOSITE_VAR_COUNT] =
 {
 	"$scene", "$bloom", "$flare", "$glare", "$dirt", "$awb", "$prefilter", "$bloomenabled", "$flareenabled", "$glareenabled",
 	"$dirtenabled", "$outscale", "$peak", "$debugview", "$params0", "$params1", "$lens", "$camera", "$sensor",
-	"$awbparams", "$viewrect", "$bodycam", "$output"
+	"$awbparams", "$viewrect", "$bodycam", "$output", "$contrast", "$finish", "$noise", "$vignette", "$velocity", "$motion"
 };
 
 
@@ -116,6 +124,7 @@ static bool s_bMaterialsReady = false;
 static CTextureReference s_PostScene;
 static CTextureReference s_BloomDown;
 static CTextureReference s_BloomUp;
+static bool s_bRebaseBloom = false;
 static CTextureReference s_FlareInput;
 static CTextureReference s_Flare;
 static CTextureReference s_Glare;
@@ -229,6 +238,19 @@ static void DrawCompute( IMatRenderContext *pRenderContext, PostMaterial_t &mate
 	pRenderContext->DrawScreenSpaceRectangle( material.m_Material, 0, 0, 1, 1, 0, 0, 0, 0, 1, 1 );
 }
 
+// The compact chains start at the old mip 1; the material system still tracks
+// full-frame dimensions, so mode changes keep the texel footprints identical.
+static int NativePostMip( ITexture *pTexture, int nMip )
+{
+	if ( s_bRebaseBloom && ( pTexture == static_cast<ITexture *>( s_BloomDown ) ||
+		pTexture == static_cast<ITexture *>( s_BloomUp ) ) )
+	{
+		Assert( nMip > 0 );
+		return nMip - 1;
+	}
+	return nMip;
+}
+
 // Binds one compute pass: source/destination mips plus the cbuffer sizes and per-pass parameters p0/p1/p2.
 static void SetPostPass( PostMaterial_t &material, ITexture *pSource, int nSourceMip, ITexture *pDest, int nDestMip, float p0, float p1, int nTexelScale = 1, float p2 = 0.f )
 {
@@ -242,8 +264,8 @@ static void SetPostPass( PostMaterial_t &material, ITexture *pSource, int nSourc
 	const float params1[4] = { p2, 0.f, 0.f, 0.f };
 	SetTexture( material, POST_SRC_TEXTURE, pSource );
 	SetTexture( material, POST_DST_TEXTURE, pDest );
-	SetInt( material, POST_SRC_MIP, nSourceMip );
-	SetInt( material, POST_DST_MIP, nDestMip );
+	SetInt( material, POST_SRC_MIP, NativePostMip( pSource, nSourceMip ) );
+	SetInt( material, POST_DST_MIP, NativePostMip( pDest, nDestMip ) );
 	SetVector4( material, POST_SIZES, sizes );
 	SetVector4( material, POST_PARAMS0, params0 );
 	SetVector4( material, POST_PARAMS1, params1 );
@@ -260,6 +282,8 @@ static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", F
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
+static ConVar mat_postfx_compact( "mat_postfx_compact", "0", FCVAR_ARCHIVE,
+	"Compact DX12 post: composite the coarse bloom mip directly and sharpen scene detail before tonemapping" );
 static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (screens the dirt into the bloom)" );
 static ConVar mat_postfx_lensdirt_enable( "mat_postfx_lensdirt_enable", "1", FCVAR_ARCHIVE, "DX12 post lens dirt: 0 off, 1 on. Intensity stays mat_postfx_lensdirt.", true, 0.f, true, 1.f );
 static ConVar mat_postfx_lensflare( "mat_postfx_lensflare", "0", FCVAR_ARCHIVE, "DX12 post lens flare (ghosts, halo, glare) intensity; 0 (default) skips the flare and glare passes" );
@@ -376,11 +400,13 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	const char *shaderDLL = pHardwareConfig ? pHardwareConfig->GetShaderDLLName() : nullptr;
 	if ( !pMaterialSystem || !shaderDLL || V_stricmp( shaderDLL, "stdshader_dx12" ) )
 		return;
+	s_bRebaseBloom = s_pShaderAPIDX12 && s_pShaderAPIDX12->AdapterPerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+		!CommandLine()->CheckParm( "-dx12novramfit" );
 	s_PostScene.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXScene", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT | TEXTUREFLAGS_POINTSAMPLE, 0 ) );
-	s_BloomDown.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXBloomDown", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
+	s_BloomDown.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( s_bRebaseBloom ? "_rt_PostFXBloomDownHalf" : "_rt_PostFXBloomDown", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
-	s_BloomUp.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXBloomUp", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
+	s_BloomUp.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( s_bRebaseBloom ? "_rt_PostFXBloomUpHalf" : "_rt_PostFXBloomUp", 1, 1, RT_SIZE_FULL_FRAME_BUFFER,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
 	s_FlareInput.Init( pMaterialSystem->CreateNamedRenderTargetTextureEx2( "_rt_PostFXFlareInput", 1, 1, RT_SIZE_HDR,
 		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT, 0 ) );
@@ -513,14 +539,33 @@ void PostProcessDX12_SubmitFrameConfig()
 		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), bHdr ? flWorldNits / flUiNits : 1.f ) );
 }
 
+bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale )
+{
+	return mat_postfx_compact.GetBool() && !mat_hdr_output.GetBool() && !mat_postfx_debug.GetInt() &&
+		!mat_postfx_bodycam.GetBool() && !mat_postfx_awb.GetBool() && !mat_postfx_sensor.GetBool() &&
+		!mat_postfx_lensdistortion.GetBool() && !mat_postfx_chromatic.GetBool() && !mat_postfx_vignette.GetBool() &&
+		mat_postfx_lensflare.GetFloat() == 0.f && mat_postfx_bloom_quality.GetInt() == 0 &&
+		mat_postfx_bloom_intensity.GetFloat() * flBloomScale > 0.f &&
+		x == 0 && y == 0 && w == s_PostScene->GetActualWidth() && h == s_PostScene->GetActualHeight();
+}
+
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
-	float flHorizontalFov, float flAspectRatio )
+	float flHorizontalFov, float flAspectRatio, ITexture *pOutput, const PostGradeDX12_t *pGrade, const PostMotionDX12_t *pMotion,
+	ITexture *pExposureCopy )
 {
 	if ( !PostProcessDX12_Active() || w <= 0 || h <= 0 )
 		return;
 
 	// Every pass works on whole render targets; the view rectangle only selects what is copied in and drawn out.
 	Rect_t area = { x, y, w, h };
+	// The full-view histogram has already snapshotted the same scene. Only
+	// reuse that copy for the direct final pass (never alias the output).
+	ITexture *pScene = s_PostScene;
+	if ( pGrade && pExposureCopy && !pOutput && !pExposureCopy->IsError() &&
+		pExposureCopy->GetImageFormat() == s_PostScene->GetImageFormat() &&
+		pExposureCopy->GetActualWidth() == w && pExposureCopy->GetActualHeight() == h )
+		pScene = pExposureCopy;
+	else
 	{
 		PIXEVENT( pRenderContext, "Post copy" );
 		pRenderContext->CopyRenderTargetToTextureEx( s_PostScene, 0, &area, &area );
@@ -551,6 +596,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	// fine mips so the composite still reads bloom mip 1 and averages over the levels actually summed.
 	const int nDropFinest = bBodycam ? 0 : 2 - Clamp( mat_postfx_bloom_quality.GetInt(), 0, 2 );
 	const int nFirstMip = 1 + nDropFinest;
+	const int nCompositeMip = mat_postfx_compact.GetBool() ? nFirstMip : 1;
 	const int nLayers = kBloomLevels - nDropFinest;
 	// The first level writes the soft-thresholded exposed scene for the bloom and the plain exposed scene for the
 	// lens flare, the latter into the up chain's mip, which the layer sum overwrites only after the flare has read it.
@@ -567,10 +613,15 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		else
 		{
 			PostMaterial_t &first = s_BloomFirst;
-			SetPostPass( first, s_PostScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
+			SetPostPass( first, pScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
 				mat_postfx_bloom_boost.GetFloat() );
+			if ( pGrade )
+			{
+				const float extract[4] = { mat_postfx_bloom_boost.GetFloat(), 1.f, 0.f, 0.f };
+				SetVector4( first, POST_PARAMS1, extract );
+			}
 			SetTexture( first, POST_DST_TEXTURE2, s_BloomUp );
-			SetInt( first, POST_DST_MIP2, nFirstMip );
+			SetInt( first, POST_DST_MIP2, NativePostMip( s_BloomUp, nFirstMip ) );
 			DrawCompute( pRenderContext, first );
 		}
 		const int nLastDownMip = bBloom ? kBloomLevels : nFirstMip;
@@ -658,15 +709,27 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		for ( int i = 0; i < ARRAYSIZE( s_BloomUpsample ); ++i )
 		{
 			const int nMip = ARRAYSIZE( s_BloomUpsample ) - i;
+			if ( nMip < nCompositeMip )
+				break;
 			PostMaterial_t &material = s_BloomUpsample[i];
 			if ( nMip < nFirstMip )
 				SetPostPass( material, s_BloomUp, nMip + 1, s_BloomUp, nMip, 0.f, 0.f );
 			else
 				SetPostPass( material, s_BloomDown, nMip, s_BloomUp, nMip, 1.f, 0.f );
 			SetTexture( material, POST_SRC_TEXTURE2, i == 0 ? s_BloomDown : s_BloomUp );
-			SetInt( material, POST_SRC_MIP2, nMip + 1 );
+			SetInt( material, POST_SRC_MIP2, NativePostMip( s_BloomUp, nMip + 1 ) );
 			DrawCompute( pRenderContext, material );
 		}
+	}
+	if ( pGrade )
+	{
+		// Pack the two smooth fields at quarter size. Sampling mip zero of this
+		// texture lets the final draw use the hardware bilinear filter for both.
+		PIXEVENT( pRenderContext, "Local contrast base" );
+		SetPostPass( s_FlareInputBlurDown, s_BloomDown, nFirstMip, s_Flare, 0, 4.f, flBloomExposure / nLayers );
+		SetTexture( s_FlareInputBlurDown, POST_SRC_TEXTURE2, s_BloomUp );
+		SetInt( s_FlareInputBlurDown, POST_SRC_MIP2, NativePostMip( s_BloomUp, nFirstMip ) );
+		DrawCompute( pRenderContext, s_FlareInputBlurDown );
 	}
 	const int nStatus = DisplayStatus();
 	const bool bHdr = mat_hdr_output.GetBool() && SHADERAPIDX12_HDR_DISPLAY_TYPE( nStatus ) == SHADERAPIDX12_HDR_DISPLAY_HDR && s_pShaderAPIDX12->HdrOutputCapable();
@@ -714,13 +777,31 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		bBodycam ? mat_postfx_bodycam_highlight_desat.GetFloat() : mat_postfx_sensor_jpeg.GetFloat(),
 		bBodycam ? mat_postfx_bodycam_ccm.GetFloat() : 0.f };
 	const float viewRect[4] = { static_cast<float>( x ), static_cast<float>( y ), static_cast<float>( w ), static_cast<float>( h ) };
+	const bool bSharpen = !bBodycam && UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0 && mat_postfx_sharpen.GetFloat() > 0.f;
+	// Lens warping and sensor effects change the neighborhood. Keep display-space
+	// RCAS for those modes and use scene detail only for an ordinary full view.
+	const bool bCompactSharpen = bSharpen && mat_postfx_compact.GetBool() && !bHdr && !nDebugView &&
+		flK1 == 0.f && flK2 == 0.f && flCa == 0.f && sensor[0] == 0.f &&
+		x == 0 && y == 0 && w == s_PostScene->GetActualWidth() && h == s_PostScene->GetActualHeight();
 	const float composite0[4] = { flExposure, bBodycam ? mat_postfx_bodycam_saturation.GetFloat() : flBloomExposure / nLayers,
 		bBodycam ? flPupilCA : flFlareIntensity * 0.1f, bBodycam ? static_cast<float>( nLayers ) : 0.f };
 	const float composite1[4] = { bBodycam ? mat_postfx_bodycam_pixel_aspect.GetFloat() : mat_postfx_lensdirt.GetFloat(), flVeiling / nLayers,
-		0.f, 0.f };
-	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), 0.f, 0.f, 0.f };
+		static_cast<float>( NativePostMip( s_BloomUp, nCompositeMip ) ),
+		bCompactSharpen ? exp2f( -Clamp( mat_postfx_sharpen.GetFloat(), 0.f, 1.f ) ) : 0.f };
+	const float output[4] = { static_cast<float>( bHdr ? 1 : 0 ), pMotion ? pMotion->viewModelScale : 0.f, 0.f, 0.f };
 	PostMaterial_t &composite = s_CompositeMaterial;
-	SetTexture( composite, COMPOSITE_SCENE, s_PostScene );
+	const float noGrade[4] = {};
+	SetVector4( composite, COMPOSITE_MOTION, pMotion ? pMotion->region : noGrade );
+	if ( pMotion && pMotion->region[2] != 0.f )
+		SetTexture( composite, COMPOSITE_VELOCITY, MotionVectorsDX12_RenderTarget() );
+	SetVector4( composite, COMPOSITE_FINISH, pGrade ? pGrade->finish : noGrade );
+	if ( pGrade )
+	{
+		SetVector4( composite, COMPOSITE_CONTRAST, pGrade->contrast );
+		SetTexture( composite, COMPOSITE_NOISE, pGrade->pNoise );
+		SetTexture( composite, COMPOSITE_VIGNETTE, pGrade->pVignette );
+	}
+	SetTexture( composite, COMPOSITE_SCENE, pScene );
 	SetTexture( composite, COMPOSITE_BLOOM, s_BloomUp );
 	if ( bBodycam )
 		SetTexture( composite, COMPOSITE_PREFILTER, s_BloomDown );
@@ -730,7 +811,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( bAwb )
 		SetTexture( composite, COMPOSITE_AWB, s_AwbState[s_nAwbState] );
 	SetInt( composite, COMPOSITE_BLOOM_ENABLED, bBloom );
-	SetInt( composite, COMPOSITE_FLARE_ENABLED, bFlare );
+	SetInt( composite, COMPOSITE_FLARE_ENABLED, bFlare || pGrade );
 	SetInt( composite, COMPOSITE_GLARE_ENABLED, bGlare );
 	SetInt( composite, COMPOSITE_DIRT_ENABLED, bDirt );
 	SetFloat( composite, COMPOSITE_OUT_SCALE, flOutScale );
@@ -754,13 +835,12 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	SetVector4( composite, COMPOSITE_OUTPUT, output );
 
 	// Bodycam handles luma sharpening in its composite, without a second full-screen pass.
-	const bool bSharpen = !bBodycam && UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0 && mat_postfx_sharpen.GetFloat() > 0.f;
 	const int nJpegQuality = bBodycam ? mat_postfx_bodycam_jpeg_quality.GetInt() : 0;
 	const bool bJpeg = nJpegQuality > 0 && MaterialValid( s_BodycamJpeg );
 	const int nTextureWidth = s_PostScene->GetActualWidth();
 	const int nTextureHeight = s_PostScene->GetActualHeight();
 	pRenderContext->EnableColorCorrection( bColorCorrection );
-	if ( bSharpen || bJpeg )
+	if ( ( bSharpen && !bCompactSharpen ) || bJpeg )
 	{
 		{
 			PIXEVENT( pRenderContext, "Composite" );
@@ -784,14 +864,14 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		SetVector4( rcas, RCAS_TEXEL_SIZE, texelSize );
 		{
 			PIXEVENT( pRenderContext, bJpeg ? "Bodycam JPEG present" : "Sharpen" );
-			pRenderContext->SetRenderTarget( nullptr );
+			pRenderContext->SetRenderTarget( pOutput );
 			pRenderContext->DrawScreenSpaceRectangle( rcas.m_Material, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
 		}
 	}
 	else
 	{
 		PIXEVENT( pRenderContext, "Composite" );
-		pRenderContext->SetRenderTarget( nullptr );
+		pRenderContext->SetRenderTarget( pOutput );
 		pRenderContext->DrawScreenSpaceRectangle( composite.m_Material, x, y, w, h, x, y, x + w - 1, y + h - 1, nTextureWidth, nTextureHeight );
 	}
 }

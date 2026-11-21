@@ -35,7 +35,8 @@ enum class UpscalerKindDX12 : uint8_t
 	DLSS = 1,
 	FSR = 2,
 	XeSS = 3,
-	SmaaT2x = 4
+	SmaaT2x = 4,
+	Taau = 5
 };
 const char *UpscalerKindNameDX12( UpscalerKindDX12 kind );
 
@@ -129,7 +130,7 @@ public:
 
 	bool Initialized() const { return m_pDevice != nullptr; }
 
-	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x (always available).
+	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x, 6 lightweight TAAU (always available).
 	UpscalerKindDX12 Resolve( int nMode ) const;
 	// Creates the provider context for `desc` when it differs from the current one. DLSS records its creation on a
 	// private list executed on `pQueue` and waited for, so no recorded frame ever creates and evaluates together.
@@ -163,14 +164,15 @@ public:
 	void ReleaseNr();
 
 	// Shader-visible blocks for the depth clone/NR and the native SMAA passes.
-	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return d.nrLayers || NeedsDepthClone( d ) || m_Feature.kind == UpscalerKindDX12::SmaaT2x; }
+	bool NeedsDescriptors( const UpscalerDispatchDX12 &d ) const { return d.nrLayers || NeedsDepthClone( d ) || m_pSmaa != nullptr; }
 
 	uint32_t DescriptorCount( uint32_t nNrLayers ) const
 	{
 		const bool smaa = m_Feature.kind == UpscalerKindDX12::SmaaT2x;
 		// Native SMAA without NR has no depth-clone pass.
 		const uint32_t align = nNrLayers && m_Feature.Scaled() ? 1u : 0u;
-		return 6u * ( 2u * nNrLayers + align + ( !smaa || nNrLayers ? 1u : 0u ) + ( smaa ? 4u : 0u ) );
+		const uint32_t nativePasses = smaa ? 4u : m_Feature.kind == UpscalerKindDX12::Taau ? 1u : 0u;
+		return 6u * ( 2u * nNrLayers + align + ( !nativePasses || nNrLayers ? 1u : 0u ) + nativePasses );
 	}
 
 private:
@@ -246,7 +248,7 @@ private:
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pNrPso, m_pDepthPso;
 	SmaaState *m_pSmaa = nullptr;
-	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pSmaaPso[4];
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pSmaaPso[5];
 	UINT m_nDescriptorStride = 0;
 	Microsoft::WRL::ComPtr<ID3D12CommandAllocator> m_pImmediateAllocator;
 	Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> m_pImmediateList;

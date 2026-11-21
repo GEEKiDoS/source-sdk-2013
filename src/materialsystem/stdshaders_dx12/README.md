@@ -699,6 +699,8 @@ fallback is used only for opaque non-writers. The 200-unit light uses smoothed h
 albedo attachment (RT7). `r_flashlight_bounce_scale` controls strength and `r_flashlight_bounce_debug` marks
 the measured centre. Albedo is material-tinted linear base colour, before lighting or fog, encoded to sRGB
 by the RTV and decoded by the SRV. `mat_pbr_showgbuffer 4` displays it while bounce is enabled.
+When that attachment is live without the full SSR payload, the unused slots below RT7 bind typed null RTVs;
+their pipeline formats are UNKNOWN because there is no resource in those slots.
 The opaque viewmodel colour draw writes the same attachment with its own projection; it participates only
 as a receiver. Translucents never write or receive the effect.
 A softened hit-plane test and six depth taps towards the measured light reduce through-wall leaks.
@@ -1631,6 +1633,22 @@ flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead o
 `mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
 ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.
 
+**Compact output post.** Advanced Graphics > Post selects the native path's Low (`mat_postfx_compact 1`,
+`mat_postfx_meter_stride 4`) or High (`0`, `1`) settings separately from bloom quality and blur quality.
+Low can sample the bloom layer sum at the first acquired mip; it need not upsample empty fine layers just
+to reach mip 1. On an ordinary full-size SDR view the bloom extraction's second output supplies approximate
+display luma for local contrast. AgX, layer composition, local contrast, the authored LUT, vignette and grain
+then run in one pixel pass. Scene-detail sharpening before the curve replaces display-space RCAS on eligible
+views. Exposure still uses the original camera region and adaptation; the sparse query changes sampling
+density, not exposure bounds. Fades, vomit refraction, blurred vignettes and incompatible camera/target modes
+keep the legacy pass. Stencil-based metering keeps full density.
+
+Motion blur remains independently switchable. Quality `-1` means **very low, four taps**, not disabled. After
+a successful temporal dispatch, eligible compact views gather along the center velocity in the composite,
+with render-region addressing and separate world/viewmodel rejection. This trades neighbor dilation on thin
+moving silhouettes for avoiding the scene copy and tile passes. Overlays between velocity blur and post,
+nonstandard camera modes, and higher blur qualities retain the standalone gather.
+
 ## Optical lens, auto white balance and CMOS capture
 
 **Advanced Graphics > Post-processing** exposes five independent, archived toggles. All default to off.
@@ -1874,6 +1892,22 @@ The memory reductions preserve formats and working pixels:
 - SSR reuses the captured scene's mip 0 for its signed RGBA16F delta after trace, the final reader of that scene copy.
   Resolve and temporal accumulation do not read it; the additive composite and the next frame's capture remain unchanged.
 - GTAO edges and motion-blur classification tiles allocate their declared working dimensions and are fully overwritten
-  before any bounded read. GTAO depth and AO term targets retain their original physical sizes: depth mip rounding and
-  SSR's linear AO border samples depend on those sizes.
+  before any bounded read. On low-tier adapters the GTAO view-depth target also fits the active 3D viewport, and
+  each temporal depth history fits the AO dispatch (rounded up to 8x8 groups). Only the output history is resized;
+  the input remains intact until its last read. `-dx12novramfit` keeps these three depth targets display-sized.
+  The GTAO depth pyramid and published AO terms retain their original physical sizes: mip rounding and SSR's
+  linear AO border samples depend on those sizes.
+
+The low adapter tier also fits steady-state memory from device start, including installs whose quality preset
+has already been recorded. It starts the bloom chains at the first mip actually read (half output resolution),
+packs small static geometry into separate vertex, index and prop-triangle pages, reuses eight-byte occlusion
+results within fence-retired readback pages, and uses smaller upload pages with a lower idle floor. It keeps the existing
+shadow-resolution preset. The high-resolution lightmap atlas converts eligible RGBA16F pages during upload to
+R11G11B10F color and R8 sun visibility, without changing the sidecar format or the directional pages. Radiance-only
+samples do not fetch the sun texture. `-dx12vramfullatlas` leaves the original RGBA16F atlas in place for comparison.
+
+One top mip is omitted for eligible managed block-compressed world/model textures with a top level of at least
+256 KiB. UI, dynamic textures, cubemaps, lightmaps and first-person weapon textures are not selected. Use
+`-dx12vramfullmips` to compare this choice in isolation, or `-dx12novramfit` to compare the unmodified allocations
+on the same low-tier build; both are startup switches. High-tier adapters keep the original allocations.
 

@@ -7,11 +7,19 @@ void main( uint3 id : SV_DispatchThreadID )
 	if ( id.x >= dstWidth || id.y >= dstHeight )
 		return;
 	float2 uv = DstUv( id.xy );
-	float2 halfPixel = 0.5 / float2( dstWidth, dstHeight );
-	float3 c = gSrc.SampleLevel( gLinearClamp, uv, 0 ).rgb * 4.0;
-	c += gSrc.SampleLevel( gLinearClamp, uv + float2( -halfPixel.x, halfPixel.y ), 0 ).rgb;
-	c += gSrc.SampleLevel( gLinearClamp, uv + halfPixel, 0 ).rgb;
-	c += gSrc.SampleLevel( gLinearClamp, uv + float2( halfPixel.x, -halfPixel.y ), 0 ).rgb;
-	c += gSrc.SampleLevel( gLinearClamp, uv - halfPixel, 0 ).rgb;
-	gDst[id.xy] = float4( c / 8.0, 1 );
+	float2 halfPixel = max( 0.5, p0 ) / float2( dstWidth, dstHeight );
+	float4 c = gSrc.SampleLevel( gLinearClamp, uv, 0 ) * 4.0;
+	c += gSrc.SampleLevel( gLinearClamp, uv + float2( -halfPixel.x, halfPixel.y ), 0 );
+	c += gSrc.SampleLevel( gLinearClamp, uv + halfPixel, 0 );
+	c += gSrc.SampleLevel( gLinearClamp, uv + float2( halfPixel.x, -halfPixel.y ), 0 );
+	c += gSrc.SampleLevel( gLinearClamp, uv - halfPixel, 0 );
+	[branch] if ( p1 > 0 )
+	{
+		// Uncharted2(x)/Uncharted2(11.2), as in the bloom composite.
+		float3 x = max( gSrc2.SampleLevel( gLinearClamp, uv, 0 ).rgb, 0 ) * p1;
+		float3 bloom = ( x * ( 0.15 * x + 0.05 ) + 0.004 ) / ( x * ( 0.15 * x + 0.5 ) + 0.06 ) - 0.02 / 0.30;
+		gDst[id.xy] = float4( bloom / 0.72512938, c.a / 8.0 );
+	}
+	else
+		gDst[id.xy] = float4( c.rgb / 8.0, 1 );
 }

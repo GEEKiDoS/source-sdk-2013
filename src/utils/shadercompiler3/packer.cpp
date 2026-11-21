@@ -593,8 +593,9 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
         throw std::runtime_error("Lighting ABI 6 receiver requires packed uint t1029: " + logical);
 }
 void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const Shader &shader) {
-	static const char *const names[] = {"HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
-		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384"};
+	static const char *const names[] = {"HlightOwnerIds", "HlightFaces", "HlightTiles", "HlightDynamic",
+		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384",
+		"HlightSun0", "HlightSun1", "HlightSun2", "HlightSun3"};
 	unsigned seen = 0;
 	for (unsigned i = 0; i < desc.BoundResources; ++i) {
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -603,17 +604,17 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		bool valid = stage == VcsStage::Pixel && shader.highresAbi && b.BindCount == 1;
 		unsigned slot = 0;
 		if (b.Type == D3D_SIT_CBUFFER) {
-			slot = 8;
+			slot = 12;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "DX12HighresDrawConstants");
 		} else if (b.Type == D3D_SIT_SAMPLER) {
-			slot = 9;
+			slot = 13;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightLinear") && !(b.uFlags & D3D_SIF_COMPARISON_SAMPLER);
 		} else if (b.Type == D3D_SIT_UAV_RWBYTEADDRESS) {
-			slot = 10;
+			slot = 14;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightFailure");
 		} else {
 			slot = b.BindPoint;
-			valid = valid && slot < 8 && !strcmp(b.Name, names[slot]);
+			valid = valid && slot < 12 && !strcmp(b.Name, names[slot]);
 			if (valid && slot == 1)
 				valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
 					b.NumSamples == 132u;
@@ -628,9 +629,9 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		if (!valid || (seen & (1u << slot))) throw std::runtime_error("Highres resource contract mismatch: " + std::string(b.Name));
 		seen |= 1u << slot;
 	}
-	// HlightDynamic (slot 3) holds the captured native dynamic lightmap additions; a receiver that reads no lightmap RGB
-	// (the additive realtime pass of the two-pass PBR split) never samples it.
-	if (seen && (seen | (1u << 3)) != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
+	// RGB-only variants can drop the four sun views; sun-only variants can drop t3.
+	const unsigned mask = seen | (1u << 3);
+	if (seen && mask != 0x7fffu && mask != 0x70ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
 }
 bool pbrSpotGpuType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
 	D3D12_SHADER_TYPE_DESC type{};

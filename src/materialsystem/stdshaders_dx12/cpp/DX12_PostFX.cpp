@@ -90,7 +90,7 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			constants.p1 = pParams0[3];
 			const float *pParams1 = params[PARAMS1]->GetVecValue();
 			constants.p2 = pParams1[0];
-			if ( nPass == 9 || nPass == 10 )
+			if ( nPass == 7 || nPass == 9 || nPass == 10 )
 			{
 				constants.pad0 = pParams1[1];
 				constants.pad1 = pParams1[2];
@@ -130,6 +130,8 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 				SelectShader< postfx_flare_cs51_Static_Index, postfx_flare_cs51_Dynamic_Index >( dispatch, "postfx_flare_cs51" );
 				break;
 			case 4:
+				if ( constants.p1 > 0.f )
+					dispatch.m_Srv[1] = DX12MaterialTexture( GetShaderAPITextureBindHandle( SRCTEXTURE2, -1 ), params[SRCMIP2]->GetIntValue(), 1 );
 				SelectShader< postfx_kawase_down_cs51_Static_Index, postfx_kawase_down_cs51_Dynamic_Index >( dispatch, "postfx_kawase_down_cs51" );
 				break;
 			case 5:

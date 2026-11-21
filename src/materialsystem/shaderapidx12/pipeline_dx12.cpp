@@ -19,10 +19,11 @@ namespace shaderapidx12
 // Purpose: Creates descriptor heaps, the null SRV, the linear-clamp sampler, the
 //          zero constant buffer and ordinary/lighting root signatures
 //-----------------------------------------------------------------------------
-bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
+bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier )
 {
 	Shutdown();
 	m_pDevice = pDevice;
+	m_bVramFit = lowTier && !( CommandLine() && CommandLine()->CheckParm( "-dx12novramfit" ) );
 	m_nResourceStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_nSamplerStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
 	if ( !m_Bindings.Initialize( pDevice ) )
@@ -286,7 +287,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice )
 	if ( !m_pLightingRoot )
 		return true;
 	ranges[5].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-	ranges[5].NumDescriptors = 8;
+	ranges[5].NumDescriptors = 12;
 	ranges[5].RegisterSpace = 3;
 	params[kRootHighresTable].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
 	params[kRootHighresTable].DescriptorTable = { 1, &ranges[5] };
@@ -321,6 +322,8 @@ void CPipelineCacheDX12::Shutdown()
 	memset( m_PipelineHints, 0, sizeof( m_PipelineHints ) );
 	m_FreeResourceDescriptors.Purge();
 	m_GeometryInFlight.Purge();
+	m_VertexPage = {};
+	m_IndexPage = {};
 	++m_nRetainEpoch;
 	for ( int i = 0; i < m_UploadPages.Count(); ++i )
 		if ( m_UploadPages[i].mapped )
@@ -448,7 +451,8 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 		const D3D12_HEAP_PROPERTIES &heap = m_UploadHeap;
 		D3D12_RESOURCE_DESC desc{};
 		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		desc.Width = MAX( size_t( 4u * 1024u * 1024u ), ( nAllocationBytes + 65535u ) & ~size_t( 65535u ) ) + kConstantBufferMaxBytes;
+		const size_t nDefaultPageBytes = m_bVramFit ? 2u * 1024u * 1024u : 4u * 1024u * 1024u;
+		desc.Width = MAX( nDefaultPageBytes, ( nAllocationBytes + 65535u ) & ~size_t( 65535u ) ) + kConstantBufferMaxBytes;
 		desc.Height = 1;
 		desc.DepthOrArraySize = 1;
 		desc.MipLevels = 1;
@@ -566,6 +570,56 @@ void CPipelineCacheDX12::RetainGeometryLocked( ID3D12Resource *pResource, uint64
 	flight.fence = MAX( nRetireFence, flight.fence );
 }
 
+// Append only: a modified mesh gets a fresh slice, never bytes an earlier draw
+// may still reference. Each cursor serves a single read state on the direct queue.
+bool CPipelineCacheDX12::CopyStaticBuffer( CCommandRecorderDX12 *list, StaticBufferPage *page, ID3D12Resource *source,
+	size_t sourceOffset, size_t bytes, D3D12_RESOURCE_STATES drawState, const char *name,
+	Microsoft::WRL::ComPtr<ID3D12Resource> &resource, D3D12_GPU_VIRTUAL_ADDRESS &address )
+{
+	constexpr size_t kPageBytes = 1024 * 1024;
+	const bool packed = m_bVramFit && page && bytes <= kPageBytes / 4;
+	size_t offset = 0;
+	D3D12_RESOURCE_BARRIER barrier{};
+	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	if ( packed && page->resource && bytes <= kPageBytes - page->used )
+	{
+		resource = page->resource;
+		offset = page->used;
+		barrier.Transition.pResource = resource.Get();
+		barrier.Transition.StateBefore = drawState;
+		barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		list->ResourceBarrier( 1, &barrier );
+	}
+	else
+	{
+		D3D12_HEAP_PROPERTIES heap{};
+		heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+		D3D12_RESOURCE_DESC desc{};
+		desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		desc.Width = packed ? kPageBytes : ( bytes + 3u ) & ~size_t( 3u );
+		desc.Height = 1;
+		desc.DepthOrArraySize = 1;
+		desc.MipLevels = 1;
+		desc.SampleDesc.Count = 1;
+		desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+		if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc,
+			D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", name ) ) )
+			return false;
+		if ( packed )
+			page->resource = resource;
+	}
+	list->CopyBufferRegion( resource.Get(), offset, source, sourceOffset, bytes );
+	barrier.Transition.pResource = resource.Get();
+	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	barrier.Transition.StateAfter = drawState;
+	list->ResourceBarrier( 1, &barrier );
+	if ( packed )
+		page->used = ( offset + bytes + 15u ) & ~size_t( 15u );
+	address = resource->GetGPUVirtualAddress() + offset;
+	return true;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Dynamic buffers upload transiently; static buffers get a default-heap
 //          copy that is reused while the content version matches
@@ -581,45 +635,27 @@ bool CPipelineCacheDX12::EnsureGeometryBuffer( CCommandRecorderDX12 *pList, CVer
 	// Retention for this fence already exists; skip the table update.
 	if ( current && buffer.IsRetainedFor( nRetireFence, m_nRetainEpoch ) )
 	{
-		nGpuAddress = buffer.RetainedAddress();
+		nGpuAddress = buffer.NativeAddress();
 		return true;
 	}
 	if ( current )
 	{
-		nGpuAddress = buffer.NativeResource()->GetGPUVirtualAddress();
+		nGpuAddress = buffer.NativeAddress();
 		RetainGeometryLocked( buffer.NativeResource(), nRetireFence );
 		buffer.MarkRetained( nRetireFence, m_nRetainEpoch );
 		return true;
 	}
-	D3D12_HEAP_PROPERTIES heap{};
-	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	D3D12_RESOURCE_DESC desc{};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = ( nUsedBytes + 3u ) & ~size_t( 3u );
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-	if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "DX12 static vertex buffer" ) ) )
-		return false;
 	D3D12_GPU_VIRTUAL_ADDRESS uploadGpu = 0;
 	ID3D12Resource *uploadSource = nullptr;
 	size_t uploadOffset = 0;
-	if ( !AllocateUploadLocked( buffer.Data().data(), nUsedBytes, desc.Width, 16, nRetireFence, uploadGpu, &uploadSource, &uploadOffset, pSwapOffsets, nSwapCount, nVertexStride ? nVertexStride : buffer.Stride() ) )
+	if ( !AllocateUploadLocked( buffer.Data().data(), nUsedBytes, ( nUsedBytes + 3u ) & ~size_t( 3u ), 16, nRetireFence, uploadGpu, &uploadSource, &uploadOffset, pSwapOffsets, nSwapCount, nVertexStride ? nVertexStride : buffer.Stride() ) )
 		return false;
-	pList->CopyBufferRegion( resource.Get(), 0, uploadSource, uploadOffset, nUsedBytes );
-	D3D12_RESOURCE_BARRIER barrier{};
-	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	barrier.Transition.pResource = resource.Get();
-	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	pList->ResourceBarrier( 1, &barrier );
+	if ( !CopyStaticBuffer( pList, &m_VertexPage, uploadSource, uploadOffset, nUsedBytes, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+		"DX12 static vertex buffer", resource, nGpuAddress ) )
+		return false;
 	buffer.NativeResourceRef() = std::move( resource );
-	buffer.SetNativeResourceVersion( buffer.ContentVersion(), nUsedBytes, m_pDevice );
-	nGpuAddress = buffer.NativeResource()->GetGPUVirtualAddress();
+	buffer.SetNativeResourceVersion( buffer.ContentVersion(), nUsedBytes, m_pDevice, nGpuAddress );
 	RetainGeometryLocked( buffer.NativeResource(), nRetireFence );
 	buffer.MarkRetained( nRetireFence, m_nRetainEpoch );
 	return true;
@@ -638,45 +674,27 @@ bool CPipelineCacheDX12::EnsureIndexBuffer( CCommandRecorderDX12 *pList, CIndexB
 	const bool current = buffer.NativeResource() && buffer.NativeDevice() == m_pDevice && buffer.NativeResourceVersion() == buffer.ContentVersion() && buffer.NativeResourceBytes() >= nUsedBytes;
 	if ( current && buffer.IsRetainedFor( nRetireFence, m_nRetainEpoch ) )
 	{
-		nGpuAddress = buffer.RetainedAddress();
+		nGpuAddress = buffer.NativeAddress();
 		return true;
 	}
 	if ( current )
 	{
-		nGpuAddress = buffer.NativeResource()->GetGPUVirtualAddress();
+		nGpuAddress = buffer.NativeAddress();
 		RetainGeometryLocked( buffer.NativeResource(), nRetireFence );
 		buffer.MarkRetained( nRetireFence, m_nRetainEpoch );
 		return true;
 	}
-	D3D12_HEAP_PROPERTIES heap{};
-	heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	D3D12_RESOURCE_DESC desc{};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = ( nUsedBytes + 3u ) & ~size_t( 3u );
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 	Microsoft::WRL::ComPtr<ID3D12Resource> resource;
-	if ( FAILED( CreateCommittedResourceDX12( m_pDevice, &heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "DX12 static index buffer" ) ) )
-		return false;
 	D3D12_GPU_VIRTUAL_ADDRESS uploadGpu = 0;
 	ID3D12Resource *uploadSource = nullptr;
 	size_t uploadOffset = 0;
-	if ( !AllocateUploadLocked( buffer.Data().data(), nUsedBytes, desc.Width, 4, nRetireFence, uploadGpu, &uploadSource, &uploadOffset, nullptr, 0, 0 ) )
+	if ( !AllocateUploadLocked( buffer.Data().data(), nUsedBytes, ( nUsedBytes + 3u ) & ~size_t( 3u ), 4, nRetireFence, uploadGpu, &uploadSource, &uploadOffset, nullptr, 0, 0 ) )
 		return false;
-	pList->CopyBufferRegion( resource.Get(), 0, uploadSource, uploadOffset, nUsedBytes );
-	D3D12_RESOURCE_BARRIER barrier{};
-	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	barrier.Transition.pResource = resource.Get();
-	barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_INDEX_BUFFER;
-	barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	pList->ResourceBarrier( 1, &barrier );
+	if ( !CopyStaticBuffer( pList, &m_IndexPage, uploadSource, uploadOffset, nUsedBytes, D3D12_RESOURCE_STATE_INDEX_BUFFER,
+		"DX12 static index buffer", resource, nGpuAddress ) )
+		return false;
 	buffer.NativeResourceRef() = std::move( resource );
-	buffer.SetNativeResourceVersion( buffer.ContentVersion(), nUsedBytes, m_pDevice );
-	nGpuAddress = buffer.NativeResource()->GetGPUVirtualAddress();
+	buffer.SetNativeResourceVersion( buffer.ContentVersion(), nUsedBytes, m_pDevice, nGpuAddress );
 	RetainGeometryLocked( buffer.NativeResource(), nRetireFence );
 	buffer.MarkRetained( nRetireFence, m_nRetainEpoch );
 	return true;
@@ -746,7 +764,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	       ( input.lightingVisibilityTable.count != 1 || !input.lightingVisibilityTable.gpu.ptr ||
 	         input.lightingVisibilityTable.generation != ResourceHeapGeneration() ) ) ) )
 		return false;
-	if ( input.highresAbi && ( !m_pHighresRoot || input.highresTable.count != 8 ||
+	if ( input.highresAbi && ( !m_pHighresRoot || input.highresTable.count != 12 ||
 	     !input.highresTable.gpu.ptr || input.highresTable.generation != ResourceHeapGeneration() ||
 	     !input.highresConstants || !input.highresFailure ) )
 		return false;
@@ -1264,7 +1282,8 @@ void CPipelineCacheDX12::Reclaim( uint64_t nCompletedFence )
 			page.used = 0;
 			page.idleSinceFrame = m_nUploadFrame;
 		}
-		if ( bTrimUploads && m_UploadPages.Count() > kUploadMinPages && !page.used &&
+		const int nMinPages = m_bVramFit ? 2 : kUploadMinPages;
+		if ( bTrimUploads && m_UploadPages.Count() > nMinPages && !page.used &&
 		     page.fence <= nCompletedFence && page.idleSinceFrame != ~0ull && m_nUploadFrame >= page.idleSinceFrame &&
 		     m_nUploadFrame - page.idleSinceFrame >= kUploadIdleFrames )
 		{

@@ -9,6 +9,7 @@
 #include "materialsystem/imaterialsystem.h"
 #include "zip_utils.h"
 #include "hprobe_bsp.h"
+#include "tier0/icommandline.h"
 #include "tier0/platform.h"
 #include "tier1/lzmaDecoder.h"
 #include "tier1/utlbuffer.h"
@@ -287,6 +288,29 @@ uint32 ExtentLog2(uint32 side)
     while ((1u<<exponent)<side) ++exponent;
     return exponent;
 }
+// Positive binary16 and the unsigned 11/10-bit floats share the same exponent bias.
+// Round the discarded mantissa bits to nearest-even, carrying through the exponent
+// (also correct for subnormals). Saturate rather than producing infinity at the top.
+template<unsigned shift> uint32 PackLightComponent(uint16 bits)
+{
+	const uint32 rounded = (bits + ((1u << (shift - 1)) - 1) + ((bits >> shift) & 1u)) >> shift;
+	return std::min(rounded, 0x7bffu >> shift);
+}
+uint8 PackSunVisibility(uint16 bits)
+{
+	if (bits >= 0x3c00) return 255;
+	const unsigned exponent = bits >> 10;
+	if (exponent < 6) return 0; // Below half an R8 step, including all half subnormals.
+	const unsigned shift = 25 - exponent;
+	return uint8((((1024u + (bits & 1023u)) * 255u) + (1u << (shift - 1))) >> shift);
+}
+bool SupportsAtlasSampling(ID3D12Device *device, DXGI_FORMAT format)
+{
+	D3D12_FEATURE_DATA_FORMAT_SUPPORT support = { format };
+	const unsigned required = D3D12_FORMAT_SUPPORT1_TEXTURE2D | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE;
+	return SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+		(support.Support1 & required) == required;
+}
 void Transition(CCommandRecorderDX12 *list, ID3D12Resource *resource, D3D12_RESOURCE_STATES &state, D3D12_RESOURCE_STATES next)
 {
     if (state == next) return;
@@ -417,6 +441,8 @@ struct CHighresLightmapsDX12::Impl
     std::vector<HlightFaceGpuDX12> faces;
     std::vector<HlightTileGpuDX12> tiles;
     Texture groups[4];
+    Texture sunGroups[4];
+    uint32 separateSunRoute = 0;
     DXGI_FORMAT groupFormats[4] = {};
     Texture zeroDynamic; // Shared 1x1 exact zero; native pages materialize a companion only when needed.
     std::vector<uint32> pageGroup, pageSlice;
@@ -510,6 +536,8 @@ struct CHighresLightmapsDX12::Impl
         for (auto &special : specialPages) special = {};
         for (auto &dynamic : dynamics) { dynamic.queued = false; dynamic.nextDirty = kNoPage; }
         for (auto &group : groups) group = {};
+        for (auto &group : sunGroups) group = {};
+        separateSunRoute = 0;
         faceBuffer.Reset(); tileBuffer.Reset(); failureBuffer.Reset();
         visibilityFaces.clear(); visibilityMeshes.clear(); visibilityDescriptors.Reset(); visibilityRetainedFence=0;
         for (uint32 i=0;i<4;++i) { visibilityBuffers[i].Reset(); visibilityStates[i]=D3D12_RESOURCE_STATE_COPY_DEST; }
@@ -589,7 +617,7 @@ struct CHighresLightmapsDX12::Impl
     // Small row chunks avoid a second whole-atlas allocation. UploadStructured provides
     // fence-owned upload storage; the native texture and its old contents remain owned.
     bool Upload(Texture &texture, uint32 slice, uint32 x, uint32 y, uint32 width, uint32 height,
-        DXGI_FORMAT format, uint32 pixelBytes, const uint8 *source, size_t sourcePitch)
+        DXGI_FORMAT format, uint32 pixelBytes, const uint8 *source, size_t sourcePitch, bool splitRGBA16 = false)
     {
         const uint32 pitch = (width*pixelBytes+255u)&~255u;
         const uint64 fence = device->NextFenceValue();
@@ -600,8 +628,24 @@ struct CHighresLightmapsDX12::Impl
         {
             const uint32 rows = std::min(128u,height-row); const size_t bytes = (size_t(pitch)*rows+511)&~size_t(511);
             if (bytes > scratch.size()) return false;
-            memset(scratch.data(),0,bytes);
-            if (source) for (uint32 r=0;r<rows;++r) memcpy(scratch.data()+size_t(r)*pitch,source+size_t(row+r)*sourcePitch,size_t(width)*pixelBytes);
+            if (!source) memset(scratch.data(),0,bytes);
+            else for (uint32 r=0;r<rows;++r)
+            {
+                uint8 *dst = scratch.data() + size_t(r)*pitch;
+                const uint8 *src = source + size_t(row+r)*sourcePitch;
+                const uint16 *rgba = reinterpret_cast<const uint16 *>(src);
+                if (!splitRGBA16) memcpy(dst,src,size_t(width)*pixelBytes);
+                else if (format == DXGI_FORMAT_R8_UNORM)
+                {
+                    for (uint32 i=0;i<width;++i,rgba+=4) dst[i] = PackSunVisibility(rgba[3]);
+                }
+                else
+                {
+                    uint32 *rgb = reinterpret_cast<uint32 *>(dst);
+                    for (uint32 i=0;i<width;++i,rgba+=4)
+                        rgb[i] = PackLightComponent<4>(rgba[0]) | (PackLightComponent<4>(rgba[1]) << 11) | (PackLightComponent<5>(rgba[2]) << 22);
+                }
+            }
             ID3D12Resource *upload = nullptr; uint64 offset = 0;
             if (!api->m_Pipeline.UploadStructured(scratch.data(),bytes,512,fence,&upload,&offset)) return false;
             D3D12_TEXTURE_COPY_LOCATION src{}, dst{}; src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -681,9 +725,8 @@ struct CHighresLightmapsDX12::Impl
         sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
         sources[DX12_PROBE_T_FREE_DISTANCE] = reinterpret_cast<const uint8 *>(probeMode->freeDistance);
     }
-    // Creates the textures and their CPU descriptors on the first probe consumer draw. A grid that fits within 3/4 of the
-    // adapter's LOCAL budget is uploaded whole; a larger one (c1m2: 1334 MiB resident, while a 2 GB card is already at
-    // its budget) streams through an atlas of what fits under 7/8 of the budget, clamped to 32..256 MiB (StreamProbes).
+    // Upload small grids whole. Large grids stream through a bounded camera-local atlas. On small adapters the
+    // first probe draw precedes creation of several view targets, so today's free space is not all available.
     // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
     bool MakeProbesResident()
     {
@@ -703,10 +746,17 @@ struct CHighresLightmapsDX12::Impl
         const bool known = device->QueryLocalVideoMemory(usage,budget);
         uint32 capacity = g.brickCount;
         char failureText[192] = {}; const char *failure = nullptr;
-        if (known && usage+required > budget/4*3)
+        const uint64 smallBudget = uint64(2) << 30;
+        const uint64 lateViewBytes = uint64(288) << 20; // 260-272 MiB after probe admission on the 1080p low tier.
+        const uint64 target = budget/8*7;
+        const uint64 headroom = target > usage ? target-usage : 0;
+        const bool fitSmallAdapter = known && budget <= smallBudget && device->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+            !(CommandLine() && (CommandLine()->CheckParm("-dx12novramfit") || CommandLine()->CheckParm("-dx12vramfullprobes")));
+        const uint64 available = fitSmallAdapter ? (headroom > lateViewBytes ? headroom-lateViewBytes : 0) :
+            std::max(uint64(32) << 20, headroom);
+        if (known && ((fitSmallAdapter && required > available) || usage+required > budget/4*3))
         {
-            const uint64 minimum = uint64(32) << 20, maximum = uint64(256) << 20, target = budget/8*7;
-            const uint64 pool = std::min(maximum, std::max(minimum, target > usage ? target-usage : 0));
+            const uint64 pool = std::min(uint64(256) << 20, available);
             capacity = uint32(std::min<uint64>(g.brickCount, pool/(uint64(hprobe::kBrickProbes*hprobe::kBrickProbes*hprobe::kBrickProbes)*hprobe::kBytesPerProbe)));
             for (;;)
             {
@@ -941,11 +991,16 @@ struct CHighresLightmapsDX12::Impl
             if (pageGroup[p]==kNoPage) continue; // no native bumped receiver uses this optional page
             const auto &record=mode->pages[p]; auto &group=groups[pageGroup[p]];
             const uint32 copyWidth=std::min(record.width,group.width), copyHeight=std::min(record.height,group.height);
-            const uint32 pixelBytes=hlight::PagePixelBytes(record.format);
-            if (!Upload(group,pageSlice[p],0,0,copyWidth,copyHeight,DXGI_FORMAT(record.format),pixelBytes,
-                file.base+record.pixelsOffset,size_t(record.width)*pixelBytes)) return false;
+            const uint32 srcBytes = hlight::PagePixelBytes(record.format);
+            const uint8 *src = file.base+record.pixelsOffset;
+            const size_t stride = size_t(record.width)*srcBytes;
+            const DXGI_FORMAT format = groupFormats[pageGroup[p]];
+            auto &sun = sunGroups[pageGroup[p]];
+            if (!Upload(group,pageSlice[p],0,0,copyWidth,copyHeight,format,hlight::PagePixelBytes(format),src,stride,sun.resource != nullptr)) return false;
+            if (sun.resource && !Upload(sun,pageSlice[p],0,0,copyWidth,copyHeight,DXGI_FORMAT_R8_UNORM,1,src,stride,true)) return false;
         }
         for (auto &group : groups) if (group.resource) Transition(device->CommandList(),group.resource.Get(),group.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        for (auto &group : sunGroups) if (group.resource) Transition(device->CommandList(),group.resource.Get(),group.state,D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         for (auto &page : pages)
         {
             if (!Upload(page.ids,0,0,0,page.ids.width,page.ids.height,DXGI_FORMAT_R32_UINT,4,reinterpret_cast<const uint8 *>(page.owners.data()),size_t(page.ids.width)*4)) return false;
@@ -1267,7 +1322,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             const uint32 width=native.width, height=native.height;
             page.handle=native.handle; page.serial=texture->allocationSerial; page.nativeWidth=native.width; page.nativeHeight=native.height;
             page.owners.assign(size_t(width)*height,0);
-            if (!MakeTexture(device,page.ids,width,height,1,DXGI_FORMAT_R32_UINT) || !Heap(device,page.descriptors,8)) { s.Fail("Highres lightmaps: native companion residency failed"); return; }
+            if (!MakeTexture(device,page.ids,width,height,1,DXGI_FORMAT_R32_UINT) || !Heap(device,page.descriptors,HIGHRES_ATLAS_SRV_COUNT)) { s.Fail("Highres lightmaps: native companion residency failed"); return; }
             scratchBytes=std::max(scratchBytes,size_t(width)*16*128+512);
         }
         s.faces.resize(s.domain->faces.size());
@@ -1366,13 +1421,34 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
                 heights[group]=std::max(heights[group],PowerOfTwoExtent(hdrUsed[p][1]));
             }
         }
+        const bool compactAtlas = s.device->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+            !CommandLine()->FindParm("-dx12novramfit") && !CommandLine()->FindParm("-dx12vramfullatlas") &&
+            SupportsAtlasSampling(device,DXGI_FORMAT_R11G11B10_FLOAT) &&
+            SupportsAtlasSampling(device,DXGI_FORMAT_R8_UNORM);
+        int64 atlasBytesSaved = 0;
         uint32 widthLog[4]={}, heightLog[4]={};
         for (uint32 g=0;g<4;++g) if (counts[g])
         {
+            if (compactAtlas && formats[g] == DXGI_FORMAT_R16G16B16A16_FLOAT)
+            {
+                if (!MakeTexture(device,s.sunGroups[g],widths[g],heights[g],counts[g],DXGI_FORMAT_R8_UNORM))
+                { s.Fail("Highres lightmaps: sun atlas residency failed"); return; }
+                formats[g] = DXGI_FORMAT_R11G11B10_FLOAT;
+                s.separateSunRoute |= 16u << g;
+            }
             if (!MakeTexture(device,s.groups[g],widths[g],heights[g],counts[g],formats[g])) { s.Fail("Highres lightmaps: HDR atlas residency failed"); return; }
+            if (s.sunGroups[g].resource)
+            {
+                D3D12_RESOURCE_DESC original = s.groups[g].resource->GetDesc();
+                original.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+                atlasBytesSaved += int64(device->GetResourceAllocationInfo(0,1,&original).SizeInBytes);
+                atlasBytesSaved -= int64(CommittedBytes(device,s.groups[g].resource.Get()) + CommittedBytes(device,s.sunGroups[g].resource.Get()));
+            }
             widthLog[g]=ExtentLog2(widths[g]); heightLog[g]=ExtentLog2(heights[g]);
-            scratchBytes=std::max(scratchBytes,size_t(widths[g])*hlight::PagePixelBytes(formats[g])*128+512);
+            const size_t rowPitch = (size_t(widths[g])*hlight::PagePixelBytes(formats[g])+255)&~size_t(255);
+            scratchBytes=std::max(scratchBytes,rowPitch*128+512);
         }
+        if (s.separateSunRoute) Msg("Highres lightmaps: compact color + sun atlas, %.2f MiB saved\n", atlasBytesSaved / 1048576.0);
         s.tiles.resize(s.mode->record->tileCount);
         for (uint32 t=0;t<s.tiles.size();++t)
         {
@@ -1425,6 +1501,7 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         s.status.gpuBytes+=CommittedBytes(device,s.zeroDynamic.resource.Get());
         for (const auto &page:s.pages) s.status.gpuBytes+=CommittedBytes(device,page.ids.resource.Get())+CommittedBytes(device,page.dynamic.resource.Get());
         for (const auto &group:s.groups) s.status.gpuBytes+=CommittedBytes(device,group.resource.Get());
+        for (const auto &group:s.sunGroups) s.status.gpuBytes+=CommittedBytes(device,group.resource.Get());
         for (uint32 p=0;p<s.pages.size();++p)
         {
             auto &page=s.pages[p]; TextureView(device,page.ids.resource.Get(),DXGI_FORMAT_R32_UINT,false,1,Slot(device,page.descriptors.Get(),0));
@@ -1432,14 +1509,16 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             BufferView(device,s.tileBuffer.Get(),uint32(s.tiles.size()),sizeof(HlightTileGpuDX12),Slot(device,page.descriptors.Get(),2));
             TextureView(device,s.zeroDynamic.resource.Get(),DXGI_FORMAT_R32G32B32A32_FLOAT,false,1,Slot(device,page.descriptors.Get(),3));
             for (uint32 g=0;g<4;++g) TextureView(device,s.groups[g].resource.Get(),formats[g],true,s.groups[g].layers,Slot(device,page.descriptors.Get(),4+g));
+            for (uint32 g=0;g<4;++g) TextureView(device,s.sunGroups[g].resource.Get(),DXGI_FORMAT_R8_UNORM,true,s.sunGroups[g].layers,Slot(device,page.descriptors.Get(),8+g));
         }
-        if (!Heap(device,s.neutral.descriptors,8)) { s.Fail("Highres lightmaps: neutral descriptor allocation failed"); return; }
+        if (!Heap(device,s.neutral.descriptors,HIGHRES_ATLAS_SRV_COUNT)) { s.Fail("Highres lightmaps: neutral descriptor allocation failed"); return; }
         s.neutral.ids.width=s.neutral.ids.height=1;
         TextureView(device,nullptr,DXGI_FORMAT_R32_UINT,false,1,Slot(device,s.neutral.descriptors.Get(),0));
         BufferView(device,nullptr,1,sizeof(HlightFaceGpuDX12),Slot(device,s.neutral.descriptors.Get(),1));
         BufferView(device,nullptr,1,sizeof(HlightTileGpuDX12),Slot(device,s.neutral.descriptors.Get(),2));
         TextureView(device,nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT,false,1,Slot(device,s.neutral.descriptors.Get(),3));
         for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,true,1,Slot(device,s.neutral.descriptors.Get(),4+g));
+        for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R8_UNORM,true,1,Slot(device,s.neutral.descriptors.Get(),8+g));
         // Publish only after every validation/allocation/descriptor succeeds.
         for (uint32 p=0;p<s.pages.size();++p) { auto *texture=s.api->FindTexture(s.pages[p].handle); texture->highresPage=p; texture->highresLayoutGeneration=s.atlas->layoutGeneration; }
         s.status.layoutGeneration=s.atlas->layoutGeneration; s.status.pageCount=uint32(s.pages.size()); s.status.state=DX12_HIGHRES_READY;
@@ -1653,12 +1732,12 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
     auto &page=neutral?s.neutral:s.pages[pageIndex]; auto &pipeline=s.api->m_Pipeline; const uint64 fence=s.device->NextFenceValue();
     if (!neutral) s.NoteDraw(draw,fence,pageIndex);
     if (!s.InitializeUploads() || (!neutral && !s.UploadDynamics(pageIndex))) { s.Fail("Highres lightmaps: native upload failed"); return false; }
-    if (!pipeline.ReserveResourceDescriptors(8+32+16,fence)) { s.Fail("Highres lightmaps: descriptor residency failed"); return false; }
+    if (!pipeline.ReserveResourceDescriptors(HIGHRES_ATLAS_SRV_COUNT+32+16,fence)) { s.Fail("Highres lightmaps: descriptor residency failed"); return false; }
     const uint64 heap=pipeline.ResourceHeapGeneration();
     if (page.tableFence!=fence || page.table.generation!=heap)
     {
-        page.table=pipeline.AllocateTransientResources(8,fence); if (page.table.count!=8) { s.Fail("Highres lightmaps: descriptor table allocation failed"); return false; }
-        s.device->NativeDevice()->CopyDescriptorsSimple(8,page.table.cpu,page.descriptors->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV); page.tableFence=fence;
+        page.table=pipeline.AllocateTransientResources(HIGHRES_ATLAS_SRV_COUNT,fence); if (page.table.count!=HIGHRES_ATLAS_SRV_COUNT) { s.Fail("Highres lightmaps: descriptor table allocation failed"); return false; }
+        s.device->NativeDevice()->CopyDescriptorsSimple(HIGHRES_ATLAS_SRV_COUNT,page.table.cpu,page.descriptors->GetCPUDescriptorHandleForHeapStart(),D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV); page.tableFence=fence;
     }
     if (!neutral && page.retainedFence != fence)
     {
@@ -1672,12 +1751,14 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
         pipeline.RetainExternalResource(s.failureBuffer.Get(),fence);
         pipeline.RetainExternalResource(s.zeroDynamic.resource.Get(),fence);
         for (auto &group:s.groups) if (group.resource) pipeline.RetainExternalResource(group.resource.Get(),fence);
+        for (auto &group:s.sunGroups) if (group.resource) pipeline.RetainExternalResource(group.resource.Get(),fence);
         s.commonRetainedFence=fence;
     }
     if (page.constantsFence != fence || page.constantsView != s.views.back().serial ||
         memcmp(page.constantsModel,modelToWorld,sizeof(page.constantsModel)))
     {
         DrawConstants constants{}; constants.cHlightRoute[0]=neutral?0:page.dynamic.resource?3:1;
+        if (!neutral) constants.cHlightRoute[0] |= s.separateSunRoute;
         constants.cHlightRoute[1]=neutral?1:page.nativeWidth; constants.cHlightRoute[2]=neutral?1:page.nativeHeight;
         constants.cHlightRoute[3]=neutral?0:pageIndex+1;
         memcpy(constants.cHlightModelToWorld,modelToWorld,sizeof(constants.cHlightModelToWorld));

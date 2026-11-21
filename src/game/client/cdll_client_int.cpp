@@ -1792,7 +1792,8 @@ static void ApplyAdapterQualityTier()
 		return;
 	static const char *const s_ppLowTier[][2] =
 	{
-		{ "r_upscaler", "5" },
+		{ "r_upscaler", "6" },
+		{ "r_upscaler_scale", "0.833" },
 		{ "r_ssr", "0" },
 		{ "r_volumetric", "0" },
 		{ "r_ssr_quality", "1" },
@@ -1809,6 +1810,8 @@ static void ApplyAdapterQualityTier()
 		{ "r_shadowmap_resolution", "0" },
 		{ "r_shadowmap_max_realtime_lights", "2" },
 		{ "mat_postfx_bloom_quality", "0" },
+		{ "mat_postfx_meter_stride", "4" },
+		{ "mat_postfx_compact", "1" },
 		{ "mat_motion_blur_quality", "-1" },
 	};
 	for ( int i = 0; i < ARRAYSIZE( s_ppLowTier ); ++i )

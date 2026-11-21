@@ -3185,6 +3185,9 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			bTemporalUpscaled = UpscalerDX12_Dispatch( pRenderContext, viewRender, !MotionVectorsDX12_FrameValid( NULL ) );
 			pRenderContext.SafeRelease();
 		}
+		pRenderContext.GetFrom( materials );
+		pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Output post" );
+		pRenderContext.SafeRelease();
 
 		// A scaled main view now holds the full-size reconstruction: velocity blur, overlays, post-processing and frame
 		// generation run on the unscaled viewport. viewRender keeps the 3D render size (the valid motion-vector region).
@@ -3201,9 +3204,15 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 			pRenderContext.SafeRelease();
 		}
 
+		PostMotionDX12_t postMotion = {};
 		if ( bMotionBlurAllowed && bDX12VelocityBlur )
 		{
 			pRenderContext.GetFrom( materials );
+			// An overlay must not be swept by the scene's velocities. Preserve
+			// the standalone blur whenever anything composites between the passes.
+			if ( !bMainTemporalViewEligible || UpscalerDX12_Status() <= 0 || m_ScreenOverlayMaterial || m_UnderWaterOverlayMaterial ||
+				g_SmokeFogOverlayAlpha != 0.f ||
+				!PreparePostMotionDX12( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height, postMotion ) )
 			{
 				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
 				DoImageSpaceMotionBlur( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height );
@@ -3258,7 +3267,7 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				{
 					bFlashlightIsOn = pLocal->IsEffectActive( EF_DIMLIGHT );
 				}
-				DoEnginePostProcessing( viewPost.x, viewPost.y, viewPost.width, viewPost.height, bFlashlightIsOn );
+				DoEnginePostProcessing( viewPost.x, viewPost.y, viewPost.width, viewPost.height, bFlashlightIsOn, false, postMotion );
 			}
 			pRenderContext.SafeRelease();
 		}
@@ -3285,7 +3294,13 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 
 #if defined( L4D2 )
+		pRenderContext.GetFrom( materials );
+		pRenderContext->BeginPIXEvent( PIX_VALVE_ORANGE, "Client post effects" );
+		pRenderContext.SafeRelease();
 		GetClientModeNormal()->DoPostScreenSpaceEffects( &viewRender );
+		pRenderContext.GetFrom( materials );
+		pRenderContext->EndPIXEvent();
+		pRenderContext.SafeRelease();
 #else
 		if ( g_pMaterialSystemHardwareConfig->GetHDRType() == HDR_TYPE_INTEGER )
 		{
@@ -3296,6 +3311,9 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 #endif
 
 		CleanupMain3DView( viewRender );
+		pRenderContext.GetFrom( materials );
+		pRenderContext->EndPIXEvent();
+		pRenderContext.SafeRelease();
 
 		if ( m_rbTakeFreezeFrame[viewRender.m_eStereoEye ] )
 		{
@@ -6570,6 +6588,36 @@ void ShadowMapDepthFootprint_t::AddBounds( const Vector &mins, const Vector &max
 	for ( int i=0;i<8;++i )
 		if ( !FootprintHomogeneous(matrix,Vector(i&1?maxs.x:mins.x,i&2?maxs.y:mins.y,i&4?maxs.z:mins.z),corner[i]) )
 		{ SetFull(SHADOWMAP_FOOTPRINT_NONFINITE); return; }
+	// An unclipped box reaches its projected extrema at its corners. Visit
+	// eight vertices once, not both endpoints of all twelve edges, and round
+	// only the final extrema. Keep the edge clipper for near-plane crossings.
+	float minX = FLT_MAX, minY = FLT_MAX, maxX = -FLT_MAX, maxY = -FLT_MAX;
+	int i = 0;
+	for ( ; i < ARRAYSIZE( corner ); ++i )
+	{
+		const float *p = corner[i];
+		if ( p[3] <= kFootprintNearW )
+			break;
+		const float px = ( p[0] / p[3] * 0.5f + 0.5f ) * size;
+		const float py = ( 0.5f - p[1] / p[3] * 0.5f ) * size;
+		if ( !ShadowMap_IsFiniteFloat( px ) || !ShadowMap_IsFiniteFloat( py ) )
+		{
+			SetFull( SHADOWMAP_FOOTPRINT_NONFINITE );
+			return;
+		}
+		minX = MIN( minX, px );
+		minY = MIN( minY, py );
+		maxX = MAX( maxX, px );
+		maxY = MAX( maxY, py );
+	}
+	if ( i == ARRAYSIZE( corner ) )
+	{
+		x0 = MIN( x0, int( floorf( clamp( minX - 2.0f, 0.0f, float( size ) ) ) ) );
+		y0 = MIN( y0, int( floorf( clamp( minY - 2.0f, 0.0f, float( size ) ) ) ) );
+		x1 = MAX( x1, int( ceilf( clamp( maxX + 2.0f, 0.0f, float( size ) ) ) ) );
+		y1 = MAX( y1, int( ceilf( clamp( maxY + 2.0f, 0.0f, float( size ) ) ) ) );
+		return;
+	}
 	static const int edges[12][2]={{0,1},{0,2},{0,4},{1,3},{1,5},{2,3},{2,6},{3,7},{4,5},{4,6},{5,7},{6,7}};
 	for ( int e=0;e<12 && !full;++e )
 		IncludeClippedSegment(*this,corner[edges[e][0]],corner[edges[e][1]]);
