@@ -17,8 +17,6 @@
 #include "ienginevgui.h"
 #include "cdll_client_int.h"
 #include "vgui_int.h"
-#include "GameUI/IGameUI.h"
-#include "tier1/interface.h"
 #include "tier1/fmtstr.h"
 #include "vgui/ISurface.h"
 #include "vgui/IVGui.h"
@@ -82,21 +80,6 @@ KeyValues *TerrorClient_GetTransitionChapterInfo( bool next, KeyValues **mission
 	settings->SetString( "Game/campaign", owner->GetName() );
 	settings->SetInt( "Game/chapter", chapter->GetInt( "chapter" ) + 1 );
 	return g_TerrorModes.GetChapterInfo( settings, NULL );
-}
-
-static void SetTransitionLoadingBackground( bool state )
-{
-	// Native26F2C0 obtains/releases this actual module and GameUI011 each call.
-	CSysModule *module = Sys_LoadModule( "gameui" );
-	if ( !module ) return;
-	CreateInterfaceFn factory = Sys_GetFactory( module );
-	IGameUI *gameUI = factory ? static_cast< IGameUI * >( factory( GAMEUI_INTERFACE_VERSION, NULL ) ) : NULL;
-	if ( gameUI )
-	{
-		CTransitionStatsPanel *panel = state ? GetTransitionStatsPanel() : NULL;
-		gameUI->SetLoadingBackgroundDialog( panel ? panel->GetVPanel() : 0 );
-	}
-	Sys_UnloadModule( module );
 }
 
 CTerrorViewportPanel::CTerrorViewportPanel( IViewPort *viewport, const char *name ) :
@@ -312,28 +295,25 @@ CTransitionStatsPanel *GetTransitionStatsPanel()
 {
 	return gViewPortInterface ? dynamic_cast< CTransitionStatsPanel * >( gViewPortInterface->FindPanelByName( "transition_stats" ) ) : NULL;
 }
-bool IsTransitionStatsPanelVisible()
+bool CTransitionStatsPanel::BeginLoading()
 {
-	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
-	return panel && panel->IsVisible();
+	if ( !m_bLoadingPanel || !IsVisible() || !GetParent() )
+		return false;
+
+	// SDK chapter changes can leave PANEL_GAMEUIDLL hidden. Loading paints
+	// the engine root but skips the client HUD, so host the popup at the root
+	// without activating the pause menu or changing input focus.
+	m_PreviousParent = GetParent();
+	SetParent( enginevgui->GetPanel( PANEL_ROOT ) );
+	MoveToFront();
+	return true;
 }
-void MoveTransitionStatsPanelToLoadingParent( vgui::Panel *parent )
-{
-	// Retail GameUI does this in ShowLoadingBackgroundDialog: while the
-	// engine loads, only the GameUI panel tree is painted, so the stats
-	// panel must live there or the default loading image replaces it.
-	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
-	if ( panel && parent ) { panel->SetParent( parent->GetVPanel() ); panel->MoveToFront(); }
-}
-void HideTransitionStatsPanel()
-{
-	CTransitionStatsPanel *panel = GetTransitionStatsPanel();
-	if ( panel ) { panel->RestoreLoadingParent(); panel->ShowPanel( false ); }
-}
-void CTransitionStatsPanel::RestoreLoadingParent()
+void CTransitionStatsPanel::EndLoading()
 {
 	vgui::Panel *parent = m_PreviousParent.Get();
-	if ( parent && GetParent() != parent ) SetParent( parent->GetVPanel() );
+	SetParent( parent ? parent->GetVPanel() : 0 );
+	m_PreviousParent = NULL;
+	ShowPanel( false );
 }
 
 #if defined( L4D2 )
@@ -536,6 +516,11 @@ void CTransitionStatsPanel::PrepareForShow()
 }
 void CTransitionStatsPanel::ShowPanel( bool state )
 {
+	// Viewport resets (including game_newmap during sign-on) no longer own
+	// visibility while BaseModUI is presenting the panel for a level load.
+	if ( m_PreviousParent.Get() )
+		return;
+
 	if ( state )
 	{
 		if ( !m_bFreezeFrame && materials && view )
@@ -548,23 +533,25 @@ void CTransitionStatsPanel::ShowPanel( bool state )
 #if defined( L4D2 )
 		CaptureFreezeFrame();
 #endif
-		if ( GetParent() ) m_PreviousParent = GetParent();
 		if ( m_bFreezeFrame ) SetPostProcessingSuppressed( true );
 		PrepareForShow(); m_pHighlightPanel->CapturePlayers(); m_pHighlightPanel->AdvanceCategory();
 		m_flHideTime = gpGlobals->curtime + 10.0f; m_bUpdatedVersusResults = false;
-		MakePopup( true, false ); SetTransitionLoadingBackground( true );
+		MakePopup( true, false );
 		m_bFreezeFrame = true; view->FreezeFrame( 0.1f );
 		SetPostProcessingSuppressed( true ); m_bLoadingPanel = true;
 		BaseClass::ShowPanel( state );
 	}
-	else if ( !engine->IsDrawingLoadingImage() )
+	else
 	{
-		SetPostProcessingSuppressed( false ); m_bFreezeFrame = false;
+		if ( m_bLoadingPanel )
+		{
+			SetPostProcessingSuppressed( false ); m_bFreezeFrame = false;
 #if defined( L4D2 )
-		ReleaseFreezeFrame();
+			ReleaseFreezeFrame();
 #endif
-		SetTransitionLoadingBackground( false ); m_bLoadingPanel = false;
-		BaseClass::ShowPanel( state );
+			m_bLoadingPanel = false;
+		}
+		BaseClass::ShowPanel( false );
 	}
 }
 void CTransitionStatsPanel::SetData( KeyValues *data )
@@ -597,7 +584,7 @@ void CTransitionStatsPanel::PerformLayout()
 }
 void CTransitionStatsPanel::OnThink()
 {
-	const bool loading = engine->IsDrawingLoadingImage();
+	const bool loading = m_PreviousParent.Get() != NULL;
 	if ( m_pWorkingAnim ) m_pWorkingAnim->SetVisible( loading );
 	if ( m_pLoadingText ) m_pLoadingText->SetVisible( loading );
 	if ( m_flHideTime <= gpGlobals->curtime && !loading && ( m_bFreezeFrame || !engine->IsConnected() ) ) ShowPanel( false );
@@ -651,10 +638,6 @@ void CTransitionStatsPanel::OnTick()
 #pragma float_control( pop )
 void CTransitionStatsPanel::OnDisconnectedFromGame() { ShowPanel( false ); }
 void CTransitionStatsPanel::OnLoadedIntoGame() { ShowPanel( false ); }
-void CTransitionStatsPanel::OnHideAsLoadingPanel()
-{
-	RestoreLoadingParent();
-}
 
 class SimpleMouseoverButton : public vgui::Button
 {

@@ -351,7 +351,7 @@ public:
 	virtual ~CL4DBasePanel()
 	{
 		UpdateStockBackdrop( false );
-		::SetTerrorLoadingScreenVisible( false );
+		CloseLoadingScreens();
 		vgui::ivgui()->RemoveTickSignal( GetVPanel() );
 		static_cast< ClientModeTerrorNormal * >( GetClientModeNormal() )->SetBlurScale( 0.0f );
 	}
@@ -375,16 +375,6 @@ public:
 	{
 		int wide, tall; vgui::surface()->GetScreenSize( wide, tall );
 		if ( GetWide() != wide || GetTall() != tall ) SetBounds( 0, 0, wide, tall );
-		if ( m_bLevelLoading ) return;
-		if ( ( engine->IsInGame() && !engine->IsLevelMainMenuBackground() ) != m_bInGame ) ShowRootMenu();
-		const bool visible = enginevgui->IsGameUIVisible();
-		if ( visible && !m_bGameUIWasVisible && m_bInGame )
-		{
-			InGameMainMenu *menu = dynamic_cast<InGameMainMenu *>( m_hWindow.Get() );
-			if ( menu ) menu->OnOpen();
-		}
-		if ( !visible && m_bGameUIWasVisible ) m_Background.OnGameUIHidden();
-		m_bGameUIWasVisible = visible;
 	}
 	virtual void OnCommand( const char *command ) OVERRIDE;
 	virtual void LoadingStarted() OVERRIDE { OnCommand( "LevelLoadingStarted" ); }
@@ -394,8 +384,7 @@ public:
 		m_bLoadingFinished = !error;
 		if ( !error ) return;
 		m_bLevelLoading = false;
-		::SetTerrorLoadingScreenVisible( false );
-		HideTransitionStatsPanel();
+		CloseLoadingScreens();
 		ShowRootMenu();
 		SetVisible( true );
 	}
@@ -403,19 +392,38 @@ public:
 protected:
 	virtual void OnTick() OVERRIDE
 	{
-		if ( m_bLoadingFinished && C_BasePlayer::GetLocalPlayer() && engine->IsInGame() && !engine->IsDrawingLoadingImage() )
+		if ( m_bLoadingFinished && !engine->IsDrawingLoadingImage() )
 		{
 			m_bLoadingFinished = false;
 			m_bLevelLoading = false;
-			::SetTerrorLoadingScreenVisible( false );
-			HideTransitionStatsPanel();
-			CloseWindows();
+			CloseLoadingScreens();
+			// Loading closed the old menu even when the chapter change leaves
+			// m_bInGame unchanged. The next activation must rebuild it.
+			m_bGameUIWasVisible = false;
 			SetVisible( false );
 		}
 		// G872F0/G86A10 pause on GameUI activation/hide, including the console.
 		// The SDK GameUI only does so for maxClients <= 1. Tick delivery keeps
 		// the hide edge observable even while this panel's ancestors are hidden.
 		const bool visible = enginevgui->IsGameUIVisible();
+		if ( !m_bLevelLoading && visible )
+		{
+			const bool inGame = engine->IsInGame() && !engine->IsLevelMainMenuBackground();
+			if ( !m_bGameUIWasVisible )
+				SetVisible( true );
+			RefreshCurrentWindow();
+			if ( inGame != m_bInGame || ( !m_bGameUIWasVisible && !m_hWindow.Get() ) )
+				ShowRootMenu();
+			else if ( !m_bGameUIWasVisible )
+			{
+				if ( InGameMainMenu *menu = dynamic_cast<InGameMainMenu *>( m_hWindow.Get() ) )
+					menu->OnOpen();
+			}
+		}
+		else if ( !visible && m_bGameUIWasVisible )
+			m_Background.OnGameUIHidden();
+		m_bGameUIWasVisible = visible && !m_bLevelLoading;
+
 		if ( visible != m_bPauseGameUIWasVisible )
 		{
 			m_bPauseGameUIWasVisible = visible;
@@ -424,8 +432,6 @@ protected:
 		}
 		const bool inMap = visible && engine->IsInGame() &&
 			!engine->IsLevelMainMenuBackground() && !engine->IsDrawingLoadingImage();
-		if ( inMap )
-			RefreshCurrentWindow();
 		GraphicsDX12 *graphics = inMap ? dynamic_cast<GraphicsDX12 *>( m_hWindow.Get() ) : NULL;
 		const bool preview = graphics && graphics->HasLivePreview();
 		UpdateStockBackdrop( preview );
@@ -441,6 +447,14 @@ protected:
 			UpdateBlur( inMap );
 	}
 private:
+	void CloseLoadingScreens()
+	{
+		if ( CTransitionStatsPanel *stats = m_hLoadingStats.Get() )
+			stats->EndLoading();
+		m_hLoadingStats = NULL;
+		::SetTerrorLoadingScreenVisible( false );
+	}
+
 	void UpdateStockBackdrop( bool hide )
 	{
 		vgui::IPanel *panels = vgui::ipanel();
@@ -527,6 +541,7 @@ private:
 	CL4DFooterPanel *m_pFooter;
 	CL4DWorkshopDownPanel *m_pWorkshop;
 	vgui::DHANDLE<CL4DFrame> m_hWindow; // Root parent owns deletion; never a second registry.
+	vgui::DHANDLE<CTransitionStatsPanel> m_hLoadingStats;
 	bool m_bInGame, m_bGameUIWasVisible, m_bPauseGameUIWasVisible;
 	bool m_bLevelLoading, m_bLoadingFinished;
 	vgui::HPanel m_hHiddenStockBackdrop;
@@ -587,22 +602,19 @@ void CL4DBasePanel::OnCommand( const char *command )
 {
 	if ( !Q_stricmp( command, "LevelLoadingStarted" ) )
 	{
+		if ( m_bLevelLoading && !m_bLoadingFinished )
+			return;
+		CloseLoadingScreens();
 		m_bLevelLoading = true;
 		m_bLoadingFinished = false;
 		CloseWindows();
-		// Retail serves an in-campaign transition from CTransitionStatsPanel,
-		// registered with GameUI as the loading background. Only a load with
-		// no such panel gets the poster screen. Like GameUI's
-		// ShowLoadingBackgroundDialog, move the panel into this tree so it
-		// keeps painting while the engine loads.
-		if ( IsTransitionStatsPanelVisible() )
+		CTransitionStatsPanel *stats = GetTransitionStatsPanel();
+		if ( stats && stats->BeginLoading() )
 		{
-			MoveTransitionStatsPanelToLoadingParent( this );
-			SetVisible( true );
+			m_hLoadingStats = stats;
 			return;
 		}
 		::SetTerrorLoadingScreenParent( this );
-		::PrepareTerrorLoadingScreen();
 		::SetTerrorLoadingScreenVisible( true );
 		SetVisible( true );
 		return;
@@ -610,7 +622,8 @@ void CL4DBasePanel::OnCommand( const char *command )
 	if ( !Q_stricmp( command, "DisconnectedFromGame" ) )
 	{
 		m_bLevelLoading = false;
-		::SetTerrorLoadingScreenVisible( false );
+		m_bLoadingFinished = false;
+		CloseLoadingScreens();
 		ShowRootMenu();
 		SetVisible( true );
 		return;

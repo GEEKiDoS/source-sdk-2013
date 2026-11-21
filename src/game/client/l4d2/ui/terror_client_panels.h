@@ -51,7 +51,8 @@ public:
 	virtual bool HasInputElements() OVERRIDE { return false; }
 	virtual void ShowPanel( bool state ) OVERRIDE;
 	bool IsLoadingPanel() const { return m_bLoadingPanel; } // 2EB190.
-	void RestoreLoadingParent();
+	bool BeginLoading();
+	void EndLoading();
 	bool AdvanceLoadingAnimation(); // 2EB2B0, wall-clock, not an OnThink timer.
 	void AdvanceLoadingStats(); // 2EB1F0, called by actual loading-progress owner.
 protected:
@@ -62,7 +63,6 @@ protected:
 	virtual void OnTick() OVERRIDE; // Approved target loading-progress callback adaptation.
 	MESSAGE_FUNC( OnDisconnectedFromGame, "DisconnectedFromGame" );
 	MESSAGE_FUNC( OnLoadedIntoGame, "LoadedIntoGame" );
-	MESSAGE_FUNC( OnHideAsLoadingPanel, "HideAsLoadingPanel" );
 private:
 	void RefreshNextMap(); // 2EB5E0.
 	void SetPostProcessingSuppressed( bool state ); // 2EB1A0.
@@ -128,9 +128,6 @@ private:
 };
 
 CTransitionStatsPanel *GetTransitionStatsPanel(); // 2EB040.
-bool IsTransitionStatsPanelVisible();
-void MoveTransitionStatsPanelToLoadingParent( vgui::Panel *parent );
-void HideTransitionStatsPanel();
 void SetTerrorLoadingScreenParent( vgui::Panel *parent );
 void UpdateTerrorLoadingScreenProgress( float fraction, const char *statusText );
 void SetTerrorLoadingScreenVisible( bool state );

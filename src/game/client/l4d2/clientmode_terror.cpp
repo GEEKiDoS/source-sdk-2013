@@ -66,9 +66,7 @@
 #include "particles_new.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/callqueue.h"
-#include "tier1/interface.h"
 #include "tier0/icommandline.h"
-#include "GameUI/IGameUI.h"
 #include "toolframework_client.h"
 #include "cliententitylist.h"
 #include "filesystem.h"
@@ -407,15 +405,6 @@ static void ReceiveDisconnectToLobby( bf_read & )
 
 void ClientModeTerrorNormal::Init()
 {
-	//274240 first clears GameUI's loading background, NOT main-menu override.
-	CSysModule *module = Sys_LoadModule( "gameui" );
-	if ( module )
-	{
-		CreateInterfaceFn factory = Sys_GetFactory( module );
-		IGameUI *ui = factory ? static_cast< IGameUI * >( factory( GAMEUI_INTERFACE_VERSION, NULL ) ) : NULL;
-		if ( ui ) ui->SetLoadingBackgroundDialog( 0 );
-		Sys_UnloadModule( module );
-	}
 	BaseClass::Init();
 	if ( !InitTerrorBaseModUI() )
 		Warning( "Unable to initialize the client-owned L4D2 main menu\n" );
