@@ -18,6 +18,9 @@
 // LOCAL_LIGHTS 0: no engine model light reaches the draw (none, or every slot is an enhanced-path duplicate of a runtime
 // light); the attenuation, its interpolant and the pixel loop are compiled out.
 // DYNAMIC: "LOCAL_LIGHTS" "0..1"
+// Leaf probes use the unbumped static-light interpolant; no other model needs a new varying.
+// DYNAMIC: "LEAFPROBE" "0..1"
+// SKIP: $LEAFPROBE && ( $TANGENT || $INFECTED || !$TREESWAY )
 // Static per-vertex prop lighting (COLOR1) exists only in the unbumped legacy VS; the bumped legacy VS and its
 // shadowmap twin never read it, so the bumped PBR variant has no such combo.
 // SKIP: $STATIC_LIGHT_VERTEX && $TANGENT

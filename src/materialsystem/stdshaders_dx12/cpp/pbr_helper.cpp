@@ -38,6 +38,8 @@ ConVar mat_pbr_override( "mat_pbr_override", "1", FCVAR_ARCHIVE,
 
 static ConVar r_pbr_lean_lighting( "r_pbr_lean_lighting", "0", FCVAR_ARCHIVE,
 	"Use compact enhanced PBR lighting: bilinear atlas, L1 probes and narrow realtime shadow filters." );
+static ConVar r_pbr_leaf_lighting( "r_pbr_leaf_lighting", "0", FCVAR_ARCHIVE,
+	"Compact lighting for matte leaf cards: vertex-frequency indirect and a single diffuse forward pass." );
 // Sun PCSS sample budget of the PBR receivers: the SHADOWQUALITY dynamic combo (native_src/shadow_pcss_disks.hlsli).
 ConVar r_shadowmap_filter_quality( "r_shadowmap_filter_quality", "1", FCVAR_ARCHIVE,
 	"Soft (PCSS) sun shadow sample budget, blocker search / filter taps: 0 low 8/8, 1 medium 8/16, 2 high 16/32, 3 extra 32/64", true, 0, true, 3 );
@@ -145,6 +147,7 @@ public:
 	bool m_bAmbientOnly = false;
 	bool m_bAllowDiffuseModulation = true;
 	int m_nTreeSway = 0;
+	bool m_bMatteLeaf = false;
 	// PBR_Infected: static feature flags of g_PbrInfectedFeatures (yzw); x (burn strength) is per draw.
 	bool m_bInfected = false;
 	float m_InfectedFeatures[3] = {};
@@ -685,6 +688,10 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
 	ctx.m_bAllowDiffuseModulation = allowDiffuseModulation;
 	ctx.m_nTreeSway = s.model ? clamp( GetIntParam( v.treeSway, params ), 0, 2 ) : 0;
+	// Only simple cutout cards. Authored normal, reflection, transmission or gloss terms keep full PBR.
+	ctx.m_bMatteLeaf = ctx.m_nTreeSway != 0 && s.alphaTested && !s.infected && !v.l4n && !v.standalone &&
+		!s.hasBump && !s.hasEnvmap && !s.hasDetail && !s.hasMrao && !s.hasSpecular && !s.phong &&
+		!s.explicitRoughness && !s.emissionMode && !s.hasThickness && ps[11][0] == 0.0f && ps[11][1] == 0.0f;
 	memcpy( ctx.m_TreeSwayParams, treeSway, sizeof( ctx.m_TreeSwayParams ) );
 
 	auto &cmds = ctx.m_SemiStaticCmdsOut;
@@ -1296,6 +1303,8 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( SKINNING, pShaderAPI->GetCurrentNumBones() > 0 );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( MORPHING, pShaderAPI->IsHWMorphingEnabled() );
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( DOWATERFOG, bWaterFog );
+			const bool leafLighting = bEnhanced && pContextData->m_bMatteLeaf && r_pbr_lean_lighting.GetBool() && r_pbr_leaf_lighting.GetBool();
+			SET_DYNAMIC_VERTEX_SHADER_COMBO( LEAFPROBE, leafLighting );
 			// COLOR1 (static prop vertex lighting) exists only in the unbumped variant; the backend binds the mesh's color
 			// stream because the variant's input signature declares it.
 			SET_DYNAMIC_VERTEX_SHADER_COMBO( STATIC_LIGHT_VERTEX, !pContextData->m_bBump && lightState.m_bStaticLightVertex );
@@ -1304,7 +1313,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 
 			DECLARE_DYNAMIC_PIXEL_SHADER( pbr_model_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( PIXELFOGTYPE, pShaderAPI->GetPixelFogCombo1( true ) );
-			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, bEnhanced ? PbrReceiverQuality() : 0 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( SHADOWQUALITY, leafLighting ? 5 : bEnhanced ? PbrReceiverQuality() : 0 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( LOCAL_LIGHTS, localLights );
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_model_ps51 );
 		}
@@ -1361,7 +1370,8 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	static ConVarRef r_shadowmap_debug( "r_shadowmap_debug" );
 	static ConVarRef r_contactshadows_debug( "r_contactshadows_debug" );
 	const int mode = r_pbr_light_passes.GetInt();
-	const bool lightPasses = ( pContextData->m_bModel ? mode == 1 || mode == 2 : ( mode == 1 || mode == 3 ) && DX12HighresMap() ) &&
+	const bool singlePassLeaf = pContextData->m_bMatteLeaf && r_pbr_lean_lighting.GetBool() && r_pbr_leaf_lighting.GetBool();
+	const bool lightPasses = !singlePassLeaf && ( pContextData->m_bModel ? mode == 1 || mode == 2 : ( mode == 1 || mode == 3 ) && DX12HighresMap() ) &&
 		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 ) &&
 		!( r_contactshadows_debug.IsValid() && r_contactshadows_debug.GetBool() );
 	pShader->Draw( !lightPasses );

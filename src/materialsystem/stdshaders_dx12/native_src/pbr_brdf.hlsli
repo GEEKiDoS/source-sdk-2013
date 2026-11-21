@@ -227,6 +227,9 @@ float3 PBR_DiffuseBurley( PBRSurface s, float3 L )
 // D * Vis * F * N.L, GGX with height-correlated Smith; Burley anisotropic D and Vis when anisotropy != 0.
 float3 PBR_Specular( PBRSurface s, float3 L )
 {
+#if defined( PBR_MATTE_LEAF )
+	return 0.0;
+#else
 	float NdotL = dot( s.N, L );
 	float3 result = 0.0;
 	[branch] if ( NdotL > 0.0 )
@@ -257,6 +260,7 @@ float3 PBR_Specular( PBRSurface s, float3 L )
 		// Phong boost is already encoded in the bounded legacy reflectance F0.
 	}
 	return result;
+#endif
 }
 
 // One light: diffuse + specular. burley is chosen by the calling light loop (realtime-only lights use the

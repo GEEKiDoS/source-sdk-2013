@@ -10,6 +10,11 @@
 #define DX12_NATIVE_PS 1
 #if ENHANCED
 #define DX12_SHADOWMAPS 1
+#if SHADOWQUALITY == 5
+#define PBR_MATTE_LEAF 1
+#undef SHADOWQUALITY
+#define SHADOWQUALITY 4
+#endif
 #if SHADOWQUALITY == 4
 #define PBR_LEAN 1
 #undef NMS
@@ -38,7 +43,8 @@
 // SKIP: ( $ENHANCED == 0 ) && ( $LIGHTPASS != 0 )
 // SKIP: ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
-// DYNAMIC: "SHADOWQUALITY" "0..4"
+// DYNAMIC: "SHADOWQUALITY" "0..5"
+// SKIP: ( $SHADOWQUALITY == 5 ) && ( $TANGENT || $INFECTED || $L4N )
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
 // LOCAL_LIGHTS: pbr_model_vs51's combo of the same name (the paired stages must agree); 0 drops the engine light loop.
 // DYNAMIC: "LOCAL_LIGHTS" "0..1"
@@ -122,7 +128,11 @@ struct DX12_PS_INPUT
 #if PBR_HAS_TANGENT
 	float4 worldTangent : TEXCOORD6;
 #else
+#if defined( PBR_MATTE_LEAF )
+	float4 staticLight : TEXCOORD6;
+#else
 	float3 staticLight : TEXCOORD6;
+#endif
 #endif
 #if VERTEXCOLOR
 	float4 vertexColor : TEXCOORD7;
@@ -189,6 +199,18 @@ PBR_PSOut main( DX12_PS_INPUT i )
 
 	float4 base = BaseTexture.Sample( BaseSampler, baseUV );
 	float4 detail = float4( 1.0, 1.0, 1.0, 1.0 );
+#if defined( PBR_MATTE_LEAF )
+	// The material selector proved that there are no material maps other than base.
+	float3 N = normalize( i.worldNormal );
+	float3 modColor = g_L4D2Controls.x != 0.0 ? lerp( 1.0, g_BaseTint.rgb, base.a ) : g_BaseTint.rgb;
+	float3 baseColor = base.rgb * modColor * vertexColor.rgb;
+	const bool glossFromMask = false;
+	const float3 envMask = 1.0;
+	PBRSurface s = PBR_MakeSurface( N, normalize( i.toEye ), 0.0, baseColor, g_Surface.x, g_Surface.y,
+		g_Surface.z, g_SpecularColor.rgb, 0.0, g_Misc.y != 0.0 ? 1 : 0 );
+	s.sss = 0.0;
+	s.back = 0.0;
+#else
 	if ( g_Flags1.z != 0.0 )
 	{
 		detail = DetailTexture.Sample( DetailSampler, i.detailUV ) * float4( g_PbrDetail.rgb, 1.0 );
@@ -386,8 +408,9 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	if ( g_SubsurfaceTint.w != 0.0 && ( g_Options.x > 0.0 || g_Options.y > 0.0 ) )
 		thickness = ThicknessTexture.Sample( ThicknessSampler, baseUV ).r;
 	PBRSurface s = PBR_MakeSurface( N, V, frameT, baseColor, surface.x, surface.y, surface.z, specularF0, thickness, g_Misc.y != 0.0 ? 1 : 0 );
+#endif
 
-#if ENHANCED && !PBR_DEPTH_PREPASS && LIGHTPASS != 2
+#if ENHANCED && !PBR_DEPTH_PREPASS && LIGHTPASS != 2 && !defined( PBR_MATTE_LEAF )
 	// The probe grid is decoded once per 2x2 quad (Probe_DecodeQuad): its quad operations need every lane of the quad
 	// alive, so it runs here, in uniform control flow before the wound clip and the alpha-test kill.
 	ProbeSH probe;
@@ -402,6 +425,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		alpha *= base.a;
 #endif
 	float3 emission = 0.0;
+#if !defined( PBR_MATTE_LEAF )
 	if ( g_Flags0.w == 1.0 )
 	{
 		float selfIllum = g_L4D2Controls.w != 0.0 ? SelfIllumMaskTexture.Sample( SelfIllumMaskSampler, baseUV ).r : base.a;
@@ -409,6 +433,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	}
 	else if ( g_Flags0.w == 2.0 )
 		emission = EmissionTexture.Sample( EmissionSampler, baseUV ).rgb * g_EmissionTint.rgb;
+#endif
 #if L4N
 	emission *= pow( saturate( 1.0 - dot( N, V ) ), max( g_L4D2World.w, 0.0 ) );
 #endif
@@ -455,7 +480,10 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// light. A genuinely absent brick (including unloaded streaming bricks) still needs the old fallback.
 	float3 ambient = 0.0;
 	bool useEngineAmbient = true;
-#if ENHANCED
+#if defined( PBR_MATTE_LEAF )
+	ambient = i.staticLight.rgb + i.staticLight.a * PBR_AmbientCube( N );
+	useEngineAmbient = false;
+#elif ENHANCED
 	useEngineAmbient = !probeBrickResident;
 	[branch] if ( probeDecoded )
 	{
@@ -477,7 +505,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		}
 	}
 	float3 result = s.diffuseColor * s.ao * ambient;
-#if !PBR_HAS_TANGENT
+#if !PBR_HAS_TANGENT && !defined( PBR_MATTE_LEAF )
 	if ( useEngineAmbient )
 		result += s.diffuseColor * s.ao * i.staticLight;
 #endif
@@ -505,7 +533,11 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// multiplied by to replace it (K), both through this pixel's fog transmission, plus the direct GGX specular (S) in
 	// the same units and its luminance-weighted light distance (D). Only an envmapped material in a capturing bracket
 	// supplies it; non-envmapped materials write K/valid zero while the backend masks E/D/S stores.
+#if defined( PBR_MATTE_LEAF )
+	const bool hasEnvmap = false;
+#else
 	const bool hasEnvmap = g_Flags1.x != 0.0;
+#endif
 	float3 environment = 0.0, environmentResponse = 0.0;
 	float forwardConfidence = 0.0;
 	if ( hasEnvmap )

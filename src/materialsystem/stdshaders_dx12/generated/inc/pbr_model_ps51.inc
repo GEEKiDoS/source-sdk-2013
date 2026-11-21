@@ -2,6 +2,7 @@
 // $INFECTED && $VERTEXCOLOR
 // ( $ENHANCED == 0 ) && ( $LIGHTPASS != 0 )
 // ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
+// ( $SHADOWQUALITY == 5 ) && ( $TANGENT || $INFECTED || $L4N )
 // ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
 // defined $HDRTYPE && defined $HDRENABLED && !$HDRTYPE && $HDRENABLED
 // defined $PIXELFOGTYPE && defined $WRITEWATERFOGTODESTALPHA && ( $PIXELFOGTYPE != 1 ) && $WRITEWATERFOGTODESTALPHA
@@ -144,7 +145,7 @@ public:
 		AssertMsg( !( m_nINFECTED && m_nVERTEXCOLOR ), "Invalid combo combination ( INFECTED && VERTEXCOLOR )" );
 		AssertMsg( !( ( m_nENHANCED == 0 ) && ( m_nLIGHTPASS != 0 ) ), "Invalid combo combination ( ( ENHANCED == 0 ) && ( LIGHTPASS != 0 ) )" );
 		AssertMsg( !( ( m_nLIGHTPASS == 2 ) && ( m_nALPHATEST == 1 ) ), "Invalid combo combination ( ( LIGHTPASS == 2 ) && ( ALPHATEST == 1 ) )" );
-		return ( 30 * m_nTANGENT ) + ( 60 * m_nNMS ) + ( 120 * m_nL4N ) + ( 240 * m_nENHANCED ) + ( 480 * m_nALPHATEST ) + ( 960 * m_nINFECTED ) + ( 1920 * m_nVERTEXCOLOR ) + ( 3840 * m_nLIGHTPASS ) + 0;
+		return ( 36 * m_nTANGENT ) + ( 72 * m_nNMS ) + ( 144 * m_nL4N ) + ( 288 * m_nENHANCED ) + ( 576 * m_nALPHATEST ) + ( 1152 * m_nINFECTED ) + ( 2304 * m_nVERTEXCOLOR ) + ( 4608 * m_nLIGHTPASS ) + 0;
 	}
 };
 
@@ -173,7 +174,7 @@ public:
 
 	void SetSHADOWQUALITY( int i )
 	{
-		Assert( i >= 0 && i <= 4 );
+		Assert( i >= 0 && i <= 5 );
 		m_nSHADOWQUALITY = i;
 #ifdef _DEBUG
 		m_bSHADOWQUALITY = true;
@@ -205,7 +206,7 @@ public:
 	int GetIndex() const
 	{
 		Assert( m_bPIXELFOGTYPE && m_bSHADOWQUALITY && m_bLOCAL_LIGHTS );
-		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + ( 15 * m_nLOCAL_LIGHTS ) + 0;
+		return ( 1 * m_nPIXELFOGTYPE ) + ( 3 * m_nSHADOWQUALITY ) + ( 18 * m_nLOCAL_LIGHTS ) + 0;
 	}
 };
 
