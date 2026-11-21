@@ -243,6 +243,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	record->nativeCBuffers.RemoveAll();
 	record->nativeAbiHash = dx12native::kFnvOffset;
 	record->nativeSamplerMask = 0;
+	record->nativeCBufferMask = 0;
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -259,6 +260,14 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 		if ( reflected.name == ( record->stagePixel ? "DX12GameRegistersPS" : "DX12GameRegistersVS" ) )
 			record->gameRegisters = true;
 		reflected.shaderRegister = binding.BindPoint;
+		if ( binding.Space == 1 && binding.BindPoint < 8 )
+		{
+			// Include all array elements, not just the first register. A zero
+			// count denotes an unbounded range through the end of the table.
+			const UINT remaining = 8 - binding.BindPoint;
+			const UINT count = binding.BindCount ? MIN( binding.BindCount, remaining ) : remaining;
+			record->nativeCBufferMask |= ( ( 1u << count ) - 1u ) << binding.BindPoint;
+		}
 		reflected.registerSpace = binding.Space;
 		ID3D12ShaderReflectionConstantBuffer *pBuffer = reflection->GetConstantBufferByName( binding.Name );
 		D3D12_SHADER_BUFFER_DESC bufferDesc{};
@@ -285,6 +294,26 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 			member.name = variableDesc.Name;
 			member.offset = variableDesc.StartOffset;
 			member.byteSize = variableDesc.Size;
+		}
+		if ( reflected.registerSpace == 1 )
+		{
+			// Engine block layouts are immutable for this bytecode. Keep the
+			// per-draw check for the actual stage, material slots and fold payload.
+			for ( const dx12native::EngineCBufferLayoutDX12 &engine : dx12native::kEngineCBufferLayouts )
+			{
+				if ( reflected.name != engine.name )
+					continue;
+				reflected.engineBlock = true;
+				reflected.foldPayload = reflected.name == "DX12ComboFoldPS" || reflected.name == "DX12ComboFoldVS";
+				bool matches = engine.stage == ( record->stagePixel ? dx12native::kStagePixel : dx12native::kStageVertex ) &&
+					engine.shaderRegister == reflected.shaderRegister && engine.byteSize == reflected.byteSize &&
+					engine.memberCount == static_cast<uint32_t>( reflected.members.Count() );
+				for ( uint32_t m = 0; matches && m < engine.memberCount; ++m )
+					matches = reflected.members[m].name == engine.members[m].name &&
+						reflected.members[m].offset == engine.members[m].offset && reflected.members[m].byteSize == engine.members[m].size;
+				reflected.engineLayoutMatches = matches;
+				break;
+			}
 		}
 		reflected.layoutHash = dx12native::HashString( canonical.Get() );
 		record->nativeAbiHash = dx12native::HashBytes( reflected.name.Get(), reflected.name.Length(), record->nativeAbiHash );
@@ -2183,16 +2212,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				// Space 0 is the existing native-source contract (Source register banks at root b0-b5); space 1 is the named-block ABI.
 				if ( binding.registerSpace != 1 )
 					continue;
-				const dx12native::EngineCBufferLayoutDX12 *engine = nullptr;
-				for ( const dx12native::EngineCBufferLayoutDX12 &candidate : dx12native::kEngineCBufferLayouts )
-					if ( binding.name == candidate.name )
-					{
-						engine = &candidate;
-						break;
-					}
-				if ( engine )
+				if ( binding.engineBlock )
 				{
-					if ( binding.name == "DX12ComboFoldPS" || binding.name == "DX12ComboFoldVS" )
+					if ( binding.foldPayload )
 					{
 						const NamedShaderComboDX12 *combo = m_BoundNamedCombos[pixel ? 1 : 0];
 						if ( !combo || !combo->folded || !( pixel ? m_bBoundPixelShaderIsNamed : m_bBoundVertexShaderIsNamed ) )
@@ -2201,10 +2223,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 							return false;
 						}
 					}
-					bool matches = engine->stage == ( pixel ? dx12native::kStagePixel : dx12native::kStageVertex ) && engine->shaderRegister == binding.shaderRegister && engine->byteSize == binding.byteSize && engine->memberCount == static_cast<uint32_t>( binding.members.Count() );
-					for ( uint32_t m = 0; matches && m < engine->memberCount; ++m )
-						matches = binding.members[m].name == engine->members[m].name && binding.members[m].offset == engine->members[m].offset && binding.members[m].byteSize == engine->members[m].size;
-					if ( !matches )
+					if ( pixel != record->stagePixel || !binding.engineLayoutMatches )
 					{
 						Warning( "ShaderAPIDX12: native %s shader %s (static %d dynamic %d abi %016llx) engine cbuffer %s b%u size %u does not match the backend layout\n", stageName, logical, staticIndex, dynamicIndex, static_cast<unsigned long long>( record->nativeAbiHash ), binding.name.Get(), binding.shaderRegister, binding.byteSize );
 						return false;
@@ -2525,6 +2544,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const bool nativeVS = vsRecord && vsRecord->legacyBytecode.IsEmpty(), nativePS = psRecord && psRecord->legacyBytecode.IsEmpty();
 	bindingInput.nativeStage[0] = nativeVS;
 	bindingInput.nativeStage[1] = nativePS;
+	// Keep the descriptor tables complete, but point unused slots to the
+	// persistent zero CBV instead of uploading the last material's stale data.
+	if ( !geometryStage )
+	{
+		if ( nativeVS && vsRecord->nativeReflectionReady )
+			bindingInput.nativeCBufferMask[0] = vsRecord->nativeCBufferMask;
+		if ( nativePS && psRecord->nativeReflectionReady )
+			bindingInput.nativeCBufferMask[1] = psRecord->nativeCBufferMask;
+	}
 	memset( bindingInput.nativeData, 0, sizeof( bindingInput.nativeData ) );
 	memset( bindingInput.nativeSizes, 0, sizeof( bindingInput.nativeSizes ) );
 	memset( bindingInput.nativeVersions, 0, sizeof( bindingInput.nativeVersions ) );

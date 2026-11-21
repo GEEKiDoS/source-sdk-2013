@@ -852,7 +852,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		for ( unsigned slot = 0; slot < 8; ++slot )
 		{
 			const unsigned i = stage * 8 + slot;
-			const size_t nBytes = input.nativeSizes[i];
+			const size_t nBytes = ( input.nativeCBufferMask[stage] & ( 1u << slot ) ) ? input.nativeSizes[i] : 0;
 			sizes[slot] = nBytes ? static_cast<UINT>( ( nBytes + 255 ) & ~size_t( 255 ) ) : 256u;
 			if ( !nBytes )
 			{

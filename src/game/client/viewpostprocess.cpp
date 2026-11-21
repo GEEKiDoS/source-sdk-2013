@@ -360,7 +360,25 @@ void Terror_SetEnginePostFade( const byte *rgba, bool modulate )
 class CTerrorPostMaterials : public CAutoGameSystem
 {
 public:
-	CTerrorPostMaterials() : CAutoGameSystem( "TerrorPostMaterials" ), m_bEngineBloomAuthored( true ) {}
+	enum GradeVar_t
+	{
+		GRADE_ALLOW_LOCAL_CONTRAST = 0,
+		GRADE_LOCAL_CONTRAST_ENABLE,
+		GRADE_ALLOW_NOISE,
+		GRADE_NOISE_ENABLE,
+		GRADE_ALLOW_VIGNETTE,
+		GRADE_VIGNETTE_ENABLE,
+		GRADE_NOISE_TEXTURE,
+		GRADE_VIGNETTE_TEXTURE,
+		GRADE_BLOOM_ENABLE,
+		GRADE_VAR_COUNT
+	};
+
+public:
+	CTerrorPostMaterials() : CAutoGameSystem( "TerrorPostMaterials" ), m_bEngineBloomAuthored( true ), m_bGradeVarsValid( false )
+	{
+		for ( int i = 0; i < GRADE_VAR_COUNT; ++i ) m_pGradeVars[i] = NULL;
+	}
 	IMaterial *GetEnginePost()
 	{
 		if ( !m_Engine.IsValid() )
@@ -371,19 +389,43 @@ public:
 				material->deleteThis();
 				// Native C1C9310 uses FindMaterial, including its error material.
 				m_Engine.Init( "dev/engine_post", TEXTURE_GROUP_OTHER );
+				m_bGradeVarsValid = false;
 				return m_Engine;
 			}
 			material->SetName( "TerrorEnginePost" );
 			m_Engine.Init( "__l4d2/engine_post", material );
-			m_bEngineBloomAuthored = m_Engine->FindVar( "$bloomenable", NULL, false )->GetIntValue() != 0;
+			bool bFound = false;
+			static const char *names[GRADE_VAR_COUNT] = {
+				"$allowlocalcontrast", "$localcontrastenable", "$allownoise", "$noiseenable",
+				"$allowvignette", "$vignetteenable", "$noisetexture", "$internal_vignettetexture",
+				"$bloomenable" };
+			for ( int i = 0; i < GRADE_VAR_COUNT; ++i )
+			{
+				m_pGradeVars[i] = m_Engine->FindVar( names[i], &bFound, false );
+				if ( !bFound || !m_pGradeVars[i] || !m_pGradeVars[i]->IsDefined() )
+					m_pGradeVars[i] = NULL;
+			}
+			m_bGradeVarsValid = true;
+			IMaterialVar *pBloomEnable = GetGradeVar( GRADE_BLOOM_ENABLE );
+			m_bEngineBloomAuthored = pBloomEnable && pBloomEnable->GetIntValue() != 0;
 		}
 		return m_Engine;
+	}
+	virtual bool Init() OVERRIDE
+	{
+		GetEnginePost();
+		return true;
+	}
+	IMaterialVar *GetGradeVar( GradeVar_t var )
+	{
+		return m_bGradeVarsValid ? m_pGradeVars[var] : NULL;
 	}
 	// The DX12 post stack owns bloom; the engine post keeps its authored bloom only when it is the sole bloom.
 	void SetEngineBloomEnabled( bool enable )
 	{
-		IMaterialVar *pBloomEnable = GetEnginePost()->FindVar( "$bloomenable", NULL, false );
-		pBloomEnable->SetIntValue( enable && m_bEngineBloomAuthored );
+		IMaterialVar *pBloomEnable = GetGradeVar( GRADE_BLOOM_ENABLE );
+		if ( pBloomEnable )
+			pBloomEnable->SetIntValue( enable && m_bEngineBloomAuthored );
 	}
 	IMaterial *GetPrepare( int pass )
 	{
@@ -442,11 +484,14 @@ public:
 		m_FadeBlur.Shutdown();
 		for ( int i = 0; i < 5; ++i ) m_Prepare[i].Shutdown();
 		for ( int i = 0; i < 3; ++i ) m_DOF[i].Shutdown();
+		m_bGradeVarsValid = false;
 	}
 private:
 	CMaterialReference m_Engine, m_Prepare[5], m_FadeBlur;
 	CMaterialReference m_DOF[3];
+	IMaterialVar *m_pGradeVars[GRADE_VAR_COUNT];
 	bool m_bEngineBloomAuthored;
+	bool m_bGradeVarsValid;
 };
 static CTerrorPostMaterials g_TerrorPostMaterials;
 
@@ -3031,6 +3076,7 @@ static ConVar mat_postprocess_y( "mat_postprocess_y", "1" );
 #endif
 
 #if defined( L4D2 )
+
 // Only fold the ordinary gameplay grade. The full pass still owns particle
 // refraction, fades and blurred vignettes, including controller transitions.
 static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
@@ -3039,32 +3085,53 @@ static bool Terror_GetCompactGrade( PostGradeDX12_t &grade, int height )
 	if ( g_TerrorPostFadeType || values[4] != 0.f || values[5] != 0.f || Terror_HasVomitScreenSpaceParticles() )
 		return false;
 	IMaterial *post = g_TerrorPostMaterials.GetEnginePost();
-	if ( post->IsErrorMaterial() || V_stricmp( post->GetShaderName(), "TerrorEnginePost" ) )
+	if ( !post || post->IsErrorMaterial() || V_stricmp( post->GetShaderName(), "TerrorEnginePost" ) )
 		return false;
 	static ConVarRef contrastScale( "mat_local_contrast_scale_override" );
 	static ConVarRef edgeScale( "mat_local_contrast_edge_scale_override" );
 	static ConVarRef vignetteStart( "mat_local_contrast_vignette_start_override" );
 	static ConVarRef vignetteEnd( "mat_local_contrast_vignette_end_override" );
 	static ConVarRef grainScale( "mat_grain_scale_override" );
-	const bool local = post->FindVar( "$allowlocalcontrast", NULL )->GetIntValue() &&
-		post->FindVar( "$localcontrastenable", NULL )->GetIntValue();
+	IMaterialVar *allowLocalContrast = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_ALLOW_LOCAL_CONTRAST );
+	IMaterialVar *localContrastEnable = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_LOCAL_CONTRAST_ENABLE );
+	IMaterialVar *allowNoise = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_ALLOW_NOISE );
+	IMaterialVar *noiseEnable = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_NOISE_ENABLE );
+	IMaterialVar *allowVignette = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_ALLOW_VIGNETTE );
+	IMaterialVar *vignetteEnable = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_VIGNETTE_ENABLE );
+	if ( !allowLocalContrast || !localContrastEnable || !allowNoise || !noiseEnable ||
+		!allowVignette || !vignetteEnable )
+		return false;
+	const bool local = allowLocalContrast->GetIntValue() && localContrastEnable->GetIntValue();
 	grade.contrast[0] = local ? ( contrastScale.GetFloat() == 0.f ? values[0] : contrastScale.GetFloat() ) : 0.f;
 	grade.contrast[1] = local ? ( edgeScale.GetFloat() < -1.f ? values[1] : edgeScale.GetFloat() ) : 0.f;
 	grade.contrast[2] = local ? ( vignetteStart.GetFloat() < 0.f ? values[2] : vignetteStart.GetFloat() ) : 0.f;
 	grade.contrast[3] = local ? ( vignetteEnd.GetFloat() < 0.f ? values[3] : vignetteEnd.GetFloat() ) : 1.f;
 	if ( local && ( !mat_local_contrast_enable.GetBool() || grade.contrast[3] <= grade.contrast[2] ) )
 		return false;
-	const bool noise = height >= 720 && post->FindVar( "$allownoise", NULL )->GetIntValue() &&
-		post->FindVar( "$noiseenable", NULL )->GetIntValue();
-	const bool vignette = post->FindVar( "$allowvignette", NULL )->GetIntValue() &&
-		post->FindVar( "$vignetteenable", NULL )->GetIntValue();
+	const bool noise = height >= 720 && allowNoise->GetIntValue() && noiseEnable->GetIntValue();
+	const bool vignette = allowVignette->GetIntValue() && vignetteEnable->GetIntValue();
 	grade.finish[0] = noise ? values[6] * ( grainScale.GetFloat() == -1.f ? 1.f : grainScale.GetFloat() ) : 0.f;
 	grade.finish[1] = fmodf( gpGlobals->curtime, 1000.f );
 	grade.finish[2] = vignette ? values[7] : 0.f;
 	grade.finish[3] = 1.f;
-	grade.pNoise = grade.finish[0] > 0.f ? post->FindVar( "$noisetexture", NULL )->GetTextureValue() : NULL;
-	grade.pVignette = grade.finish[2] != 0.f ? post->FindVar( "$internal_vignettetexture", NULL )->GetTextureValue() : NULL;
-	return ( grade.finish[0] <= 0.f || grade.pNoise ) && ( grade.finish[2] == 0.f || grade.pVignette );
+	grade.pNoise = NULL;
+	grade.pVignette = NULL;
+	if ( grade.finish[0] > 0.f )
+	{
+		IMaterialVar *noiseTexture = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_NOISE_TEXTURE );
+		if ( !noiseTexture || !noiseTexture->IsTexture() )
+			return false;
+		grade.pNoise = noiseTexture->GetTextureValue();
+	}
+	if ( grade.finish[2] != 0.f )
+	{
+		IMaterialVar *vignetteTexture = g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_VIGNETTE_TEXTURE );
+		if ( !vignetteTexture || !vignetteTexture->IsTexture() )
+			return false;
+		grade.pVignette = vignetteTexture->GetTextureValue();
+	}
+	return ( grade.finish[0] <= 0.f || ( grade.pNoise && !grade.pNoise->IsError() ) ) &&
+		( grade.finish[2] == 0.f || ( grade.pVignette && !grade.pVignette->IsError() ) );
 }
 
 static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int h,bool postVGui,float bloomScale,bool engineBloom)
@@ -3075,7 +3142,8 @@ static void Terror_RenderEnginePost(IMatRenderContext *ctx,int x,int y,int w,int
  ctx->EnableColorCorrection(cc);
  g_TerrorPostMaterials.SetEngineBloomEnabled(engineBloom);
  IMaterial *post=g_TerrorPostMaterials.GetEnginePost();
- const bool local=post->FindVar("$localcontrastenable",NULL,false)->GetIntValue()!=0 && mat_local_contrast_enable.GetBool();
+ IMaterialVar *localVar=g_TerrorPostMaterials.GetGradeVar( CTerrorPostMaterials::GRADE_LOCAL_CONTRAST_ENABLE );
+ const bool local=localVar && localVar->GetIntValue()!=0 && mat_local_contrast_enable.GetBool();
  const bool vomit=Terror_HasVomitScreenSpaceParticles();
  if(!s_bScreenEffectTextureIsUpdated)
  {
