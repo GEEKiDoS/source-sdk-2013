@@ -329,6 +329,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Bicubic", TAB_DISPLAY, ROW_CHECK, { "r_lightmap_bicubic", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Detail", TAB_DISPLAY, ROW_SLIDER, { "cl_detaildist", NULL, NULL, NULL, NULL }, NULL, 0, 0, 4000, 50, NULL, ROWF_NONE },
 
+	{ "Compact PBR lighting", TAB_LIGHTING, ROW_CHECK, { "r_pbr_lean_lighting", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_DX12_ONLY },

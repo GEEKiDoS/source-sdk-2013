@@ -21,7 +21,13 @@
 #if PBR_WORLD_HIGHRES
 #define DX12_HIGHRES_LIGHTMAPS 1
 #define DX12_SHADOWMAPS 1
+#if SHADOWQUALITY == 4
+#define PBR_LEAN 1
+#undef NMS
+#define NMS 0
+#else
 #define HIGHRES_LIGHTMAP_BICUBIC 1
+#endif
 #endif
 #if !ALPHATEST
 #define DX12_EARLY_DEPTH 1
@@ -38,7 +44,7 @@
 // STATIC: "LIGHTPASS" "0..2"
 // SKIP: ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
-// DYNAMIC: "SHADOWQUALITY" "0..3"
+// DYNAMIC: "SHADOWQUALITY" "0..4"
 #include "common_ps_fxc.h"
 #include "pbr_lighting.hlsli"
 #include "pbr_forward_screenspace.hlsli"

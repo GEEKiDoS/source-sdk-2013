@@ -135,6 +135,7 @@ PBRSurface PBR_MakeSurface( float3 N, float3 V, float3 T, float3 baseColor, floa
 	s.B = float3( 0.0, 1.0, 0.0 );
 	s.alphaTB = float2( alpha, alpha );
 	s.anisotropy = 0.0;
+#if !defined( PBR_LEAN )
 	[branch] if ( g_Options.w != 0.0 )
 	{
 		float3 t = T - N * dot( N, T );
@@ -153,6 +154,7 @@ PBRSurface PBR_MakeSurface( float3 N, float3 V, float3 T, float3 baseColor, floa
 			s.anisotropy = g_Options.w;
 		}
 	}
+#endif
 	return s;
 }
 
@@ -204,6 +206,9 @@ float3 PBR_DiffuseLambert( PBRSurface s, float3 L )
 }
 float3 PBR_DiffuseBurley( PBRSurface s, float3 L )
 {
+#if defined( PBR_LEAN )
+	return PBR_DiffuseLambert( s, L );
+#else
 	float NdotL = dot( s.N, L );
 	float3 angular = PBR_DiffuseAngular( s, NdotL );
 	float3 result = 0.0;
@@ -217,6 +222,7 @@ float3 PBR_DiffuseBurley( PBRSurface s, float3 L )
 		result = s.diffuseColor * ( fdV * fdL ) * angular;
 	}
 	return result;
+#endif
 }
 // D * Vis * F * N.L, GGX with height-correlated Smith; Burley anisotropic D and Vis when anisotropy != 0.
 float3 PBR_Specular( PBRSurface s, float3 L )

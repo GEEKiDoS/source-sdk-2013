@@ -310,7 +310,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 	PBRNMSInput nmsInput, Texture2D bumpTexture, SamplerState bumpSampler )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
-#if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES
+#if defined( PBR_WORLD_HIGHRES ) && PBR_WORLD_HIGHRES && !defined( PBR_LEAN )
 	uint specCap = uint( g_ModelLocalIndices.x );
 	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
 	[branch] if ( specCap != 0u && r.tile.x < cShadowView1.x && r.tile.y < cShadowView1.y )
@@ -321,7 +321,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 #else
 	uint specCap = 0u;
 	uint4 specList = uint4( 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF );
+#if defined( PBR_LEAN )
+	bool bakedSpecular = false;
+#else
 	bool bakedSpecular = true;
+#endif
 #endif
 	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
 	bakedLookup.end = 0xFFFFFFFF; // Validated entry ranges cannot reach this sentinel.

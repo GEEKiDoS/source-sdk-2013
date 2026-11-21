@@ -10,6 +10,11 @@
 #define DX12_NATIVE_PS 1
 #if ENHANCED
 #define DX12_SHADOWMAPS 1
+#if SHADOWQUALITY == 4
+#define PBR_LEAN 1
+#undef NMS
+#define NMS 0
+#endif
 #endif
 #if !ALPHATEST
 #define DX12_EARLY_DEPTH 1
@@ -33,7 +38,7 @@
 // SKIP: ( $ENHANCED == 0 ) && ( $LIGHTPASS != 0 )
 // SKIP: ( $LIGHTPASS == 2 ) && ( $ALPHATEST == 1 )
 // DYNAMIC: "PIXELFOGTYPE" "0..2"
-// DYNAMIC: "SHADOWQUALITY" "0..3"
+// DYNAMIC: "SHADOWQUALITY" "0..4"
 // SKIP: ( $ENHANCED == 0 ) && ( $SHADOWQUALITY != 0 )
 // LOCAL_LIGHTS: pbr_model_vs51's combo of the same name (the paired stages must agree); 0 drops the engine light loop.
 // DYNAMIC: "LOCAL_LIGHTS" "0..1"

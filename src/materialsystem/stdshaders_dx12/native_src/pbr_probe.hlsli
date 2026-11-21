@@ -38,9 +38,14 @@ float3 Probe_L1( ProbeSH sh, float3 n )
 }
 float3 Probe_L2( ProbeSH sh, float3 n )
 {
+#if defined( PBR_LEAN )
+	// Eliminates the three high-band texture reads in both quad decode paths.
+	return 0.0;
+#else
 	return sh.band[3] * ( 1.092548 * n.x * n.y ) + sh.band[4] * ( 1.092548 * n.y * n.z ) +
 		sh.band[5] * ( 0.315392 * ( 3.0 * n.z * n.z - 1.0 ) ) + sh.band[6] * ( 1.092548 * n.x * n.z ) +
 		sh.band[7] * ( 0.546274 * ( n.x * n.x - n.y * n.y ) );
+#endif
 }
 float3 Probe_Irradiance( ProbeSH sh, float3 n )
 {

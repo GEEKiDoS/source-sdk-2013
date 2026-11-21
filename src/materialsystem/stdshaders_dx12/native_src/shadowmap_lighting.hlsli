@@ -618,6 +618,10 @@ float SampleSunPCSS( ShadowMapSunChart c, out float2 diagnostics )
 {
 	float result = 1.0;
 	diagnostics = 0.0;
+#if defined( PBR_LEAN )
+	// Hardware bilinear comparison at the normal-biased center. No PCSS chart steps are needed.
+	result = ShadowMap_SunCompare( c, 0.0, false );
+#else
 	// Fail before reading: never spend a blocker budget and then recurse to PCF.
 	bool pcss = cShadowView0.z == DX12_SHADOW_FILTER_PCSS && cSunRadiance.w > 0.0;
 	if ( pcss ) pcss = ShadowMap_SunPreflight( c, DX12_SHADOW_GUARD_TEXELS );
@@ -648,6 +652,7 @@ float SampleSunPCSS( ShadowMapSunChart c, out float2 diagnostics )
 		}
 	}
 	else result = ShadowMap_SunPCFChart( c );
+#endif
 	return result;
 }
 
@@ -931,6 +936,13 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 	float result = 1.0;
 	if ( c.valid )
 	{
+#if defined( PBR_LEAN )
+		// The normal-biased center is on homeFace by construction. No seam reprojection or tap preflight.
+		uint pageWidth, pageHeight;
+		g_ShadowLocalAtlas[NonUniformResourceIndex( c.homeRect.x )].GetDimensions( pageWidth, pageHeight );
+		float2 uv = ( float2( c.homeRect.yz ) + c.centerPixel + 0.5 ) / float2( pageWidth, pageHeight );
+		result = g_ShadowLocalAtlas[NonUniformResourceIndex( c.homeRect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, uv, c.centerDepth );
+#else
 		// The cubic kernel (r_shadowmap_local_filter 1) needs the receiver plane to hold over its whole footprint (the
 		// preflight also rejects a plane through the light); otherwise the bilinear taps with their own preflight.
 		[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_LOCAL_SMOOTH ) != 0 && ShadowMap_LocalPreflight( light, c, 2.0 + LOCAL_CUBIC_JITTER ) )
@@ -943,6 +955,7 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 			[loop] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
 			result = visibility * 0.25;
 		}
+#endif
 	}
 	return result;
 }

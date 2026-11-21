@@ -100,7 +100,8 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass()
 
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts()
 {
-	return r_contactshadows.GetBool() ? s_pScreenSpace : nullptr;
+	static ConVarRef compact( "r_pbr_lean_lighting", true );
+	return r_contactshadows.GetBool() && !( compact.IsValid() && compact.GetBool() ) ? s_pScreenSpace : nullptr;
 }
 
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelBounce()
