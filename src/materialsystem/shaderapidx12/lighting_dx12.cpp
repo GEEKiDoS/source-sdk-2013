@@ -1130,6 +1130,15 @@ bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12Descr
 		else buffer.Buffer.StructureByteStride = 16;
 		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), i, stride ) );
 	}
+	// t1034 is bound as a root SRV, but its table slot is part of the contiguous copy.
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC buffer{};
+		buffer.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		buffer.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		buffer.Buffer.NumElements = 1;
+		buffer.Buffer.StructureByteStride = sizeof( DX12StaticPropTriangleGpu );
+		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), DX12_LIGHTING_T_PROP_TRIANGLES, stride ) );
+	}
 	return true;
 }
 bool NativeLogicalAvailable( IFileSystem &filesystem, const char *name, bool pixel, bool lightingReceiver )
@@ -1286,7 +1295,7 @@ struct LightingViewStateDX12
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
 	ID3D12Resource *structured[4]{};
 	uint64_t structuredOffsets[4]{};
-	bool highresScope = false, cheapAuxiliary = false;
+	bool highresScope = false, cheapAuxiliary = false, receiverVisibility = false;
 };
 
 struct CLightingDX12::Impl
@@ -3408,7 +3417,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
-	if ( !input.lightingAbi || !s.highresMap || !s.views.Count() )
+	if ( !input.lightingAbi || !s.views.Count() || !s.views.Tail()->receiverVisibility )
 		return true; // PrepareReceiverDraw installed disabled constants and a legal SRV.
 	const VertexInputDX12 *position = nullptr;
 	if ( draw.layout )
@@ -3591,7 +3600,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
 	const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
-	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary )
+	const bool bindVisibility = receiverVisibility && s.highresMap;
+	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary || scope.receiverVisibility != bindVisibility )
 	{
 		scope.cheapAuxiliary = cheapAuxiliary;
 		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
@@ -3612,6 +3622,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		}
 		const Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> &nullTable = scope.nullTable;
 		if ( !nullTable ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		device->CopyDescriptorsSimple( DX12_LIGHTING_RESOURCE_TABLE_COUNT, scope.table.cpu,
+			nullTable->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 		if ( !cheapAuxiliary )
 		{
 			for ( int i = 0; i < scope.packet->leases.Count(); ++i )
@@ -3633,7 +3645,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[3] / sizes[3]; srv.Buffer.NumElements = counts[3]; srv.Buffer.StructureByteStride = sizes[3];
 			device->CreateShaderResourceView( scope.structured[3], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_TILE_SPECULAR, stride ) );
 		}
-		if ( receiverVisibility && s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		if ( bindVisibility && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		scope.receiverVisibility = bindVisibility;
 		scope.fence = fence; scope.heap = heapGeneration;
 	}
 	// Returning to a parent whose depth was used in an intervening pass requires transitions, but not descriptor copies.
