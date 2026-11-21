@@ -1798,7 +1798,7 @@ static void ApplyAdapterQualityTier()
 		{ "r_volumetric", "0" },
 		{ "r_ssr_quality", "1" },
 		{ "r_ssr_resolution", "0.5" },
-		{ "r_gtao_resolution", "0.5" },
+		{ "r_gtao_resolution", "0.25" },
 		{ "r_gtao_slices", "1" },
 		{ "r_gtao_steps", "2" },
 		{ "r_gtao_denoise", "1" },

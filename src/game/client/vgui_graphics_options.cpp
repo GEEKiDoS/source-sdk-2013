@@ -180,7 +180,7 @@ static const Choice_t kRealtimeLights[] =
 static const Choice_t kGtao[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 1, 3, 3, 2 } },
-	{ "#GraphicsOptions_Low", { 1, 0.5f, 1, 2, 1 } },
+	{ "#GraphicsOptions_Low", { 1, 0.25f, 1, 2, 1 } },
 	{ "#GraphicsOptions_Medium", { 1, 0.5f, 2, 3, 1 } },
 	{ "#GraphicsOptions_High", { 1, 1, 3, 3, 2 } },
 	{ "#GraphicsOptions_Ultra", { 1, 1, 6, 4, 2 } },
