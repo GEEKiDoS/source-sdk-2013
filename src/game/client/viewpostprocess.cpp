@@ -377,7 +377,7 @@ public:
 public:
 	CTerrorPostMaterials() : CAutoGameSystem( "TerrorPostMaterials" ), m_bEngineBloomAuthored( true ), m_bGradeVarsValid( false )
 	{
-		for ( int i = 0; i < GRADE_VAR_COUNT; ++i ) m_pGradeVars[i] = NULL;
+		for ( int i = 0; i < GRADE_VAR_COUNT; ++i ) m_nGradeVarTokens[i] = 0;
 	}
 	IMaterial *GetEnginePost()
 	{
@@ -394,17 +394,6 @@ public:
 			}
 			material->SetName( "TerrorEnginePost" );
 			m_Engine.Init( "__l4d2/engine_post", material );
-			bool bFound = false;
-			static const char *names[GRADE_VAR_COUNT] = {
-				"$allowlocalcontrast", "$localcontrastenable", "$allownoise", "$noiseenable",
-				"$allowvignette", "$vignetteenable", "$noisetexture", "$internal_vignettetexture",
-				"$bloomenable" };
-			for ( int i = 0; i < GRADE_VAR_COUNT; ++i )
-			{
-				m_pGradeVars[i] = m_Engine->FindVar( names[i], &bFound, false );
-				if ( !bFound || !m_pGradeVars[i] || !m_pGradeVars[i]->IsDefined() )
-					m_pGradeVars[i] = NULL;
-			}
 			m_bGradeVarsValid = true;
 			IMaterialVar *pBloomEnable = GetGradeVar( GRADE_BLOOM_ENABLE );
 			m_bEngineBloomAuthored = pBloomEnable && pBloomEnable->GetIntValue() != 0;
@@ -418,7 +407,15 @@ public:
 	}
 	IMaterialVar *GetGradeVar( GradeVar_t var )
 	{
-		return m_bGradeVarsValid ? m_pGradeVars[var] : NULL;
+		if ( !m_bGradeVarsValid )
+			return NULL;
+		static const char *const names[GRADE_VAR_COUNT] = {
+			"$allowlocalcontrast", "$localcontrastenable", "$allownoise", "$noiseenable",
+			"$allowvignette", "$vignetteenable", "$noisetexture", "$internal_vignettetexture",
+			"$bloomenable" };
+		// Material reloads replace the variables, even while m_Engine remains valid.
+		IMaterialVar *pVar = m_Engine->FindVarFast( names[var], &m_nGradeVarTokens[var] );
+		return pVar && pVar->IsDefined() ? pVar : NULL;
 	}
 	// The DX12 post stack owns bloom; the engine post keeps its authored bloom only when it is the sole bloom.
 	void SetEngineBloomEnabled( bool enable )
@@ -489,7 +486,7 @@ public:
 private:
 	CMaterialReference m_Engine, m_Prepare[5], m_FadeBlur;
 	CMaterialReference m_DOF[3];
-	IMaterialVar *m_pGradeVars[GRADE_VAR_COUNT];
+	unsigned int m_nGradeVarTokens[GRADE_VAR_COUNT];
 	bool m_bEngineBloomAuthored;
 	bool m_bGradeVarsValid;
 };
