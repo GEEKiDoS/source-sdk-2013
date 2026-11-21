@@ -416,6 +416,23 @@ public:
 		GetEnginePost();
 		return true;
 	}
+	void CacheGradeVars( IMaterial *pMaterial )
+	{
+		bool bFound = false;
+		static const char *names[GRADE_VAR_COUNT] = {
+			"$allowlocalcontrast", "$localcontrastenable", "$allownoise", "$noiseenable",
+			"$allowvignette", "$vignetteenable", "$noisetexture", "$internal_vignettetexture",
+			"$bloomenable" };
+		for ( int i = 0; i < GRADE_VAR_COUNT; ++i )
+		{
+			m_pGradeVars[i] = pMaterial->FindVar( names[i], &bFound, false );
+			if ( !bFound || !m_pGradeVars[i] || !m_pGradeVars[i]->IsDefined() )
+				m_pGradeVars[i] = NULL;
+		}
+		m_bGradeVarsValid = true;
+		IMaterialVar *pBloomEnable = GetGradeVar( GRADE_BLOOM_ENABLE );
+		m_bEngineBloomAuthored = pBloomEnable && pBloomEnable->GetIntValue() != 0;
+	}
 	IMaterialVar *GetGradeVar( GradeVar_t var )
 	{
 		return m_bGradeVarsValid ? m_pGradeVars[var] : NULL;
@@ -2062,6 +2079,7 @@ bool CEnginePostMaterialProxy::Init( IMaterial *pMaterial, KeyValues *pKeyValues
 	m_pTerrorFadeColor = pMaterial->FindVar( "$fadeColor", &bFoundVar, false );
 	m_pTerrorFadeType = pMaterial->FindVar( "$fade", &bFoundVar, false );
 	m_pTerrorBloomAmount = pMaterial->FindVar( "$bloomAmount", &bFoundVar, false );
+	g_TerrorPostMaterials.CacheGradeVars( pMaterial );
 #endif
 
 	return true;
