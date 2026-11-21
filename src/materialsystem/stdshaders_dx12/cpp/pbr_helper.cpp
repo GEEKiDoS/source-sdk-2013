@@ -57,8 +57,8 @@ ConVar r_world_baked_specular( "r_world_baked_specular", "0", FCVAR_ARCHIVE,
 ConVar r_pbr_light_passes( "r_pbr_light_passes", "1", FCVAR_ARCHIVE,
 	"Opaque enhanced PBR surfaces shade in two forward passes, like Source's flashlight pass: the baked/material pass, then an "
 	"additive depth-EQUAL pass for the sun, realtime local lights and projected lights. Each pass keeps far fewer registers "
-	"live than the single pass. 0 = single pass, 1 = models and world, 2 = models only, 3 = world only. r_shadowmap_debug "
-	"views always use the single pass", true, 0, true, 3 );
+	"live than the single pass. 0 = single pass, 1 = models and world, 2 = models only, 3 = world only, "
+	"4 = models and world except infected. r_shadowmap_debug views always use the single pass", true, 0, true, 4 );
 // Runtime NMS controls are owned by the client so changing them follows the same material
 // transaction and static-combo refresh path as mat_pbr_override. client.dll registers them
 // after this DLL is loaded, so a reference bound during static initialization would stay on
@@ -1361,7 +1361,8 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	static ConVarRef r_shadowmap_debug( "r_shadowmap_debug" );
 	static ConVarRef r_contactshadows_debug( "r_contactshadows_debug" );
 	const int mode = r_pbr_light_passes.GetInt();
-	const bool lightPasses = ( pContextData->m_bModel ? mode == 1 || mode == 2 : ( mode == 1 || mode == 3 ) && DX12HighresMap() ) &&
+	const bool splitModel = mode == 1 || mode == 2 || ( mode == 4 && !pContextData->m_bInfected );
+	const bool lightPasses = ( pContextData->m_bModel ? splitModel : ( mode == 1 || mode == 3 || mode == 4 ) && DX12HighresMap() ) &&
 		!( r_shadowmap_debug.IsValid() && r_shadowmap_debug.GetInt() != 0 ) &&
 		!( r_contactshadows_debug.IsValid() && r_contactshadows_debug.GetBool() );
 	pShader->Draw( !lightPasses );
