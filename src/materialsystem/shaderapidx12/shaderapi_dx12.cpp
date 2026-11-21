@@ -1713,7 +1713,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				{
 					target.rtvs[i] = m_GBufferNullRtv;
 					target.colors[i] = nullptr;
-					target.colorFormats[i] = DXGI_FORMAT_R8G8B8A8_UNORM;
+					// The descriptor is typed, but no resource backs this output slot.
+					target.colorFormats[i] = DXGI_FORMAT_UNKNOWN;
 				}
 				target.rtvs[7] = m_GBufferRtv[kGBufferAlbedoTarget];
 				target.colors[7] = m_pGBufferAlbedo.Get();
