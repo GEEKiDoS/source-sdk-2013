@@ -22,8 +22,10 @@ public:
 		const char *pMessageText;
 		const wchar_t *pMessageTextW;
 		bool bOkButtonEnabled;
+		const char *pOkButtonText;
 		void ( *pfnOkCallback )();
 		bool bCancelButtonEnabled;
+		const char *pCancelButtonText;
 		void ( *pfnCancelCallback )();
 		bool bCheckBoxEnabled;
 		const char *pCheckBoxText;
@@ -48,7 +50,7 @@ private:
 	void Complete( bool accepted );
 	void UpdateControls();
 	UsageData_t m_Usage;
-	CUtlString m_Title, m_Message, m_CheckText, m_CheckCvar;
+	CUtlString m_Title, m_Message, m_CheckText, m_CheckCvar, m_OkButtonText, m_CancelButtonText;
 	CUtlVector<wchar_t> m_WideTitle, m_WideMessage;
 	KeyValues *m_pOKCommand, *m_pCancelCommand;
 };

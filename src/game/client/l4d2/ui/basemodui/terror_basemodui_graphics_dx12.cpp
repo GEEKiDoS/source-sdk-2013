@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "cbase.h"
+#include "gpu_optimized_settings.h"
 #include "l4d2/ui/basemodui/terror_basemodui_graphics_dx12.h"
 #include "l4d2/ui/basemodui/terror_basemodui_footer.h"
 #include "l4d2/ui/terror_hud_resources.h"
@@ -21,6 +22,38 @@ static const char *const s_SectionTitles[TAB_COUNT] =
 	"#GraphicsOptions_TabFramegen", "#GraphicsOptions_TabUpscaling", "#GraphicsOptions_TabNeural"
 };
 static const int s_SectionOrder[] = { TAB_DISPLAY, TAB_UPSCALING, TAB_LIGHTING, TAB_POST, TAB_FRAMEGEN, TAB_NEURAL };
+
+void LoadGraphicsGpuLocalization()
+{
+	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_gpu_%language%.txt", NULL, false );
+}
+
+static const char *GraphicsRowHelp( const RowDef_t &row )
+{
+	const char *tip = row.note ? row.note : PerformanceTip( row );
+	return tip ? tip : "";
+}
+
+static vgui::Label *CreateGraphicsHint( vgui::Panel *parent, const char *name, const char *text )
+{
+	vgui::Label *label = new vgui::Label( parent, name, text );
+	label->SetMouseInputEnabled( false );
+	label->SetPaintBackgroundEnabled( false );
+	label->SetContentAlignment( vgui::Label::a_northwest );
+	label->SetWrap( true );
+	return label;
+}
+
+static void SizeGraphicsHint( vgui::Label *label, vgui::HFont font, int wide, int inset, int padding, const Color &color )
+{
+	label->SetFont( font );
+	label->SetFgColor( color );
+	label->SetWide( wide );
+	label->SetTextInset( inset, 0 );
+	int textWide, textTall;
+	label->GetContentSize( textWide, textTall );
+	label->SetTall( textTall + padding );
+}
 
 // Clip rows independently of flyouts, which stay on the frame.
 class GraphicsScrollViewport : public vgui::EditablePanel
@@ -52,6 +85,26 @@ public:
 	void RevealRow( vgui::Panel *row ) { m_pOwner->RevealRow( row ); }
 private:
 	GraphicsDX12 *m_pOwner;
+};
+
+class GraphicsPresetButton : public L4D360HybridButton
+{
+	DECLARE_CLASS_SIMPLE( GraphicsPresetButton, L4D360HybridButton );
+public:
+	explicit GraphicsPresetButton( GraphicsScrollViewport *parent ) :
+		BaseClass( parent, "BtnApplyOptimized", "#GraphicsOptions_ApplyOptimized", parent, "ApplyOptimized" )
+	{
+		SetVisible( false );
+	}
+	void NavigateTo() OVERRIDE
+	{
+		if ( IsVisible() && IsEnabled() )
+		{
+			if ( GraphicsScrollViewport *viewport = dynamic_cast<GraphicsScrollViewport *>( GetParent() ) )
+				viewport->RevealRow( this );
+			BaseClass::NavigateTo();
+		}
+	}
 };
 
 class GraphicsDropDown : public DropDownMenu
@@ -130,13 +183,21 @@ static KeyValues *CopyGraphicsControl( KeyValues *layout, KeyValues *source, con
 }
 
 GraphicsDX12::GraphicsDX12( vgui::Panel *parent, const char *name ) :
-	BaseClass( parent, name, "#GraphicsOptions_Title" ), m_nSection( TAB_DISPLAY ), m_nCapabilities( 0 ),
+	BaseClass( parent, name, "#GraphicsOptions_Title" ), m_nApplyY( 0 ), m_nSection( TAB_DISPLAY ), m_nCapabilities( 0 ),
 	m_nContentHeight( 0 ), m_nScrollTarget( 0 ), m_flScroll( 0 ), m_flLastThink( 0 ),
 	m_bLivePreview( false ), m_bDirty( false ), m_NrAvailability( DX12_NR_NEEDS_TEMPORAL_AA )
 {
 	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_%language%.txt", NULL, false );
+	LoadGraphicsGpuLocalization();
+	g_pVGuiLocalize->AddFile( "resource/graphicsoptions_perf_%language%.txt", NULL, false );
 	m_pViewport = new GraphicsScrollViewport( this );
 	m_pScroll = new vgui::ScrollBar( this, "GraphicsScrollBar", true );
+	m_pDetectedGpu = CreateGraphicsHint( m_pViewport, "GraphicsDetectedGpu", "" );
+	m_pRecommendationStatus = CreateGraphicsHint( m_pViewport, "GraphicsRecommendationStatus", "" );
+	m_pPerformanceSummary = CreateGraphicsHint( m_pViewport, "GraphicsPerformanceSummary", "#GraphicsOptions_PerformanceSummary" );
+	m_pLiveHelp = CreateGraphicsHint( this, "GraphicsLiveHelp", "" );
+	m_pApplyOptimized = new GraphicsPresetButton( m_pViewport );
+	m_pApplyOptimized->SetDefaultTextColor( Color( 224, 215, 188, 255 ) );
 	for ( int section = 0; section < TAB_COUNT; ++section )
 	{
 		m_nHeaderY[section] = -1;
@@ -203,7 +264,7 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 		control->SetString( "navUp", "" );
 		control->SetString( "navDown", "" );
 		control->SetString( "BtnDropButton/labelText", row.label );
-		control->SetString( "BtnDropButton/tooltiptext", row.note ? row.note : "" );
+		control->SetString( "BtnDropButton/tooltiptext", GraphicsRowHelp( row ) );
 		control->SetString( "BtnDropButton/disabled_tooltiptext", "" );
 		if ( row.kind == ROW_SLIDER )
 		{
@@ -226,6 +287,16 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 	back->SetString( "tooltiptext", "" );
 	back->SetString( "navUp", "" );
 	back->SetString( "navDown", "" );
+	KeyValues::AutoDelete apply( back->MakeCopy() );
+	apply->SetString( "fieldName", m_pApplyOptimized->GetName() );
+	apply->SetInt( "visible", m_pApplyOptimized->IsVisible() );
+	apply->SetInt( "tabPosition", 0 );
+	apply->SetInt( "IgnoreButtonA", 0 );
+	apply->SetString( "navLeft", "" );
+	apply->SetString( "navRight", "" );
+	apply->SetString( "labelText", "#GraphicsOptions_ApplyOptimized" );
+	apply->SetString( "command", "ApplyOptimized" );
+	apply->SetString( "tooltiptext", "#GraphicsOptions_ApplyOptimizedHelp" );
 
 	FlyoutMenu::CloseActiveMenu();
 	const bool refreshing = m_bRefreshing;
@@ -236,6 +307,7 @@ void GraphicsDX12::LoadControlSettings( const char *resource, const char *pathID
 		if ( m_Widgets[i].control.Get() )
 			m_Widgets[i].control->SetParent( this );
 	}
+	m_pApplyOptimized->ApplySettings( apply );
 	BaseClass::LoadControlSettings( resource, pathID, layout, conditions );
 	m_Widgets.RemoveAll();
 	for ( int i = 0; i < count; ++i )
@@ -267,6 +339,7 @@ void GraphicsDX12::OnOpen()
 	SetFooterEnabled( !m_bLivePreview );
 	UpscalerDX12_RequestCapabilityProbe();
 	if ( !LoadLayout( "resource/ui/l4d360ui/video.res" ) ) { NavigateBack(); return; }
+	ReadRecommendation();
 	ReadSettings();
 	BaseClass::OnOpen();
 	PerformLayout();
@@ -314,7 +387,7 @@ void GraphicsDX12::ReadSettings( bool rebuildChoices )
 				L4D360HybridButton *item = menu->AddDynamicRow( CFmtStr( "BtnChoice%d", choice ), label, CFmtStr( "GraphicsChoice_%d_%d", widget.rowIndex, choice ) );
 				if ( item )
 				{
-					item->SetTooltip( row.note ? row.note : "" );
+					item->SetTooltip( GraphicsRowHelp( row ) );
 					item->SetWide( Scale( 210 ) );
 				}
 			}
@@ -328,6 +401,82 @@ void GraphicsDX12::ReadSettings( bool rebuildChoices )
 		drop->SetCurrentSelection( selectedCommand );
 	}
 	m_bRefreshing = refreshing;
+}
+
+void GraphicsDX12::ReadRecommendation()
+{
+	using namespace GpuOptimizedSettings;
+	const bool dx12 = IsDX12Renderer();
+	Recommendation_t recommendation = {};
+	const bool ready = dx12 && GetRecommendation( recommendation );
+	m_pDetectedGpu->SetVisible( dx12 );
+	m_pRecommendationStatus->SetVisible( ready );
+	m_pPerformanceSummary->SetVisible( dx12 );
+	m_pApplyOptimized->SetVisible( ready );
+	m_pApplyOptimized->SetEnabled( ready );
+	if ( !ready )
+	{
+		m_pDetectedGpu->SetText( "#GraphicsOptions_DetectedGpuUnavailable" );
+		return;
+	}
+
+	wchar_t adapter[512] = {}, text[768];
+	V_UTF8ToUnicode( recommendation.m_szAdapter, adapter, sizeof( adapter ) );
+	const wchar_t *gpu = adapter[0] ? adapter : g_pVGuiLocalize->Find( "#GraphicsOptions_UnidentifiedGpu" );
+	const wchar_t *detected = g_pVGuiLocalize->Find( "#GraphicsOptions_DetectedGpu" );
+	if ( detected && gpu )
+	{
+		g_pVGuiLocalize->ConstructString( text, sizeof( text ), detected, 1, gpu );
+		m_pDetectedGpu->SetText( text );
+	}
+	else
+		m_pDetectedGpu->SetText( adapter );
+
+	const char *sourceToken = "#GraphicsOptions_RecommendationUnknown";
+	switch ( recommendation.m_Source )
+	{
+	case SOURCE_DATABASE:
+		if ( recommendation.m_szEntry[0] )
+			sourceToken = "#GraphicsOptions_RecommendationDatabase";
+		break;
+	case SOURCE_ESTIMATE: sourceToken = "#GraphicsOptions_RecommendationEstimate"; break;
+	case SOURCE_INTEGRATED: sourceToken = "#GraphicsOptions_RecommendationIntegrated"; break;
+	case SOURCE_UNKNOWN: break;
+	}
+	const char *presetToken = PresetToken( recommendation.m_Preset );
+	const wchar_t *preset = g_pVGuiLocalize->Find( presetToken );
+	const wchar_t *status = g_pVGuiLocalize->Find( sourceToken );
+	if ( status && preset )
+	{
+		wchar_t entry[128] = {};
+		V_UTF8ToUnicode( recommendation.m_szEntry, entry, sizeof( entry ) );
+		g_pVGuiLocalize->ConstructString( text, sizeof( text ), status, 2, preset, entry );
+		m_pRecommendationStatus->SetText( text );
+	}
+	else
+		m_pRecommendationStatus->SetText( presetToken );
+}
+
+int GraphicsDX12::LayoutRecommendation( vgui::IScheme *uiScheme )
+{
+	const int wide = m_pViewport->GetWide();
+	const int inset = Scale( 5 );
+	const vgui::HFont medium = uiScheme->GetFont( "DefaultMedium", true );
+	SizeGraphicsHint( m_pDetectedGpu, uiScheme->GetFont( "DefaultBold", true ), wide, inset, Scale( 2 ), Color( 224, 215, 188, 255 ) );
+	int y = Scale( 4 ) + m_pDetectedGpu->GetTall();
+	if ( m_pRecommendationStatus->IsVisible() )
+	{
+		SizeGraphicsHint( m_pRecommendationStatus, medium, wide, inset, Scale( 2 ), Color( 216, 216, 216, 255 ) );
+		y += m_pRecommendationStatus->GetTall();
+	}
+	m_nApplyY = y;
+	if ( m_pApplyOptimized->IsVisible() )
+	{
+		m_pApplyOptimized->SetWide( wide );
+		y += m_pApplyOptimized->GetTall() + Scale( 3 );
+	}
+	SizeGraphicsHint( m_pPerformanceSummary, medium, wide, inset, Scale( 4 ), Color( 190, 190, 190, 255 ) );
+	return y + m_pPerformanceSummary->GetTall();
 }
 
 void GraphicsDX12::PerformLayout()
@@ -351,13 +500,20 @@ void GraphicsDX12::PerformLayout()
 	const int listWide = MIN( GetWide() - 2 * margin, Scale( 428 ) );
 	const int x = m_bLivePreview ? margin : ( GetWide() - listWide ) / 2;
 	const int top = Scale( m_bLivePreview ? 64 : 98 );
-	const int bottom = MAX( top + 1, m_nContentTall - Scale( 41 ) );
+	// Live preview has no full-screen footer; keep focused-row help in its pane.
+	const int helpTall = m_bLivePreview ? Scale( 48 ) : 0;
+	const int bottom = MAX( top + 1, m_nContentTall - Scale( 41 ) - helpTall );
 	const int barWide = Scale( 12 );
 	m_pViewport->SetBounds( x, top, MAX( 1, listWide - barWide - Scale( 6 ) ), bottom - top );
 	m_pScroll->SetBounds( x + listWide - barWide, top, barWide, bottom - top );
 	m_pScroll->SetButtonPressedScrollValue( Scale( 21 ) );
 	if ( vgui::Panel *done = FindChildByName( "BtnGraphicsBack" ) )
-		done->SetPos( x, bottom + Scale( 9 ) );
+		done->SetPos( x, bottom + helpTall + Scale( 9 ) );
+	m_pLiveHelp->SetVisible( m_bLivePreview );
+	m_pLiveHelp->SetBounds( x, bottom + Scale( 3 ), m_pViewport->GetWide(), helpTall );
+	m_pLiveHelp->SetTextInset( Scale( 5 ), 0 );
+	m_pLiveHelp->SetFont( vgui::scheme()->GetIScheme( GetScheme() )->GetFont( "DefaultMedium", true ) );
+	m_pLiveHelp->SetFgColor( Color( 216, 216, 216, 255 ) );
 	if ( vgui::Panel *background = FindChildByName( "ImgBackground" ) )
 		background->SetVisible( !m_bLivePreview );
 	LayoutRows();
@@ -372,7 +528,9 @@ void GraphicsDX12::LayoutRows()
 	const bool bNrEnabled = m_NrAvailability == DX12_NR_READY;
 	m_pNrRequirement->SetVisible( false );
 	bool bMoveFocusToDone = false;
-	int y = 0;
+	int y = m_pDetectedGpu->IsVisible() ? LayoutRecommendation( uiScheme ) : 0;
+	if ( m_pApplyOptimized->IsVisible() )
+		first = previous = m_pApplyOptimized;
 	for ( int order = 0; order < ARRAYSIZE( s_SectionOrder ); ++order )
 	{
 		const int section = s_SectionOrder[order];
@@ -507,6 +665,11 @@ void GraphicsDX12::PositionRows()
 	for ( int section = 0; section < TAB_COUNT; ++section )
 		m_pHeaders[section]->SetPos( 0, m_nHeaderY[section] - offset );
 	m_pNrRequirement->SetPos( 0, m_nHeaderY[TAB_NEURAL] + m_pHeaders[TAB_NEURAL]->GetTall() - offset );
+	m_pDetectedGpu->SetPos( 0, Scale( 4 ) - offset );
+	m_pRecommendationStatus->SetPos( 0, Scale( 4 ) + m_pDetectedGpu->GetTall() - offset );
+	m_pApplyOptimized->SetPos( 0, m_nApplyY - offset );
+	const int applyTall = m_pApplyOptimized->IsVisible() ? m_pApplyOptimized->GetTall() + Scale( 3 ) : 0;
+	m_pPerformanceSummary->SetPos( 0, m_nApplyY + applyTall - offset );
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		if ( m_Widgets[i].control.Get() )
@@ -536,6 +699,8 @@ void GraphicsDX12::OnThink()
 	{
 		LayoutRows();
 	}
+	if ( m_bLivePreview )
+		UpdateLiveHelp();
 	const double now = Plat_FloatTime();
 	const float dt = clamp( float( now - m_flLastThink ), 0.0f, 0.05f );
 	m_flLastThink = now;
@@ -553,6 +718,20 @@ void GraphicsDX12::OnThink()
 	}
 }
 
+void GraphicsDX12::UpdateLiveHelp()
+{
+	vgui::Panel *row = m_hLastFocus.Get();
+	L4D360HybridButton *button = dynamic_cast<L4D360HybridButton *>( row );
+	if ( row && !button )
+		button = dynamic_cast<L4D360HybridButton *>( row->FindChildByName( "BtnDropButton" ) );
+	const char *help = button ? button->GetTooltip() : "";
+	if ( Q_strcmp( m_LiveHelpToken.String(), help ) )
+	{
+		m_LiveHelpToken = help;
+		m_pLiveHelp->SetText( help );
+	}
+}
+
 void GraphicsDX12::SetScroll( int value )
 {
 	m_nScrollTarget = clamp( value, 0, MAX( 0, m_nContentHeight - m_pViewport->GetTall() ) );
@@ -563,29 +742,44 @@ void GraphicsDX12::SetScroll( int value )
 
 void GraphicsDX12::RevealRow( vgui::Panel *row )
 {
+	if ( m_hLastFocus.Get() && m_hLastFocus.Get() != row )
+		m_hLastFocus->NavigateFrom();
 	m_hLastFocus = row;
+	if ( row == m_pApplyOptimized )
+	{
+		RevealControl( m_nApplyY, row->GetTall() );
+		return;
+	}
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		if ( m_Widgets[i].control.Get() != row )
 			continue;
-		const int y = m_Widgets[i].y;
-		const int bottom = y + row->GetTall();
-		if ( y < m_flScroll )
-			SetScroll( y );
-		else if ( bottom > m_flScroll + m_pViewport->GetTall() )
-			SetScroll( bottom - m_pViewport->GetTall() );
-		else
-			SetScroll( (int)m_flScroll );
+		RevealControl( m_Widgets[i].y, row->GetTall() );
 		break;
 	}
+}
+
+void GraphicsDX12::RevealControl( int y, int tall )
+{
+	if ( y < m_flScroll )
+		SetScroll( y );
+	else if ( y + tall > m_flScroll + m_pViewport->GetTall() )
+		SetScroll( y + tall - m_pViewport->GetTall() );
+	else
+		SetScroll( (int)m_flScroll );
 }
 
 void GraphicsDX12::FocusSection()
 {
 	const int section = m_nHeaderY[m_nSection] >= 0 ? m_nSection : TAB_DISPLAY;
-	SetScroll( MAX( 0, m_nHeaderY[section] ) );
+	SetScroll( section == TAB_DISPLAY ? 0 : MAX( 0, m_nHeaderY[section] ) );
 	if ( m_hLastFocus.Get() )
 		m_hLastFocus->NavigateFrom();
+	if ( section == TAB_DISPLAY && m_pApplyOptimized->IsVisible() )
+	{
+		m_pApplyOptimized->NavigateTo();
+		return;
+	}
 	for ( int i = 0; i < m_Widgets.Count(); ++i )
 	{
 		vgui::Panel *row = m_Widgets[i].control.Get();
@@ -633,6 +827,21 @@ void GraphicsDX12::OnFlyoutMenuClosed( vgui::Panel *returnTo ) { UpdateFooter();
 void GraphicsDX12::OnCommand( const char *command )
 {
 	if ( m_bRefreshing ) return;
+	if ( !Q_stricmp( command, "ApplyOptimized" ) )
+	{
+		if ( !m_pApplyOptimized->IsVisible() || !m_pApplyOptimized->IsEnabled() )
+			return;
+		FlyoutMenu::CloseActiveMenu();
+		if ( GpuOptimizedSettings::ApplyRecommended() )
+		{
+			m_bDirty = true;
+			SaveSettings();
+			ReadSettings();
+			LayoutRows();
+			UpdateFooter();
+		}
+		return;
+	}
 	if ( const char *selection = StringAfterPrefix( command, "GraphicsChoice_" ) )
 	{
 		const int rowIndex = atoi( selection );
