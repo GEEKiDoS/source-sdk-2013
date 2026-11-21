@@ -1877,12 +1877,12 @@ The memory reductions preserve formats and working pixels:
   linear AO border samples depend on those sizes.
 
 The low adapter tier also fits steady-state memory from device start, including installs whose quality preset
-has already been recorded. It defers legacy fullscreen/debug and flashlight-target backing until a draw or copy
-uses it, starts the bloom chains at the first mip actually read (half output resolution), packs small static
-geometry into separate vertex, index and prop-triangle pages, reuses eight-byte occlusion results within
-fence-retired readback pages, and uses smaller upload pages with a lower idle floor. It keeps the existing
+has already been recorded. It starts the bloom chains at the first mip actually read (half output resolution),
+packs small static geometry into separate vertex, index and prop-triangle pages, reuses eight-byte occlusion
+results within fence-retired readback pages, and uses smaller upload pages with a lower idle floor. It keeps the existing
 shadow-resolution preset. The high-resolution lightmap atlas converts eligible RGBA16F pages during upload to
-R11G11B10F color and R8 sun visibility, without changing the sidecar format or the directional pages.
+R11G11B10F color and R8 sun visibility, without changing the sidecar format or the directional pages. Radiance-only
+samples do not fetch the sun texture. `-dx12vramfullatlas` leaves the original RGBA16F atlas in place for comparison.
 
 One top mip is omitted for eligible managed block-compressed world/model textures with a top level of at least
 256 KiB. UI, dynamic textures, cubemaps, lightmaps and first-person weapon textures are not selected. Use

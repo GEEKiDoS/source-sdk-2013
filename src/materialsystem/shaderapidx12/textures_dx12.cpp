@@ -61,16 +61,6 @@ const char *TextureMemoryCategory( const char *name, bool renderTarget )
 	return renderTarget ? "render textures" : "textures";
 }
 
-// Legacy/diagnostic targets must still exist as material-system handles. The
-// native backing is only needed when the first draw/copy actually uses one.
-bool IsLazyRenderTarget( const char *pName )
-{
-	return pName && ( !V_stricmp( pName, "_rt_FullFrameFB1" ) ||
-		!V_stricmp( pName, "_rt_Fullscreen" ) || !V_stricmp( pName, "_rt_ResolvedFullFrameDepth" ) ||
-		!V_stricmp( pName, "_rt_PBRGBufferDebug" ) || !V_stricmp( pName, "_rt_ShadowDummy" ) ||
-		!V_strnicmp( pName, "_rt_ShadowDepthTexture_", 23 ) );
-}
-
 //-----------------------------------------------------------------------------
 // Purpose: Vendor depth formats that are allocated as depth-stencil resources
 //-----------------------------------------------------------------------------
@@ -1209,8 +1199,7 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	pRecord->initializedSubresources.FillWithValue( 0 );
 	pRecord->gpuAuthoritativeSubresources.SetCount( nSubresources * pRecord->copies );
 	pRecord->gpuAuthoritativeSubresources.FillWithValue( 0 );
-	const bool bLazyTarget = bVramFit && bRenderTarget && IsLazyRenderTarget( debugName );
-	if ( !bLazyTarget && !AllocateNativeTexture( *pRecord ) )
+	if ( !AllocateNativeTexture( *pRecord ) )
 	{
 		delete pRecord;
 		return 0;
@@ -2277,7 +2266,7 @@ bool PrepareRenderTargetsDX12( CShaderAPIDX12 &api, RenderTargetBindingDX12 &bin
 			else
 			{
 				CShaderAPIDX12::TextureRecord *pRecord = api.FindTexture( hTarget );
-				if ( pRecord == nullptr || !( pRecord->flags & TEXTURE_CREATE_RENDERTARGET ) || ( pRecord->flags & TEXTURE_CREATE_DEPTHBUFFER ) || !api.EnsureTextureResident( *pRecord ) || !pRecord->rtv.ptr )
+				if ( pRecord == nullptr || !( pRecord->flags & TEXTURE_CREATE_RENDERTARGET ) || ( pRecord->flags & TEXTURE_CREATE_DEPTHBUFFER ) || !pRecord->rtv.ptr || !api.EnsureTextureResident( *pRecord ) )
 				{
 					Warning( "ShaderAPIDX12: invalid MRT slot %d handle %lld existing=%d\n", index, static_cast<long long>( hTarget ), pRecord != nullptr );
 					return false;
@@ -2325,7 +2314,7 @@ bool PrepareRenderTargetsDX12( CShaderAPIDX12 &api, RenderTargetBindingDX12 &bin
 		else if ( api.m_hDepthTarget > 0 )
 		{
 			CShaderAPIDX12::TextureRecord *pRecord = api.FindTexture( api.m_hDepthTarget );
-			if ( pRecord == nullptr || !( pRecord->flags & TEXTURE_CREATE_DEPTHBUFFER ) || !api.EnsureTextureResident( *pRecord ) || !pRecord->dsv.ptr )
+			if ( pRecord == nullptr || !( pRecord->flags & TEXTURE_CREATE_DEPTHBUFFER ) || !pRecord->dsv.ptr || !api.EnsureTextureResident( *pRecord ) )
 				return false;
 			depth = pRecord;
 			binding.depth = depth->resource.Get();

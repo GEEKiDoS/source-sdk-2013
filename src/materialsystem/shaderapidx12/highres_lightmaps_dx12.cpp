@@ -724,9 +724,8 @@ struct CHighresLightmapsDX12::Impl
         sources[DX12_PROBE_T_VALIDITY] = probeMode->validity;
         sources[DX12_PROBE_T_FREE_DISTANCE] = reinterpret_cast<const uint8 *>(probeMode->freeDistance);
     }
-    // Creates the textures and their CPU descriptors on the first probe consumer draw. A grid that fits within 3/4 of the
-    // adapter's LOCAL budget is uploaded whole; a larger one (c1m2: 1334 MiB resident, while a 2 GB card is already at
-    // its budget) streams through an atlas of what fits under 7/8 of the budget, clamped to 32..256 MiB (StreamProbes).
+    // Upload small grids whole. Large grids stream through a bounded camera-local atlas. On small adapters the
+    // first probe draw precedes creation of several view targets, so today's free space is not all available.
     // A failure latches the reason (cleared with the device) and leaves every probe draw on the fallback table.
     bool MakeProbesResident()
     {
@@ -746,10 +745,17 @@ struct CHighresLightmapsDX12::Impl
         const bool known = device->QueryLocalVideoMemory(usage,budget);
         uint32 capacity = g.brickCount;
         char failureText[192] = {}; const char *failure = nullptr;
-        if (known && usage+required > budget/4*3)
+        const uint64 smallBudget = uint64(2) << 30;
+        const uint64 lateViewBytes = uint64(288) << 20; // 260-272 MiB after probe admission on the 1080p low tier.
+        const uint64 target = budget/8*7;
+        const uint64 headroom = target > usage ? target-usage : 0;
+        const bool fitSmallAdapter = known && budget <= smallBudget && device->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+            !(CommandLine() && (CommandLine()->CheckParm("-dx12novramfit") || CommandLine()->CheckParm("-dx12vramfullprobes")));
+        const uint64 available = fitSmallAdapter ? (headroom > lateViewBytes ? headroom-lateViewBytes : 0) :
+            std::max(uint64(32) << 20, headroom);
+        if (known && ((fitSmallAdapter && required > available) || usage+required > budget/4*3))
         {
-            const uint64 minimum = uint64(32) << 20, maximum = uint64(256) << 20, target = budget/8*7;
-            const uint64 pool = std::min(maximum, std::max(minimum, target > usage ? target-usage : 0));
+            const uint64 pool = std::min(uint64(256) << 20, available);
             capacity = uint32(std::min<uint64>(g.brickCount, pool/(uint64(hprobe::kBrickProbes*hprobe::kBrickProbes*hprobe::kBrickProbes)*hprobe::kBytesPerProbe)));
             for (;;)
             {
@@ -1414,7 +1420,8 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
             }
         }
         const bool compactAtlas = s.device->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
-            !CommandLine()->FindParm("-dx12novramfit") && SupportsAtlasSampling(device,DXGI_FORMAT_R11G11B10_FLOAT) &&
+            !CommandLine()->FindParm("-dx12novramfit") && !CommandLine()->FindParm("-dx12vramfullatlas") &&
+            SupportsAtlasSampling(device,DXGI_FORMAT_R11G11B10_FLOAT) &&
             SupportsAtlasSampling(device,DXGI_FORMAT_R8_UNORM);
         int64 atlasBytesSaved = 0;
         uint32 widthLog[4]={}, heightLog[4]={};
