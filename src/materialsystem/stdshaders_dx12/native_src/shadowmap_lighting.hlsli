@@ -630,8 +630,9 @@ float SampleSunPCSS( ShadowMapSunChart c, out float2 diagnostics )
 	float result = 1.0;
 	diagnostics = 0.0;
 #if defined( PBR_LEAN )
-	// Hardware bilinear comparison at the normal-biased center. No PCSS chart steps are needed.
-	result = ShadowMap_SunCompare( c, 0.0, false );
+	// Preserve receiver-plane bias on broad/grazing surfaces. The center-only comparison remains the compact path;
+	// falling back to the affine depth compare avoids cascade-texel acne without restoring the PCSS kernel.
+	result = ShadowMap_SunCompare( c, 0.0, ShadowMap_SunPreflight( c, 0.5 ) );
 #else
 	// Fail before reading: never spend a blocker budget and then recurse to PCF.
 	bool pcss = cShadowView0.z == DX12_SHADOW_FILTER_PCSS && cSunRadiance.w > 0.0;
