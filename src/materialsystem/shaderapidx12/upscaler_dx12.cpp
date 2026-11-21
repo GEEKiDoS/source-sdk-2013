@@ -47,6 +47,8 @@ const char *UpscalerKindNameDX12( UpscalerKindDX12 kind )
 		return "FSR";
 	case UpscalerKindDX12::XeSS:
 		return "XeSS";
+	case UpscalerKindDX12::Taau:
+		return "Lightweight TAAU";
 	case UpscalerKindDX12::SmaaT2x:
 		return "SMAA T2x";
 	default:
@@ -63,6 +65,7 @@ constexpr D3D12_RESOURCE_STATES kNpsr = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RE
 constexpr D3D12_RESOURCE_STATES kUav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 // Descriptor block per compute pass: t0..t3 then u0..u1.
 constexpr uint32_t kPassDescriptors = 6;
+constexpr uint32_t kTaauPass = 4; // After the four native SMAA compute entries.
 
 //-----------------------------------------------------------------------------
 // Purpose: Radical inverse of `nIndex` in `nBase` (one Halton sequence coordinate)
@@ -289,6 +292,8 @@ UpscalerKindDX12 CUpscalerDX12::Resolve( int nMode ) const
 		return m_Xess.available ? UpscalerKindDX12::XeSS : UpscalerKindDX12::None;
 	case 5:
 		return UpscalerKindDX12::SmaaT2x;
+	case 6:
+		return UpscalerKindDX12::Taau;
 	default:
 		return UpscalerKindDX12::None;
 	}
@@ -713,19 +718,22 @@ bool CUpscalerDX12::EnsureCompute()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Native SMAA scratch/history plus immutable reference LUTs, uploaded once behind the creation fence
+// Purpose: Native TAAU uses only output-size histories. SMAA additionally needs spatial scratch and immutable LUTs.
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
 {
-	if ( desc.Scaled() || !EnsureCompute() )
+	const bool taau = desc.kind == UpscalerKindDX12::Taau;
+	if ( ( desc.Scaled() && !taau ) || !EnsureCompute() )
 		return false;
-	if ( !m_pSmaaPso[3] )
+	const uint32_t first = taau ? kTaauPass : 0;
+	const uint32_t end = taau ? kTaauPass + 1 : kTaauPass;
+	if ( !m_pSmaaPso[end - 1] )
 	{
 		std::string source;
 		source.reserve( sizeof( kSmaaShaderPrefixDX12 ) + sizeof( kSmaaReferenceSourceDX12 ) + sizeof( kSmaaShaderEntriesDX12 ) );
 		source.append( kSmaaShaderPrefixDX12 ).append( kSmaaReferenceSourceDX12 ).append( kSmaaShaderEntriesDX12 );
-		const char *const entries[] = { "CSEdges", "CSWeights", "CSNeighborhood", "CSTemporal" };
-		for ( uint32_t pass = 0; pass < ARRAYSIZE( entries ); ++pass )
+		const char *const entries[] = { "CSEdges", "CSWeights", "CSNeighborhood", "CSTemporal", "CSTaau" };
+		for ( uint32_t pass = first; pass < end; ++pass )
 		{
 			Microsoft::WRL::ComPtr<ID3DBlob> code, error;
 			HRESULT hr = D3DCompile( source.data(), source.size(), "upscaler_smaa", nullptr, nullptr, entries[pass], "cs_5_0",
@@ -748,13 +756,23 @@ bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12Comma
 		}
 	}
 	SmaaState *state = new SmaaState;
+	for ( uint32_t i = 0; i < 2; ++i )
+		state->history[i] = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr,
+		    i ? "Native AA history 1" : "Native AA history 0" );
+	if ( !state->history[0] || !state->history[1] )
+	{
+		delete state;
+		return false;
+	}
+	if ( taau )
+	{
+		m_pSmaa = state;
+		return true;
+	}
 	state->edges = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R8G8_UNORM, kNpsr, "SMAA T2x edges" );
 	state->weights = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R8G8B8A8_UNORM, kNpsr, "SMAA T2x weights" );
 	state->spatial = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr, "SMAA T2x neighborhood" );
-	for ( uint32_t i = 0; i < 2; ++i )
-		state->history[i] = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr,
-		    i ? "SMAA T2x history 1" : "SMAA T2x history 0" );
-	if ( !state->edges || !state->weights || !state->spatial || !state->history[0] || !state->history[1] )
+	if ( !state->edges || !state->weights || !state->spatial )
 	{
 		delete state;
 		return false;
@@ -910,14 +928,14 @@ bool CUpscalerDX12::PrepareFeature( const UpscalerFeatureDescDX12 &desc, ID3D12C
 		bCreated = CreateFfx( desc );
 	else if ( desc.kind == UpscalerKindDX12::DLSS )
 		bCreated = CreateDlss( desc, pQueue );
-	else if ( desc.kind == UpscalerKindDX12::SmaaT2x )
+	else if ( desc.kind == UpscalerKindDX12::SmaaT2x || desc.kind == UpscalerKindDX12::Taau )
 		bCreated = CreateSmaa( desc, pQueue );
 	m_State = bCreated ? State::Ready : State::Failed;
 	const Provider &provider = desc.kind == UpscalerKindDX12::XeSS ? m_Xess : desc.kind == UpscalerKindDX12::FSR ? m_Fsr :
 	                                                                                                               m_Dlss;
 	if ( bCreated )
 		Msg( "ShaderAPIDX12 upscaler: %s ready, %ux%u -> %ux%u (%s)\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height,
-		    desc.kind == UpscalerKindDX12::SmaaT2x ? "native HDR temporal AA" : provider.version.Get() );
+		    m_pSmaa ? "built-in HDR reconstruction" : provider.version.Get() );
 	else
 		Warning( "ShaderAPIDX12 upscaler: %s feature creation failed, %ux%u -> %ux%u\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height );
 	return bCreated;
@@ -1184,7 +1202,7 @@ bool CUpscalerDX12::ProviderJitter( uint64_t nIndex, float &flX, float &flY ) co
 		flX = flY = ( nIndex & 1u ) ? -.25f : .25f;
 		return true;
 	}
-	if ( m_Feature.kind == UpscalerKindDX12::DLSS )
+	if ( m_Feature.kind == UpscalerKindDX12::DLSS || m_Feature.kind == UpscalerKindDX12::Taau )
 	{
 		// DLAA converges better on a longer sequence than the backend's default eight phases.
 		const uint32_t nPhase = static_cast<uint32_t>( nIndex % 32 ) + 1;
@@ -1389,7 +1407,7 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 	}
 	if ( m_pSmaa )
 	{
-		const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers : 0, write = static_cast<uint32_t>( d.serial & 1u );
+		const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers + ( m_Feature.Scaled() ? 1u : 0u ) : 0, write = static_cast<uint32_t>( d.serial & 1u );
 		const auto smaaPass = [&]( uint32_t index, ID3D12Resource *t0, DXGI_FORMAT f0, ID3D12Resource *t1, DXGI_FORMAT f1,
 		                          ID3D12Resource *t2, DXGI_FORMAT f2, ID3D12Resource *t3, DXGI_FORMAT f3,
 		                          ID3D12Resource *u0, DXGI_FORMAT fOut, ID3D12Resource *u1 )
@@ -1401,12 +1419,16 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 			uav( index, 4, u0, fOut );
 			uav( index, 5, u1, color );
 		};
-		smaaPass( base, d.color, color, nullptr, color, nullptr, color, nullptr, color, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, nullptr );
-		smaaPass( base + 1, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, m_pSmaa->area.Get(), DXGI_FORMAT_R8G8_UNORM,
-		    m_pSmaa->search.Get(), DXGI_FORMAT_R8_UNORM, nullptr, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr );
-		smaaPass( base + 2, d.color, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, color,
-		    nullptr, color, m_pSmaa->spatial.Get(), color, nullptr );
-		smaaPass( base + 3, m_pSmaa->spatial.Get(), color, m_pSmaa->history[write ^ 1u].Get(), color, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
+		const bool taau = m_Feature.kind == UpscalerKindDX12::Taau;
+		if ( !taau )
+		{
+			smaaPass( base, d.color, color, nullptr, color, nullptr, color, nullptr, color, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, nullptr );
+			smaaPass( base + 1, m_pSmaa->edges.Get(), DXGI_FORMAT_R8G8_UNORM, m_pSmaa->area.Get(), DXGI_FORMAT_R8G8_UNORM,
+			    m_pSmaa->search.Get(), DXGI_FORMAT_R8_UNORM, nullptr, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr );
+			smaaPass( base + 2, d.color, color, m_pSmaa->weights.Get(), DXGI_FORMAT_R8G8B8A8_UNORM, nullptr, color,
+			    nullptr, color, m_pSmaa->spatial.Get(), color, nullptr );
+		}
+		smaaPass( base + ( taau ? 0u : 3u ), taau ? d.color : m_pSmaa->spatial.Get(), color, m_pSmaa->history[write ^ 1u].Get(), color, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT,
 		    d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, d.output, color, m_pSmaa->history[write].Get() );
 	}
 }
@@ -1462,7 +1484,7 @@ void CUpscalerDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 	// Native XeSS (high-resolution motion vectors) takes no depth; FSR reads it through its R24 SRV mapping; DLSS,
 	// scaled XeSS and DLSS-NR read the typed clone written from the render region here.
 	const bool bClone = owner.NeedsDepthClone( d );
-	const bool bDepthInput = owner.m_Feature.kind == UpscalerKindDX12::FSR || owner.m_Feature.kind == UpscalerKindDX12::SmaaT2x || bClone;
+	const bool bDepthInput = owner.m_Feature.kind == UpscalerKindDX12::FSR || owner.m_pSmaa || bClone;
 	const D3D12_RESOURCE_STATES depthDuring = bDepthInput ? kRead : D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	D3D12_RESOURCE_BARRIER barriers[8];
 	UINT nCount = 0;
@@ -1620,14 +1642,18 @@ uint32_t CUpscalerDX12::ExecuteNr( ID3D12GraphicsCommandList *pList, const Upsca
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Reference SMAA 1x at the current T2x subsample, followed by our HDR temporal resolve
+// Purpose: Native TAAU resolve, or reference SMAA 1x at the T2x subsample followed by its temporal resolve
 //-----------------------------------------------------------------------------
 uint32_t CUpscalerDX12::ExecuteSmaa( ID3D12GraphicsCommandList *pList, const UpscalerDispatchDX12 &d ) const noexcept
 {
 	if ( !m_pSmaa )
 		return kReplayNoContext;
 	SmaaState &state = *m_pSmaa;
+	const bool taau = m_Feature.kind == UpscalerKindDX12::Taau;
+	const uint32_t first = taau ? 3u : 0u; // Both native methods finish with a temporal resolve.
 	SmaaConstantsDX12 constants{};
+	constants.renderWidth = d.renderWidth;
+	constants.renderHeight = d.renderHeight;
 	constants.metrics[0] = 1.f / d.width;
 	constants.metrics[1] = 1.f / d.height;
 	constants.metrics[2] = static_cast<float>( d.width );
@@ -1641,23 +1667,23 @@ uint32_t CUpscalerDX12::ExecuteSmaa( ID3D12GraphicsCommandList *pList, const Ups
 	// An unjittered reset frame uses the SMAA 1x area.
 	constants.subsample = d.jitter[0] > 0.f ? 2u : d.jitter[0] < 0.f ? 1u : 0u;
 	constants.depthInverted = m_Feature.depthInverted;
-	const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers : 0, write = static_cast<uint32_t>( d.serial & 1u );
+	const uint32_t base = d.nrLayers ? 1 + 2 * d.nrLayers + ( m_Feature.Scaled() ? 1u : 0u ) : 0, write = static_cast<uint32_t>( d.serial & 1u );
 	ID3D12Resource *const targets[] = { state.edges.Get(), state.weights.Get(), state.spatial.Get() };
 	pList->SetComputeRootSignature( m_pComputeRoot.Get() );
 	ID3D12DescriptorHeap *heap = d.heap;
 	pList->SetDescriptorHeaps( 1, &heap );
 	pList->SetComputeRoot32BitConstants( 0, sizeof( constants ) / 4, &constants, 0 );
-	for ( uint32_t pass = 0; pass < 4; ++pass )
+	for ( uint32_t pass = first; pass < 4; ++pass )
 	{
 		if ( pass < 3 )
 			Transition( pList, targets[pass], kNpsr, kUav );
 		else
 			Transition( pList, state.history[write].Get(), kNpsr, kUav );
 		D3D12_GPU_DESCRIPTOR_HANDLE srvs = d.gpu;
-		srvs.ptr += static_cast<UINT64>( ( base + pass ) * kPassDescriptors ) * m_nDescriptorStride;
+		srvs.ptr += static_cast<UINT64>( ( base + pass - first ) * kPassDescriptors ) * m_nDescriptorStride;
 		D3D12_GPU_DESCRIPTOR_HANDLE uavs = srvs;
 		uavs.ptr += static_cast<UINT64>( 4 ) * m_nDescriptorStride;
-		pList->SetPipelineState( m_pSmaaPso[pass].Get() );
+		pList->SetPipelineState( m_pSmaaPso[taau ? kTaauPass : pass].Get() );
 		pList->SetComputeRootDescriptorTable( 1, srvs );
 		pList->SetComputeRootDescriptorTable( 2, uavs );
 		pList->Dispatch( ( d.width + 7 ) / 8, ( d.height + 7 ) / 8, 1 );
@@ -1678,6 +1704,7 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 {
 	switch ( m_Feature.kind )
 	{
+	case UpscalerKindDX12::Taau:
 	case UpscalerKindDX12::SmaaT2x:
 		return ExecuteSmaa( pList, d );
 	case UpscalerKindDX12::XeSS:
@@ -2152,7 +2179,7 @@ void CShaderAPIDX12::ProbeUpscalerNrCapability()
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Arms (nMode 1-5) or disarms (0) the upscaler for the view being begun; loads providers on first use
+// Purpose: Arms (nMode 1-6) or disarms (0) the upscaler for the view being begun; loads providers on first use
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::SetUpscalerMode( int nMode )
 {
@@ -2160,7 +2187,7 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	if ( !m_pDevice || !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() )
 		return;
-	if ( nMode < 0 || nMode > 5 )
+	if ( nMode < 0 || nMode > 6 )
 		nMode = 0;
 	// Jitter sampling needs the previous dispatch's result; mode 0 only disarms and never waits on the worker.
 	ConsumeUpscalerReplays( nMode != 0 );

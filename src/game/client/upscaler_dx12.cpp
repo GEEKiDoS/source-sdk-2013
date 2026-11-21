@@ -55,8 +55,8 @@ static void OnUpscalerChanged( IConVar *pVar, const char *pOldValue, float flOld
 }
 
 ConVar r_upscaler( "r_upscaler", "1", FCVAR_ARCHIVE,
-	"DX12 temporal AA / upscaler: 0 off, 1 auto (DLSS / FSR / XeSS), 2 DLSS, 3 FSR (FSR 4 on AMD is untested), 4 XeSS, 5 SMAA T2x (native only, ignores r_upscaler_scale); r_upscaler_scale sets provider render scale",
-	true, 0, true, 5, OnUpscalerChanged );
+	"DX12 temporal AA / upscaler: 0 off, 1 auto (DLSS / FSR / XeSS), 2 DLSS, 3 FSR (FSR 4 on AMD is untested), 4 XeSS, 5 SMAA T2x (native only, ignores r_upscaler_scale), 6 Lightweight TAAU; r_upscaler_scale sets provider render scale",
+	true, 0, true, 6, OnUpscalerChanged );
 
 static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float flOldValue );
 
@@ -81,7 +81,7 @@ static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float 
 // Rendering below native resolution is the main lever on older GPUs: every pixel-bound pass (world shading, SSR,
 // GTAO, volumetrics, post) shrinks with the render area. The upscaler reconstructs the unscaled frame.
 ConVar r_upscaler_scale( "r_upscaler_scale", "1", FCVAR_ARCHIVE,
-	"DX12 temporal upscaler render scale per axis: 1 native-resolution AA, 0.77 ultra quality, 0.667 quality, 0.58 balanced, 0.5 performance (needs r_upscaler 1-4; ignored by SMAA T2x)",
+	"DX12 temporal upscaler render scale per axis: 1 native-resolution AA, 0.77 ultra quality, 0.667 quality, 0.58 balanced, 0.5 performance (needs r_upscaler 1-4 or 6; ignored by SMAA T2x)",
 	true, 0.5f, true, 1.f, OnUpscalerScaleChanged );
 
 
@@ -308,6 +308,7 @@ bool UpscalerDX12_IsTechniqueAvailable( int mode )
 		return ( caps & DX12_UPSCALE_CAP_FSR ) != 0;
 	case 4:
 		return ( caps & DX12_UPSCALE_CAP_XESS ) != 0;
+	case 6:
 	case 5:
 		return true;
 	default:
@@ -332,7 +333,7 @@ static void UpscalerDX12_PrintStatus( const CCommand & )
 {
 	const int status = UpscalerDX12_Status();
 	const int kind = status > 0 ? ( status >> 8 ) & 0xff : 0;
-	const char *const names[] = { "none", "DLSS/DLAA", "FSR", "XeSS", "SMAA T2x" };
+	const char *const names[] = { "none", "DLSS/DLAA", "FSR", "XeSS", "SMAA T2x", "Lightweight TAAU" };
 	Msg( "r_upscaler: mode %d, render scale %.3f, status %d (%s%s)\n", r_upscaler.GetInt(), UpscalerDX12_RenderScale(), status,
 	    kind >= 0 && kind < ARRAYSIZE( names ) ? names[kind] : "unknown", status > 0 ? " active" : "" );
 }

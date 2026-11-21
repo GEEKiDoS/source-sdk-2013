@@ -1792,7 +1792,8 @@ static void ApplyAdapterQualityTier()
 		return;
 	static const char *const s_ppLowTier[][2] =
 	{
-		{ "r_upscaler", "5" },
+		{ "r_upscaler", "6" },
+		{ "r_upscaler_scale", "0.667" },
 		{ "r_ssr", "0" },
 		{ "r_volumetric", "0" },
 		{ "r_ssr_quality", "1" },

@@ -226,6 +226,7 @@ static const Choice_t kUpscaler[] =
 	{ "#GraphicsOptions_FSRAA", { 3, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_XeSSAA", { 4, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_SMAAT2x", { 5, 0, 0, 0, 0 } },
+	{ "Lightweight TAAU", { 6, 0, 0, 0, 0 } },
 };
 
 // Temporal upscaler render scale per axis (r_upscaler_scale); below native the upscaler reconstructs the full resolution.
