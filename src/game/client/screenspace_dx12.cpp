@@ -89,8 +89,12 @@ void ScreenSpaceDX12_CreateSkyTargets( IMaterialSystem *pMaterials )
 	pMaterials->GetBackBufferDimensions( w, h );
 	w = MAX( 1, ( w + 1 ) / 2 );
 	h = MAX( 1, ( h + 1 ) / 2 );
-	s_SkyColor.InitRenderTarget( w, h, RT_SIZE_LITERAL, IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, false, "_rt_HalfSkyColor" );
-	s_SkyDepth.InitRenderTarget( w, h, RT_SIZE_LITERAL, pMaterials->GetShadowDepthTextureFormat(), MATERIAL_RT_DEPTH_NONE, false, "_rt_HalfSkyDepth" );
+	// This callback precedes initialization of the client's global materials pointer.
+	const int flags = TEXTUREFLAGS_CLAMPS | TEXTUREFLAGS_CLAMPT;
+	s_SkyColor.Init( pMaterials->CreateNamedRenderTargetTextureEx2( "_rt_HalfSkyColor", w, h, RT_SIZE_LITERAL,
+		IMAGE_FORMAT_RGBA16161616F, MATERIAL_RT_DEPTH_NONE, flags, 0 ) );
+	s_SkyDepth.Init( pMaterials->CreateNamedRenderTargetTextureEx2( "_rt_HalfSkyDepth", w, h, RT_SIZE_LITERAL,
+		pMaterials->GetShadowDepthTextureFormat(), MATERIAL_RT_DEPTH_NONE, flags, 0 ) );
 	KeyValues *kv = new KeyValues( "DX12_PostFXRcas" );
 	kv->SetString( "$basetexture", "_rt_HalfSkyColor" );
 	kv->SetFloat( "$sharpness", -1.f );
