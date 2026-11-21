@@ -12,6 +12,7 @@ struct PostMotionDX12_t
 {
 	float region[4]; // render width, height, shutter scale, maximum UV length
 	float viewModelScale;
+	bool cleanTemporalOutput;
 };
 
 struct PostGradeDX12_t
@@ -23,6 +24,7 @@ struct PostGradeDX12_t
 };
 
 bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale );
+ITexture *PostProcessDX12_ReduceTemporal( IMatRenderContext *context, int w, int h );
 
 void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 // Main-thread initialization retains all post materials and primes their variable tokens before queued rendering.
@@ -35,7 +37,7 @@ void PostProcessDX12_ValidateConfig();
 void PostProcessDX12_SubmitFrameConfig();
 void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, int w, int h, float flBloomScale, bool bColorCorrection,
 	float flHorizontalFov, float flAspectRatio, ITexture *pOutput = nullptr, const PostGradeDX12_t *pGrade = nullptr,
-	const PostMotionDX12_t *pMotion = nullptr, ITexture *pExposureCopy = nullptr );
+	const PostMotionDX12_t *pMotion = nullptr, ITexture *pExposureCopy = nullptr, bool reduced = false );
 int PostProcessDX12_Status();
 
 #endif

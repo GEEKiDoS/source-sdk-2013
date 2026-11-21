@@ -1472,6 +1472,7 @@ private:
 	double m_flUpscalerLastDispatchTime = 0.0;
 	UpscalerReplayResultDX12 m_UpscalerReplay[kUpscalerReplaySlots]{};
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pUpscalerOutput;
+	ShaderAPITextureHandle_t m_hPostSceneOutput = 0;
 	D3D12_RESOURCE_STATES m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
 	struct ComputePipelineDX12

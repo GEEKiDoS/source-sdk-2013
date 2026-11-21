@@ -3205,6 +3205,8 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 		}
 
 		PostMotionDX12_t postMotion = {};
+		bool cleanTemporalOutput = bTemporalUpscaled && !m_ScreenOverlayMaterial && !m_UnderWaterOverlayMaterial &&
+			!m_bDrawOverlay && g_SmokeFogOverlayAlpha == 0.f;
 		if ( bMotionBlurAllowed && bDX12VelocityBlur )
 		{
 			pRenderContext.GetFrom( materials );
@@ -3215,10 +3217,12 @@ void CViewRender::RenderView( const CViewSetup &viewRender, int nClearFlags, int
 				!PreparePostMotionDX12( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height, postMotion ) )
 			{
 				PIXEVENT( pRenderContext, "DoImageSpaceMotionBlur" );
+				cleanTemporalOutput = false;
 				DoImageSpaceMotionBlur( viewRender, viewPost.x, viewPost.y, viewPost.width, viewPost.height );
 			}
 			pRenderContext.SafeRelease();
 		}
+		postMotion.cleanTemporalOutput = cleanTemporalOutput;
 
 		DrawUnderwaterOverlay();
 

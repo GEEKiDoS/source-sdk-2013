@@ -36,6 +36,28 @@ void main( uint3 id : SV_DispatchThreadID )
 	float3 c = 0;
 	float alpha = 1.0;
 #if THRESHOLD == 2
+	if ( pad1 != 0 )
+	{
+		// One lane covers an 8x8 footprint. Reuse the four stride-4 meter
+		// samples for bloom and local contrast; meter before the artistic EV.
+		float3 base = 0;
+		[unroll]
+		for ( uint y = 0; y < 2; ++y )
+		{
+			[unroll]
+			for ( uint x = 0; x < 2; ++x )
+			{
+				uint2 q = id.xy * 2 + uint2( x, y );
+				float3 raw = gSrc.Load( int3( q * 4 + 2, 0 ) ).rgb;
+				gDst2[q] = float4( raw, 1 );
+				float3 tap = raw * p0;
+				base += 0.25 * tap;
+				c += 0.25 * tap * clamp( dot( tap, kLuma601 ) - p1, 0, p2 );
+			}
+		}
+		gDst[id.xy] = float4( c, dot( AgXEncoded( max( base, 0 ), 1 ), kLuma601 ) );
+		return;
+	}
 	float3 plain = 0;
 	[unroll]
 	for ( int i = 0; i < 13; ++i )

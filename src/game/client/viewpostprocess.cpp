@@ -1027,6 +1027,9 @@ static void RetargetBaseTexture( PostProcessMaterialId material, ITexture *pText
 	pBase->SetTextureValue( pTexture );
 }
 
+// Scoped to the synchronous histogram update on the render owner. The query
+// raster and count normalization keep their original full-view coordinates.
+static thread_local ITexture *s_pReducedMeter = NULL;
 
 void CHistogram_entry_t::IssueQuery( int frm_num )
 {
@@ -1128,7 +1131,8 @@ void CHistogram_entry_t::IssueQuery( int frm_num )
 	scry_max -= skip_edgey;
 	IMaterialVar *pBase = NULL;
 	ITexture *pSavedBase = NULL;
-	RetargetBaseTexture( PPMAT_LUMINANCE, AcquireBoundFrameCopy( pRenderContext, xl, yl, dest_width, dest_height ), pBase, pSavedBase );
+	RetargetBaseTexture( PPMAT_LUMINANCE, s_pReducedMeter ? s_pReducedMeter :
+		AcquireBoundFrameCopy( pRenderContext, xl, yl, dest_width, dest_height ), pBase, pSavedBase );
 	int source_width = dest_width;
 	int source_height = dest_height;
 #if defined( L4D2 )
@@ -2425,7 +2429,7 @@ static void DoPreBloomTonemapping( IMatRenderContext *pRenderContext, int nX, in
 	{
 		tmZone( TELEMETRY_LEVEL0, TMZF_NONE, "%s", __FUNCTION__ );
 
-		if ( s_bScreenEffectTextureIsUpdated == false )
+		if ( !s_bScreenEffectTextureIsUpdated && !s_pReducedMeter )
 		{
 			PIXEVENT( pRenderContext, "Exposure copy" );
 			// FIXME: nX/nY/nWidth/nHeight are used here, but the equivalent parameters are ignored in Generate8BitBloomTexture
@@ -3233,14 +3237,23 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 
 #if defined( L4D2 )
 	s_bScreenEffectTextureIsUpdated = false;
-	if ( hdrType != HDR_TYPE_NONE )
-		DoPreBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
 	// The DX12 post stack owns bloom, lens effects and the final tone curve. The L4D2 engine post then
 	// applies colour correction, vignette, grain, local contrast, vomit and fade to its composite.
 	const bool bPostProcessDX12 = !bPostVGui && PostProcessDX12_Active();
 	PostGradeDX12_t grade = queuedGrade;
 	const bool bFuseGrade = bQueuedFuseGrade || ( bPostVGui == false && bPostProcessDX12 && mat_postprocess_enable.GetBool() &&
 		PostProcessDX12_CanFuseGrade( x, y, w, h, flBloomScale ) && Terror_GetCompactGrade( grade, h ) );
+	ITexture *meter = NULL;
+	if ( motion.cleanTemporalOutput && bFuseGrade && PostProcessDX12_CanFuseGrade( x, y, w, h, flBloomScale ) &&
+		hdrType == HDR_TYPE_INTEGER && !pRenderContext->GetRenderTarget() && !pRenderContext->GetCallQueue() &&
+		mat_dynamic_tonemapping.GetBool() && !mat_show_histogram.GetBool() && !mat_debug_autoexposure.GetBool() &&
+		!g_bDumpRenderTargets && !mat_show_ab_hdr.GetBool() && mat_postfx_meter_stride.GetInt() == 4 &&
+		!mat_tonemapping_occlusion_use_stencil.GetBool() && PostProcessVar( PPMAT_LUMINANCE, PPVAR_BASE ) )
+		meter = PostProcessDX12_ReduceTemporal( pRenderContext, w, h );
+	s_pReducedMeter = meter;
+	if ( hdrType != HDR_TYPE_NONE )
+		DoPreBloomTonemapping( pRenderContext, x, y, w, h, flAutoExposureMin, flAutoExposureMax );
+	s_pReducedMeter = NULL;
 	if ( bPostProcessDX12 )
 	{
 		// For a full-size view, write the native result straight into the legacy
@@ -3261,7 +3274,7 @@ void DoEnginePostProcessing( int x, int y, int w, int h, bool bFlashlightIsOn, b
 		static ConVarRef colorCorrection( "mat_colorcorrection" );
 		const bool cc = bFuseGrade && colorCorrection.GetBool() && g_pColorCorrectionMgr->HasNonZeroColorCorrectionWeights();
 		PostProcessDX12_Render( pRenderContext, x, y, w, h, flBloomScale, cc, flPostFov, flPostAspect,
-			pOutput, bFuseGrade ? &grade : NULL, &motion, pExposureCopy );
+			pOutput, bFuseGrade ? &grade : NULL, &motion, pExposureCopy, meter != NULL );
 		if ( pOutput )
 		{
 			pRenderContext->SetRenderTarget( NULL );

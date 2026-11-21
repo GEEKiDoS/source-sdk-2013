@@ -1199,6 +1199,8 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	pRecord->initializedSubresources.FillWithValue( 0 );
 	pRecord->gpuAuthoritativeSubresources.SetCount( nSubresources * pRecord->copies );
 	pRecord->gpuAuthoritativeSubresources.FillWithValue( 0 );
+	const bool postScene = bRenderTarget && debugName && !V_stricmp( debugName, "_rt_PostFXScene" );
+	pRecord->uavCapable = postScene && nativeFormat == IMAGE_FORMAT_RGBA16161616F;
 	if ( !AllocateNativeTexture( *pRecord ) )
 	{
 		delete pRecord;
@@ -1206,6 +1208,8 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	}
 	const ShaderAPITextureHandle_t hTexture = pRecord->id;
 	m_Textures.Insert( hTexture, pRecord );
+	if ( postScene )
+		m_hPostSceneOutput = hTexture;
 	RegisterMapCubemap( *pRecord );
 	return hTexture;
 }

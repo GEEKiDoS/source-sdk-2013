@@ -2293,7 +2293,21 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	const UpscalerFeatureDescDX12 desc{ m_UpscalerKind, nWidth, nHeight, nRenderWidth, nRenderHeight, bInverted };
 	if ( m_Upscaler.Feature().kind != UpscalerKindDX12::None && m_Upscaler.Feature() != desc )
 		ReleaseUpscalerFeature();
-	if ( !EnsureUpscalerOutput( nWidth, nHeight ) )
+	// Reuse post's sampleable scene instead of allocating another full-size scratch.
+	// Other providers, NR, fault replays and incompatible render targets keep the
+	// private provider output; the ordinary scene copy-back is unchanged in both cases.
+	TextureRecord *post = nullptr;
+	if ( ( nFlags & DX12_UPSCALE_DISPATCH_POST_SCENE ) && m_UpscalerKind == UpscalerKindDX12::Taau &&
+		!Field( m_RenderingInts[INT_RENDERPARM_DX12_NR_CONFIG], DX12_NR_CONFIG_LAYERS_SHIFT, 4 ) &&
+		!upscaler_fault_replays.GetInt() )
+	{
+		post = FindTexture( m_hPostSceneOutput );
+		if ( post && ( post->width != static_cast<int>( nWidth ) || post->height != static_cast<int>( nHeight ) ||
+			post->mipLevels != 1 || post->copies != 1 || !post->uavCapable || !EnsureTextureResident( *post ) ||
+			!post->resource || post->resource->GetDesc().Format != m_pDevice->SceneColorFormat() ) )
+			post = nullptr;
+	}
+	if ( !post && !EnsureUpscalerOutput( nWidth, nHeight ) )
 		return reject( -2, "output allocation failed" );
 	if ( !m_Upscaler.PrepareFeature( desc, m_pDevice->Queue() ) )
 		return reject( -2, "provider feature creation failed" );
@@ -2314,8 +2328,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	d.depthBefore = m_pDevice->SceneDepthState();
 	d.motion = pMotion->resource.Get();
 	d.motionBefore = pMotion->subresourceStates[nSub];
-	d.output = m_pUpscalerOutput.Get();
-	d.outputBefore = m_UpscalerOutputState;
+	d.output = post ? post->resource.Get() : m_pUpscalerOutput.Get();
+	d.outputBefore = post ? post->subresourceStates[0] : m_UpscalerOutputState;
 	d.jitter[0] = m_UpscalerJitter[0];
 	d.jitter[1] = m_UpscalerJitter[1];
 	// _rt_MotionVectors.xy = current - previous in viewport UV; providers take previous - current in render pixels.
@@ -2374,7 +2388,15 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		pMotion->sampledStateValid = false;
 		++m_nTextureStateEpoch;
 	}
-	m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	if ( post )
+	{
+		post->subresourceStates[0] = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		post->sampledStateValid = false;
+		post->gpuAuthoritativeSubresources[0] = 1;
+		++m_nTextureStateEpoch;
+	}
+	else
+		m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	m_nUpscalerQueuedFrame = m_nUpscalerLastDispatchFrame = m_nFrameCounter;
 	m_flUpscalerLastDispatchTime = flNow;
 	m_bUpscalerHistoryGap = false;
@@ -2389,6 +2411,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 	m_UpscalerFrameJitter[1] = m_UpscalerJitter[1];
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	nStatus = 1 | ( static_cast<int>( m_UpscalerKind ) << 8 );
+	if ( post )
+		nStatus |= DX12_UPSCALE_STATUS_POST_SCENE;
 }
 
 //-----------------------------------------------------------------------------
