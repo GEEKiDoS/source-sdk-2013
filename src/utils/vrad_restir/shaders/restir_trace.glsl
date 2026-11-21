@@ -220,7 +220,7 @@ bool TraceRay( vec3 origin, vec3 direction, float tMin, float tMax, uint mask, u
 // generic TraceRay deliberately does not impose this gather-only policy.
 bool TraceGatherRay( vec3 origin, vec3 direction, float tMin, float tMax, out HitInfo hit )
 {
-	return TraceRayInternal( origin, direction, tMin, tMax, RESTIR_RAY_MASK_WORLDFACE, RESTIR_NO_HIT, false, true, hit );
+	return TraceRayInternal( origin, direction, tMin, tMax, RESTIR_RAY_MASK_WORLDFACE | RESTIR_TRI_STATICPROP, RESTIR_NO_HIT, false, true, hit );
 }
 
 bool TraceVisibility( vec3 origin, vec3 direction, float tMin, float tMax, uint mask, uint skipHitId )

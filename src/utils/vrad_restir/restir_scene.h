@@ -25,6 +25,7 @@ int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
 	const Vector &reflectivity, bool textureShadows, bool *pOutAlphaTested );
 // Enables per-texel bounce albedo on an already registered lit material (-restir_texturealbedo).
 void ReSTIR_LoadMaterialAlbedo( ReSTIRScene &scene, int materialIndex, const char *pMaterialName, int textureWidth, int textureHeight );
+int ReSTIR_GetPropMaterial( ReSTIRScene &scene, const char *name, bool textureShadows, bool *alpha );
 
 // Emission of a material as the engine shades it, cached by material name for the scene build:
 //  - UnlitGeneric: base texture rgb * $color * $color2 (both linearized when <= 1), * alpha with

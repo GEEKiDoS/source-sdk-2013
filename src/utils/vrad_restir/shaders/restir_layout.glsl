@@ -270,8 +270,8 @@ layout( std430, set = 0, binding = 5 )  readonly buffer LuxelsBuf        { ReSTI
 layout( std430, set = 0, binding = 6 )  readonly buffer FaceNeighborsBuf { int faceNeighbors[]; };
 layout( std430, set = 0, binding = 7 )  readonly buffer CellSamplesBuf   { int cellSamples[]; };
 layout( std430, set = 0, binding = 8 )  buffer DirectIrradianceBuf       { vec4 directIrradiance[]; };	// exact point/spot direct, style-0 base channel, per sample
-// Binding 9: the -restir_skyibl equirect (RESTIR_PC_SKY_ENVIRONMENT), else a 16-byte dummy. Binding 10 is a reserved dummy.
 layout( std430, set = 0, binding = 9 )  readonly buffer SkyEnvironmentBuf { vec4 skyEnvironment[]; };
+layout( std430, set = 0, binding = 10 ) buffer PropExitanceBuf { vec4 propExitance[]; };
 layout( std430, set = 0, binding = 11 ) buffer AccumulationBuf           { vec4 accumulation[]; };
 layout( std430, set = 0, binding = 12 ) buffer OutputBuf                 { vec4 outputRadiance[]; };
 layout( std430, set = 0, binding = 13 ) buffer LuxelValidBuf             { uint luxelValid[]; };

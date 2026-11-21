@@ -17,11 +17,45 @@ layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
 //   bounce feedback (directIrradiance); the sampled sums it is added to start at zero.
 // Pass 1 (after the iterations): add the exact sums to both accumulations, scaled by their
 //   iteration count so the reconstructed mean is exact direct + mean of the sampled terms.
+// Static prop triangles are small diffuse patches without a lightmap. Cache a
+// full-source style-0 estimate (selected runtime lights also generate bounce).
+void BakePropPatch( uint index )
+{
+	ReSTIRGpuTriangle tri = triangles[index];
+	if ( ( tri.flags & RESTIR_TRI_STATICPROP ) == 0u )
+		return;
+	vec3 n = SafeNormal( cross( tri.v1.xyz - tri.v0.xyz, tri.v2.xyz - tri.v0.xyz ) );
+	vec3 origin = ( tri.v0.xyz + tri.v1.xyz + tri.v2.xyz ) / 3.0 + n * RESTIR_DIST_EPSILON;
+	vec3 irradiance = vec3( 0.0 );
+	for ( uint i = 0u; i < pc.numLights; ++i )
+	{
+		ReSTIRGpuLight light = lights[i];
+		if ( light.style != 0 )
+			continue;
+		uint count = light.type == EMIT_SURFACE || light.type == EMIT_SKYAMBIENT ? pc.candidates : 1u;
+		uint key = Hash( pc.seed ^ Hash( index ) ^ i );
+		for ( uint k = 0u; k < count; ++k )
+		{
+			vec3 u = vec3( ( float( k ) + 0.5 ) / float( count ), SobolPoint( k, uvec2( key, Hash( key ) ) ) );
+			ReSTIRLightSample s;
+			if ( SampleLight( i, origin, n, u, s ) && s.radiance.w > 0.0 && s.sourcePdf > 0.0 &&
+				LightVisibility( i, origin, s.samplePos.xyz, s.emitterTri, RESTIR_NO_HIT ) )
+				irradiance += s.radiance.rgb * max( dot( n, SafeNormal( s.samplePos.xyz - origin ) ), 0.0 ) / ( s.sourcePdf * float( count ) );
+		}
+	}
+	propExitance[index] = vec4( irradiance * materials[tri.material].reflectivity.rgb, 0.0 );
+}
+
 void main()
 {
 	uint index = pc.first + gl_GlobalInvocationID.x;
 	if ( index >= pc.first + pc.count )
 		return;
+	if ( pc.pass == 2u )
+	{
+		BakePropPatch( index );
+		return;
+	}
 	uint faceIndex;
 	uint sampleIndex;
 	uint slot;

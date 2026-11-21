@@ -376,7 +376,8 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		(VkDeviceSize)( scene.faceNeighbors.Count() + scene.dfaceToFace.Count() ) * sizeof( int ),
 		(VkDeviceSize)scene.luxels.Count() * sizeof( int ),
 		(VkDeviceSize)scene.samples.Count() * sizeof( float ) * 4,
-		gpu.skyEnvironment ? (VkDeviceSize)scene.skyEnvironment.Count() * sizeof( Vector4D ) : 16, 16,
+		gpu.skyEnvironment ? (VkDeviceSize)scene.skyEnvironment.Count() * sizeof( Vector4D ) : 16,
+		(VkDeviceSize)scene.triangles.Count() * sizeof( Vector4D ),
 		reservoirCount * RESTIR_MAX_CHANNELS * sizeof( float ) * 4,
 		(VkDeviceSize)scene.numOutputValues * sizeof( float ) * 4,
 		(VkDeviceSize)scene.luxels.Count() * sizeof( unsigned int ),
@@ -406,7 +407,7 @@ bool CReSTIRVulkanDevice::UploadScene( const ReSTIRScene &scene )
 		// Scene-heap buffers survive ReallocateForReconstruct (the work heap is released after transport); the sky
 		// environment is read by the post-bake services (points, ambient cubes, probes) as well.
 		bool sceneHeap = !gpu.IsPagedBinding( binding ) &&
-			( binding <= RESTIR_BIND_SKY_ENVIRONMENT || binding >= RESTIR_BIND_ANORMS ||
+			( binding <= RESTIR_BIND_PROP_EXITANCE || binding >= RESTIR_BIND_ANORMS ||
 				( binding >= RESTIR_BIND_BVH_NODES && binding <= RESTIR_BIND_BVH_SCRATCH ) );
 		gpu.AddBuffer( sizes[binding], sceneHeap );
 	}

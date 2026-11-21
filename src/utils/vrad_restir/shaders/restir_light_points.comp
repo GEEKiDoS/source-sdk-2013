@@ -16,14 +16,14 @@ layout( local_size_x = RESTIR_WORKGROUP_SIZE ) in;
 // utils/vrad/lightmap.cpp:1745-1831. Exact finite-sample normalization for
 // -extrasky-free sky ambient: visible cosine-weighted sky radiance / all eligible cosine sum
 // (with a uniform sky: intensity * visible cosine sum / all cosine sum).
-// vradstaticprops.cpp:1173-1196: the vertex is pushed 4 units towards the light (sky ambient: along
-// the normal) before tracing so a vertex on the prop's own surface does not shadow itself.
+// Bias by a trace epsilon, not a prop-sized distance: a vertex may be right
+// beside a separate occluder, particularly inside a model with interior walls.
 vec3 PointSkyAmbient( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitId )
 {
 	vec3 visibleRadiance = vec3( 0.0 );
 	float allCosines = 0.0;
 	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
-	vec3 origin = query.position.xyz + 4.0 * query.normal.xyz;
+	vec3 origin = query.position.xyz + RESTIR_DIST_EPSILON * query.normal.xyz;
 	for ( uint sampleIndex = 0u; sampleIndex < RESTIR_NUM_ANORMS; ++sampleIndex )
 	{
 		vec3 direction = -DirectionalSample( sampleIndex );
@@ -55,14 +55,14 @@ vec3 PointDirectLight( uint lightIndex, ReSTIRGpuPointQuery query, uint skipHitI
 	if ( light.type == EMIT_SKYAMBIENT )
 		return PointSkyAmbient( lightIndex, query, skipHitId );
 	bool ignoreNormals = ( query.flags & RESTIR_POINT_IGNORE_NORMALS ) != 0u;
-	// vradstaticprops.cpp:1179-1189: push 4 units towards the light (sun: along -normal).
+	// Offset in the lit direction for points with no usable receiver normal.
 	vec3 fudge = light.type == EMIT_SKYLIGHT ? SafeNormal( -light.normal.xyz ) : SafeNormal( light.origin.xyz - query.position.xyz );
-	vec3 origin = query.position.xyz + 4.0 * fudge;
+	vec3 origin = query.position.xyz + RESTIR_DIST_EPSILON * ( ignoreNormals ? fudge : query.normal.xyz );
 	uint count = light.type == EMIT_SURFACE ? 16u : ( light.type == EMIT_SKYLIGHT && light.sunSpreadAngle > 0.0 ? 30u : 1u );
 	vec3 sum = vec3( 0.0 );
 	for ( uint sampleIndex = 0u; sampleIndex < count; ++sampleIndex )
 	{
-		vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( count ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
+		vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( count ), SobolPoint( sampleIndex, uvec2( seed, Hash( seed ) ) ) );
 		ReSTIRLightSample candidate;
 		if ( !SampleLight( lightIndex, origin, query.normal.xyz, uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
 			continue;

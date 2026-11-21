@@ -361,6 +361,9 @@ bool CReSTIRVulkanDevice::BakeLightmaps( const ReSTIROptions &options, ReSTIRLig
 	if ( selectedSun )
 		result.sunVisibility.SetCount( gpu.scene->luxels.Count() );
 	double stageMs = 0;
+	// A prop has no BSP luxels. Cache its reflected direct light in triangle space
+	// before either world transport or the final probe/point services read it.
+	SubmitDispatchChunks( gpu, RESTIR_PIPE_DIRECT, gpu.push.numTriangles, 2 );
 	for ( int p = 0; p < gpu.pages.Count(); ++p )
 	{
 		const ReSTIRPage &page = gpu.pages[p];

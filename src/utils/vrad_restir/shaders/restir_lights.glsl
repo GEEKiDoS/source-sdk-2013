@@ -166,11 +166,41 @@ bool SampleLight( uint lightIndex, vec3 origin, vec3 normal, vec3 uniformValue, 
 		float probability = triangle.uv.w - previousCdf;
 		if ( area <= 0.0 || probability <= 0.0 )
 			return false;
-		float root = sqrt( uniformValue.y );
-		emitterBarycentrics = vec2( root * ( 1.0 - uniformValue.z ), root * uniformValue.z );
-		source = triangle.v0.xyz * ( 1.0 - root ) + triangle.v1.xyz * emitterBarycentrics.x + triangle.v2.xyz * emitterBarycentrics.y;
+		vec3 planeNormal = cross( triangle.v1.xyz - triangle.v0.xyz, triangle.v2.xyz - triangle.v0.xyz ) / ( 2.0 * area );
+		float height = dot( origin - triangle.v0.xyz, planeNormal );
+		if ( height <= 0.0 )
+			return false;
+		// Area sampling alone has unbounded variance as a receiver approaches an
+		// emitter. Mix in a uniform solid-angle proposal near the plane. Every
+		// point on this triangle lies in the hemisphere facing -planeNormal;
+		// misses contribute zero (don't retry them). Express both PDFs in area.
+		bool nearField = height * height < area;
+		if ( nearField && uniformValue.y < 0.5 )
+		{
+			float z = 2.0 * uniformValue.y;
+			if ( z == 0.0 )
+				return false;
+			float radius = sqrt( max( 1.0 - z*z, 0.0 ) );
+			float angle = 2.0 * RESTIR_PI * uniformValue.z;
+			vec3 d = LocalDirection( -planeNormal, vec3( radius*cos( angle ), radius*sin( angle ), z ) );
+			source = origin + d * ( height / z );
+			emitterBarycentrics = EmitterBarycentrics( triangle, source );
+			if ( any( lessThan( emitterBarycentrics, vec2( 0.0 ) ) ) || emitterBarycentrics.x + emitterBarycentrics.y > 1.0 )
+				return false;
+		}
+		else
+		{
+			float root = sqrt( nearField ? 2.0 * uniformValue.y - 1.0 : uniformValue.y );
+			emitterBarycentrics = vec2( root * ( 1.0 - uniformValue.z ), root * uniformValue.z );
+			source = triangle.v0.xyz * ( 1.0 - root ) + triangle.v1.xyz * emitterBarycentrics.x + triangle.v2.xyz * emitterBarycentrics.y;
+		}
 		candidate.emitterTri = uint( selected );
 		candidate.sourcePdf = probability / area;
+		if ( nearField )
+		{
+			float r = length( source - origin );
+			candidate.sourcePdf = 0.5 * ( candidate.sourcePdf + probability * height / ( 2.0 * RESTIR_PI * r*r*r ) );
+		}
 		candidate.radiance.rgb = SurfaceLightRadiance( light, triangle, origin, source, emitterBarycentrics );
 	}
 	else if ( light.type == EMIT_SKYAMBIENT )
@@ -263,8 +293,8 @@ vec3 PreviousIrradianceAtHit( HitInfo hit, vec3 position, out vec3 reflectivity 
 // it either leaves through the sky (sky ambient, lightmap.cpp:1745-1831) or lands on a
 // lightmapped face, whose outgoing radiance is reflectivity * E / pi with E the irradiance
 // already resolved there (TraceGatherRay: WORLDFACE, front faces, occluded by the shadow
-// geometry like every other ray). Static props and sky do not bounce (VRAD radiosity has no
-// prop patches). Returns radiance * pi, the estimate under the cosine PDF.
+// geometry like every other ray). Prop hits read the cached reflected direct
+// light of their patch. Returns radiance * pi, the estimate under the cosine PDF.
 bool HemisphereSample( vec3 origin, vec3 direction, bool skyAmbient, bool bounce, out vec3 value, out bool sky )
 {
 	value = vec3( 0.0 );
@@ -282,11 +312,18 @@ bool HemisphereSample( vec3 origin, vec3 direction, bool skyAmbient, bool bounce
 			return true;
 		}
 		occluderT = occluder.t;
+		if ( ( occluder.flags & RESTIR_TRI_STATICPROP ) != 0u )
+		{
+			if ( !bounce || dot( direction, occluder.normal ) >= 0.0 )
+				return false;
+			value = propExitance[occluder.triangle].rgb;
+			return true;
+		}
 	}
 	if ( !bounce )
 		return false;
 	HitInfo surface;
-	if ( !TraceGatherRay( origin, direction, RESTIR_DIST_EPSILON, occluderT + 1.0, surface ) )
+	if ( !TraceGatherRay( origin, direction, RESTIR_DIST_EPSILON, occluderT + RESTIR_DIST_EPSILON, surface ) )
 		return false;
 	vec3 reflectivity;
 	vec3 irradiance = PreviousIrradianceAtHit( surface, origin + direction * surface.t, reflectivity );

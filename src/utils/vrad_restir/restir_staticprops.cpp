@@ -501,7 +501,10 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 				for ( int meshId = 0; meshId < sm->nummeshes; ++meshId )
 				{
 					mstudiomesh_t *mesh = sm->pMesh( meshId );
-					mstudiotexture_t *tx = m.header->pTexture( mesh->material );
+					const int skin = clamp( (int)p.lump.m_Skin, 0, MAX( 0, m.header->numskinfamilies - 1 ) );
+					const int textureIndex = m.header->numskinfamilies > 0 ?
+						*m.header->pSkinref( skin * m.header->numskinref + mesh->material ) : mesh->material;
+					mstudiotexture_t *tx = m.header->pTexture( textureIndex );
 					bool skip = false;
 					for ( int n = 0; n < g_NonShadowCastingMaterialStrings.Count(); ++n )
 						if ( Q_stristr( tx->pszName(), g_NonShadowCastingMaterialStrings[n] ) )
@@ -520,10 +523,8 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 					// vradstaticprops.cpp:746-768 (LoadAllTexturesForModel): the VMT lives under one of the
 					// model's $cdmaterials directories; use the first that exists as the material name.
 					char materialName[MAX_PATH];
-					ResolvePropMaterialName( m.header, mesh->material, materialName, sizeof( materialName ) );
-					// Reflectivity 0: VRAD's radiosity only bounces between brush/disp patches; static props
-					// occlude but never re-emit (they are not patches), so GPU paths must die at prop hits.
-					int mat = ReSTIR_GetOrAddMaterial( scene, materialName, Vector( 0, 0, 0 ), textureShadows, &alpha );
+					ResolvePropMaterialName( m.header, textureIndex, materialName, sizeof( materialName ) );
+					int mat = ReSTIR_GetPropMaterial( scene, materialName, textureShadows, &alpha );
 					OptimizedModel::MeshHeader_t *vm = lod->pMesh( meshId );
 					for ( int group = 0; group < vm->numStripGroups; ++group )
 					{
@@ -547,6 +548,13 @@ bool CReSTIRStaticPropMgr::AppendTriangles( ReSTIRScene &scene, bool textureShad
 								VectorTransform( *vd->Position( a ), xform, pos[0] );
 								VectorTransform( *vd->Position( b ), xform, pos[1] );
 								VectorTransform( *vd->Position( c ), xform, pos[2] );
+								Vector normal;
+								VectorRotate( *vd->Normal( a ) + *vd->Normal( b ) + *vd->Normal( c ), xform, normal );
+								if ( DotProduct( CrossProduct( pos[1] - pos[0], pos[2] - pos[0] ), normal ) < 0 )
+								{
+									V_swap( b, c );
+									V_swap( pos[1], pos[2] );
+								}
 								int tri = scene.triangles.AddToTail();
 								FillTriangle( scene.triangles[tri], pos[0], pos[1], pos[2], *vd->Texcoord( a ), *vd->Texcoord( b ), *vd->Texcoord( c ), mat, pi,
 											  alpha );

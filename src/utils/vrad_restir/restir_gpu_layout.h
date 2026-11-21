@@ -34,7 +34,7 @@
 #define RESTIR_BIND_DIRECT_IRRADIANCE 8  // vec4[numSamples]: exact point/spot direct irradiance, style-0 base channel (resident)
 #define RESTIR_BIND_SKY_ENVIRONMENT  9   // vec4[RESTIR_SKY_ENV_WIDTH * RESTIR_SKY_ENV_HEIGHT] ReSTIRScene::skyEnvironment
                                          //   (RESTIR_PC_SKY_ENVIRONMENT), else the 16-byte dummy
-#define RESTIR_BIND_RESERVED_10      10  // 16-byte dummy
+#define RESTIR_BIND_PROP_EXITANCE    10  // vec4[numTriangles]: style-0 reflected direct irradiance on static prop triangles
 #define RESTIR_BIND_ACCUMULATION     11  // vec4[numReservoirs * RESTIR_MAX_CHANNELS]: rgb = running sum of the sampled terms, w = contributing iterations
 #define RESTIR_BIND_OUTPUT           12  // vec4[numOutputValues] reconstructed luxel radiance (ReSTIRLightmapResult::radiance order)
 #define RESTIR_BIND_LUXEL_VALID      13  // uint[numLuxels]

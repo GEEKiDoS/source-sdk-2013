@@ -70,15 +70,16 @@ void main()
 		ReSTIRGpuLight light = lights[lightIndex];
 		if ( ( light.lightFlags & RESTIR_LIGHT_MATERIAL ) == 0 || ( light.lightFlags & RESTIR_LIGHT_RUNTIME_DIRECT ) != 0 )
 			continue;
-		// Same negligible-emitter cull and 4 unit push towards the light as PointDirectLight.
+		// A probe is already in free space. Pushing towards an emitter can put
+		// the visibility ray on the far side of a thin wall or window.
 		float distanceBound = max( length( origin - light.origin.xyz ) - light.attenuation.x, 1.0 );
 		if ( light.intensity.w / ( distanceBound * distanceBound ) < 0.01 )
 			continue;
-		vec3 source = origin + 4.0 * SafeNormal( light.origin.xyz - origin );
+		vec3 source = origin;
 		uint seed = Hash( key ^ lightIndex );
 		for ( uint sampleIndex = 0u; sampleIndex < EMITTER_SAMPLES; ++sampleIndex )
 		{
-			vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( EMITTER_SAMPLES ), CandidateDimension( seed, sampleIndex, 1u ), CandidateDimension( seed, sampleIndex, 2u ) );
+			vec3 uniformValue = vec3( ( float( sampleIndex ) + 0.5 ) / float( EMITTER_SAMPLES ), SobolPoint( sampleIndex, uvec2( seed, Hash( seed ) ) ) );
 			ReSTIRLightSample candidate;
 			if ( !SampleLight( lightIndex, source, vec3( 0.0, 0.0, 1.0 ), uniformValue, candidate ) || candidate.sourcePdf <= 0.0 )
 				continue;

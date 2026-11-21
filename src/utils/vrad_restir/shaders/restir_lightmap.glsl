@@ -95,6 +95,8 @@ vec3 LightmapPointSample( ReSTIRGpuFace face, uint slot, HitInfo hit, vec3 posit
 // :437 backface exclusion is handled by TraceGatherRay (not generic rays).
 vec3 RayAmbientColor( HitInfo hit, vec3 origin, vec3 direction, int style )
 {
+	if ( ( hit.flags & RESTIR_TRI_STATICPROP ) != 0u )
+		return style == 0 ? propExitance[hit.triangle].rgb / 255.0 : vec3( 0.0 );
 	if ( ( hit.flags & RESTIR_TRI_SKY ) != 0u )
 		return style == 0 && pc.skyAmbientLight >= 0 ? SkyAmbientRadiance( direction ) / 255.0 : vec3( 0.0 );
 	int faceIndex = SceneFaceFromHit( hit );
@@ -132,6 +134,11 @@ vec3 StaticPropIndirect( vec3 origin, vec3 normal, bool ignoreNormals )
 		HitInfo hit;
 		if ( !TraceGatherRay( origin, direction, RESTIR_DIST_EPSILON, RESTIR_TRACE_LENGTH, hit ) || ( hit.flags & RESTIR_TRI_SKY ) != 0u )
 			continue;
+		if ( ( hit.flags & RESTIR_TRI_STATICPROP ) != 0u )
+		{
+			sum += propExitance[hit.triangle].rgb * cosine;
+			continue;
+		}
 		int faceIndex = SceneFaceFromHit( hit );
 		if ( faceIndex < 0 )
 			continue;

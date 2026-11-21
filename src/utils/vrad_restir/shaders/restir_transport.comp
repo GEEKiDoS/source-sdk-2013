@@ -116,13 +116,20 @@ void main()
 	uint surfaceCount = end - surfaceFirst;
 	if ( surfaceCount != 0u && pc.candidates != 0u )
 	{
-		uint key = SampleSeed( faceIndex, sampleInFace, slot, 0u );
+		// Visit each emitter once per cycle; advance its triangle and barycentric sequence
+		// only when it is actually visited. Restarting all four dimensions at each
+		// iteration undersamples nearby emitters in a short bounce generation.
+		uint rotation = SampleStream( faceIndex, sampleInFace, slot, 0x454D4954u ) % surfaceCount;
 		float lightPdfScale = float( surfaceCount ) / float( pc.candidates );
 		for ( uint candidateIndex = 0u; candidateIndex < pc.candidates; ++candidateIndex )
 		{
-			uint ordinal = min( uint( CandidateDimension( key, candidateIndex, 0u ) * float( surfaceCount ) ), surfaceCount - 1u );
+			uint indexInSequence = pc.iteration * pc.candidates + candidateIndex;
+			uint cycle = indexInSequence / surfaceCount;
+			uint ordinal = ( indexInSequence % surfaceCount + rotation ) % surfaceCount;
 			uint lightIndex = uint( styleLights[surfaceFirst + ordinal] );
-			vec3 uniformValue = vec3( CandidateDimension( key, candidateIndex, 1u ), CandidateDimension( key, candidateIndex, 2u ), CandidateDimension( key, candidateIndex, 3u ) );
+			uint key = SampleStream( faceIndex, sampleInFace, slot, lightIndex );
+			float cdf = fract( Halton( cycle, 3u ) + float( key >> 8u ) * ( 1.0 / 16777216.0 ) );
+			vec3 uniformValue = vec3( cdf, SobolPoint( cycle, uvec2( Hash( key ), Hash( key ^ 1u ) ) ) );
 			ReSTIRLightSample candidate;
 			if ( !SampleLight( lightIndex, origin, normal, uniformValue, candidate ) || candidate.radiance.w <= 0.0 || candidate.sourcePdf <= 0.0 )
 				continue;

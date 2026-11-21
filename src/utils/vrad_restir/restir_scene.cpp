@@ -526,6 +526,33 @@ int ReSTIR_GetOrAddMaterial( ReSTIRScene &scene, const char *pMaterialName,
 	return materialIndex;
 }
 
+int ReSTIR_GetPropMaterial( ReSTIRScene &scene, const char *name, bool textureShadows, bool *alpha )
+{
+	// Models have no dtexdata_t. Use the base VTF's average reflectivity,
+	// reading only its header and only on first registration of the material.
+	Vector reflectivity( 0, 0, 0 );
+	char base[MAX_PATH];
+	bool alphaTested;
+	if ( s_MaterialNames.Find( name ) == s_MaterialNames.InvalidIndex() &&
+		ReadMaterialVMT( name, base, sizeof( base ), alphaTested ) && base[0] )
+	{
+		char path[MAX_PATH];
+		Q_snprintf( path, sizeof( path ), "materials/%s.vtf", base );
+		CUtlBuffer header;
+		if ( g_pFileSystem->ReadFile( path, NULL, header, VTFFileHeaderSize() ) )
+		{
+			IVTFTexture *vtf = CreateVTFTexture();
+			if ( vtf->Unserialize( header, true ) )
+			{
+				const Vector &bgr = vtf->Reflectivity();
+				reflectivity.Init( clamp( bgr.z, 0.0f, 0.99f ), clamp( bgr.y, 0.0f, 0.99f ), clamp( bgr.x, 0.0f, 0.99f ) );
+			}
+			DestroyVTFTexture( vtf );
+		}
+	}
+	return ReSTIR_GetOrAddMaterial( scene, name, reflectivity, textureShadows, alpha );
+}
+
 // Per-texel bounce albedo for a lit brush/displacement material (-restir_texturealbedo).
 // Loads $basetexture once per material and records the texdata size the brush
 // texture axes are expressed in. Materials without a loadable base texture keep

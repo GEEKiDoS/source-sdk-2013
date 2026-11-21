@@ -1207,6 +1207,17 @@ static bool BuildMaterialSurfaceLights( ReSTIRSceneBuildContext &context, ReSTIR
 	CUtlVector<ReSTIRGpuEmitterTriangle> triangles;
 	for ( int model = 0; model < nummodels; ++model )
 	{
+		// Material-derived emission is permanent. Entity brush models can move,
+		// toggle or be visible only to a particular team/game mode (e.g. gameplay
+		// boundaries); treating their current pose as a lamp bakes light from
+		// invisible geometry. Use the same static-scene opt-in as shadow casters.
+		// Authored lights.rad sources above are independent of this inference.
+		if ( model != 0 )
+		{
+			entity_t *entity = ReSTIR_SceneEntityForModel( model );
+			if ( !entity || !IntForKey( entity, "vrad_brush_cast_shadows" ) || IntForKey( entity, "StartDisabled" ) )
+				continue;
+		}
 		for ( int i = 0; i < dmodels[model].numfaces; ++i )
 		{
 			const int faceIndex = dmodels[model].firstface + i;
