@@ -9,6 +9,7 @@
 #include "materialsystem/imaterialsystem.h"
 #include "zip_utils.h"
 #include "hprobe_bsp.h"
+#include "tier0/icommandline.h"
 #include "tier0/platform.h"
 #include "tier1/lzmaDecoder.h"
 #include "tier1/utlbuffer.h"
@@ -706,9 +707,11 @@ struct CHighresLightmapsDX12::Impl
         const uint64 lateViewBytes = uint64(288) << 20; // 260-272 MiB after probe admission on the 1080p low tier.
         const uint64 target = budget/8*7;
         const uint64 headroom = target > usage ? target-usage : 0;
-        const uint64 reserve = budget <= smallBudget ? lateViewBytes : 0;
-        const uint64 available = headroom > reserve ? headroom-reserve : 0;
-        if (known && (required > available || usage+required > budget/4*3))
+        const bool fitSmallAdapter = known && budget <= smallBudget && device->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+            !(CommandLine() && (CommandLine()->CheckParm("-dx12novramfit") || CommandLine()->CheckParm("-dx12vramfullprobes")));
+        const uint64 available = fitSmallAdapter ? (headroom > lateViewBytes ? headroom-lateViewBytes : 0) :
+            std::max(uint64(32) << 20, headroom);
+        if (known && ((fitSmallAdapter && required > available) || usage+required > budget/4*3))
         {
             const uint64 pool = std::min(uint64(256) << 20, available);
             capacity = uint32(std::min<uint64>(g.brickCount, pool/(uint64(hprobe::kBrickProbes*hprobe::kBrickProbes*hprobe::kBrickProbes)*hprobe::kBytesPerProbe)));
