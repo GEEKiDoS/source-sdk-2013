@@ -798,8 +798,11 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( pGrade )
 	{
 		SetVector4( composite, COMPOSITE_CONTRAST, pGrade->contrast );
-		SetTexture( composite, COMPOSITE_NOISE, pGrade->pNoise );
-		SetTexture( composite, COMPOSITE_VIGNETTE, pGrade->pVignette );
+		// Disabled grade effects have no input texture. SetTextureValue requires one.
+		if ( pGrade->pNoise )
+			SetTexture( composite, COMPOSITE_NOISE, pGrade->pNoise );
+		if ( pGrade->pVignette )
+			SetTexture( composite, COMPOSITE_VIGNETTE, pGrade->pVignette );
 	}
 	SetTexture( composite, COMPOSITE_SCENE, pScene );
 	SetTexture( composite, COMPOSITE_BLOOM, s_BloomUp );
