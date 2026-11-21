@@ -68,12 +68,14 @@ struct ShaderRecordDX12
 		CUtlString name;
 		uint32_t shaderRegister = 0, registerSpace = 0, byteSize = 0;
 		uint64_t layoutHash = 0;
+		bool engineBlock = false, engineLayoutMatches = false, foldPayload = false;
 		CCopyableUtlVector<NativeCBufferMemberDX12> members;
 	};
 
 	CUtlVector<NativeCBufferBindingDX12> nativeCBuffers;
 	uint64_t nativeAbiHash = 0;
 	bool nativeReflectionReady = false;
+	uint8_t nativeCBufferMask = 0;
 	bool lightingAbi = false, sunVisibilityAbi = false, propVisibilityAbi = false;
 	// pbrSpots: PS reflects PBR space 5 (projected lights). gbuffer: PS declares exactly six SV_Targets (scene color + G-buffer normal/spec/E+D/K/S).
 	// probeAbi: PS reflects the space-4 ambient probe block (only ever beside the lighting view block).

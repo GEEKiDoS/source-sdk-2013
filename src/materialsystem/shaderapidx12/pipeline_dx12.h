@@ -121,6 +121,7 @@ public:
 		uint32_t nativeSizes[16] = {};
 		uint64_t nativeVersions[16] = {};
 		bool nativeStage[2] = {};
+		uint8_t nativeCBufferMask[2] = { 0xff, 0xff };
 		ID3D12Resource *textures[32] = {};
 		D3D12_CPU_DESCRIPTOR_HANDLE srvSources[32];
 		// Descriptions are only read for slots whose source handle is zero; those slots must supply a description.
