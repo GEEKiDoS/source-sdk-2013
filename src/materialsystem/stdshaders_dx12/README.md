@@ -1287,15 +1287,15 @@ over its 985 MiB budget before the grid, so uploading it whole made WDDM page th
 
 Enhanced PBR models without a validated static-prop receiver use the archived `r_model_local_lights` budget
 (default 4, range 1–4; 0 selects the full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording
-owner using `CShaderAPIDX12::m_LightingOrigin` and the current retained view packet, with fixed-size
-stack storage and no per-draw allocation. It ranks lights by linear irradiance after the authored
-radius, distance falloff, cap, fade and spot cone; positive realtime weights take precedence.
+owner using `CShaderAPIDX12::m_LightingOrigin`, the current retained view packet and a map-owned copy of the
+validated structural BSP. It ranks lights by linear irradiance after the authored radius, falloff, cap, fade and
+spot cone; charted lights take precedence. Static-only candidates behind solid world leaves are rejected.
 Material registers c40–c46 carry four packet indices and six ambient-cube RGB rows. The selected
 lights still use the normal BRDF, baked visibility and realtime shadows. The sun, projected lights
-and world lightmapped receivers are unchanged. Other direct lights are projected onto the six cube
-axes at the draw origin (unshadowed retail-style approximation), then squared-normal weights add
-that cube to those models' probe/engine ambient. Validated static props do not use the draw-local budget or its
-unshadowed ambient fold. A prop with baked direct RGB uses that carrier and the normal realtime deltas and style
+and world lightmapped receivers are unchanged. Other direct lights are tested against the same structural solids
+before projection onto the six cube axes at the draw origin. Squared-normal weights add this cube to the model's
+probe/engine ambient. This test is not a substitute for a per-pixel shadow chart or a trace against props.
+Validated static props do not use the draw-local budget or ambient fold. A prop with baked direct RGB uses that carrier and the normal realtime deltas and style
 exceptions. A visibility-only prop walks the mesh's sparse nonzero R8 entries, resolves each light against the view
 packet and applies its baked visibility even without a chart. Realtime charts only refine that visibility, and
 editor lights are still evaluated from the runtime tail. This prevents an omitted or folded map light from making a

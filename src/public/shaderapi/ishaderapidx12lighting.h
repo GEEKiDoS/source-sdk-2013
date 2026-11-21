@@ -45,7 +45,7 @@
 // Same typedef as shaderapi/ishaderapi.h (kept here so tools that include this header need no renderer headers).
 typedef intp ShaderAPITextureHandle_t;
 
-#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_015"
+#define SHADERAPIDX12_LIGHTING_INTERFACE_VERSION "ShaderAPIDX12Lighting_016"
 
 class IMatRenderContext;
 
@@ -321,6 +321,15 @@ struct DX12LightingReceiverQuad
 	float position[4][3];
 };
 
+// Structural BSP of model 0 for CPU model-light ranking. Negative children
+// are terminal regions: -1 air, -2 solid. No engine-owned collision pointers
+// may be queried from a queued material draw.
+struct DX12ModelLightNode
+{
+	float plane[4];
+	int32 children[2];
+};
+
 struct DX12LightingMapDesc
 {
 	uint32	mapGeneration;				// client map load counter; UnloadMap retires it
@@ -341,6 +350,8 @@ struct DX12LightingMapDesc
 	const unsigned char *sunVisibility;	// scalar R8 samples; all spans are copied by PrepareMap
 	uint32 receiverQuadCount;
 	const DX12LightingReceiverQuad *receiverQuads;
+	uint32 modelLightNodeCount;
+	const DX12ModelLightNode *modelLightNodes;
 };
 
 struct DX12LightingViewPacket

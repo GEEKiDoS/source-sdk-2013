@@ -3860,6 +3860,25 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	map.highresRoute=1; map.nativeMapGeneration=g_State.nativeMapGeneration;
 	map.selectedLightCount=g_Selected.Count(); map.selectedLights=g_Selected.Base(); map.sunLightIndex=g_State.sunLightIndex;
 	CopyVector3(g_State.worldMins,map.worldMins); CopyVector3(g_State.worldMaxs,map.worldMaxs);
+	// Moving models don't have a face/prop visibility record. Flatten the
+	// already validated world tree once; PrepareMap copies this span.
+	CUtlVector<DX12ModelLightNode> modelNodes;
+	modelNodes.SetCount( g_CameraPvs.nodes.Count() );
+	for ( int i = 0; i < modelNodes.Count(); ++i )
+	{
+		const dnode_t &node = g_CameraPvs.nodes[i];
+		const dplane_t &plane = g_CameraPvs.planes[node.planenum];
+		DX12ModelLightNode &out = modelNodes[i];
+		CopyVector3( plane.normal, out.plane );
+		out.plane[3] = plane.dist;
+		for ( int side = 0; side < 2; ++side )
+		{
+			const int child = node.children[side];
+			out.children[side] = child >= 0 ? child : g_SunSky.leaves[-1-child].solid ? -2 : -1;
+		}
+	}
+	map.modelLightNodeCount = modelNodes.Count();
+	map.modelLightNodes = modelNodes.Base();
 	char reason[256]={0};
 	if ( !g_Lighting->ValidateMap(map,reason,sizeof(reason)) ) return Fail(reason,error,bytes);
 	g_Lighting->SetReceiverFeatureGeneration(g_MapGeneration);
