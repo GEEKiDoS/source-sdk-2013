@@ -282,8 +282,9 @@ static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", F
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
-static ConVar mat_postfx_compact( "mat_postfx_compact", "0", FCVAR_ARCHIVE,
-	"Compact DX12 post: composite the coarse bloom mip directly and sharpen scene detail before tonemapping" );
+static ConVar mat_postfx_compact( "mat_postfx_compact", "1", FCVAR_ARCHIVE,
+	"DX12 post quality: 1 Normal (one fused composite with the L4D2 grade, coarse bloom mip, detail sharpen before tonemapping), "
+	"0 Extra (separate native post passes followed by the original L4D2 engine post)" );
 static ConVar mat_postfx_lensdirt( "mat_postfx_lensdirt", "0.5", FCVAR_ARCHIVE, "DX12 post lens dirt intensity (screens the dirt into the bloom)" );
 static ConVar mat_postfx_lensdirt_enable( "mat_postfx_lensdirt_enable", "1", FCVAR_ARCHIVE, "DX12 post lens dirt: 0 off, 1 on. Intensity stays mat_postfx_lensdirt.", true, 0.f, true, 1.f );
 static ConVar mat_postfx_lensflare( "mat_postfx_lensflare", "0", FCVAR_ARCHIVE, "DX12 post lens flare (ghosts, halo, glare) intensity; 0 (default) skips the flare and glare passes" );

@@ -1813,8 +1813,6 @@ static void ApplyAdapterQualityTier()
 		{ "r_shadowmap_resolution", "0" },
 		{ "r_shadowmap_max_realtime_lights", "1" },
 		{ "mat_postfx_bloom_quality", "0" },
-		{ "mat_postfx_meter_stride", "4" },
-		{ "mat_postfx_compact", "1" },
 		{ "mat_motion_blur_quality", "-1" },
 	};
 	for ( int i = 0; i < ARRAYSIZE( s_ppLowTier ); ++i )

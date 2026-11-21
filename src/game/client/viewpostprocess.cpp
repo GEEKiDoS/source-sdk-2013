@@ -109,8 +109,8 @@ static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_
 #else
 static ConVar mat_tonemapping_occlusion_use_stencil( "mat_tonemapping_occlusion_use_stencil", "0" );
 #endif
-static ConVar mat_postfx_meter_stride( "mat_postfx_meter_stride", "1", FCVAR_ARCHIVE,
-	"DX12 exposure sampling interval in output pixels (1 = full resolution)", true, 1.f, true, 4.f );
+static ConVar mat_postfx_meter_stride( "mat_postfx_meter_stride", "4", FCVAR_ARCHIVE,
+	"DX12 exposure sampling interval in output pixels (1 = full resolution; PostFX Quality Normal uses 4, Extra 1)", true, 1.f, true, 4.f );
 ConVar mat_debug_autoexposure("mat_debug_autoexposure","0", FCVAR_CHEAT);
 #if defined( L4D2 )
 static ConVar mat_autoexposure_max( "mat_autoexposure_max", "8", 

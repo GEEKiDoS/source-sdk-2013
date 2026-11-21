@@ -1635,9 +1635,10 @@ flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead o
 `mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
 ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.
 
-**Compact output post.** Advanced Graphics > Post selects the native path's Low (`mat_postfx_compact 1`,
-`mat_postfx_meter_stride 4`) or High (`0`, `1`) settings separately from bloom quality and blur quality.
-Low can sample the bloom layer sum at the first acquired mip; it need not upsample empty fine layers just
+**Compact output post.** Advanced Graphics > Post > PostFX quality selects Normal (`mat_postfx_compact 1`,
+`mat_postfx_meter_stride 4`, the default on every tier) or Extra (`0`, `1`: separate native passes followed by
+the original L4D2 engine post), separately from bloom quality and blur quality.
+Normal can sample the bloom layer sum at the first acquired mip; it need not upsample empty fine layers just
 to reach mip 1. On an ordinary full-size SDR view the bloom extraction's second output supplies approximate
 display luma for local contrast. AgX, layer composition, local contrast, the authored LUT, vignette and grain
 then run in one pixel pass. Scene-detail sharpening before the curve replaces display-space RCAS on eligible

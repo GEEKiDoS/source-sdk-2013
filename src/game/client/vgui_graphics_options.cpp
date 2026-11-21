@@ -193,12 +193,13 @@ static const Choice_t kQuality3[] =
 	{ "#GraphicsOptions_High", { 2, 0, 0, 0, 0 } },
 };
 
-// Native stack enable, compact composition, exposure sampling interval.
+// Native stack enable, compact composition, exposure sampling interval. Normal is the fused compact composite
+// (the default); Extra runs the separate native passes and the original L4D2 engine post.
 static const Choice_t kPostQuality[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 0, 1, 0, 0 } },
-	{ "#GraphicsOptions_Low", { 1, 1, 4, 0, 0 } },
-	{ "#GraphicsOptions_High", { 1, 0, 1, 0, 0 } },
+	{ "#GraphicsOptions_Normal", { 1, 1, 4, 0, 0 } },
+	{ "#GraphicsOptions_Extra", { 1, 0, 1, 0, 0 } },
 };
 
 static const Choice_t kMotionQuality[] =
