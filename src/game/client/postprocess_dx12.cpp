@@ -545,7 +545,7 @@ bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScal
 	return mat_postfx_compact.GetBool() && !mat_hdr_output.GetBool() && !mat_postfx_debug.GetInt() &&
 		!mat_postfx_bodycam.GetBool() && !mat_postfx_awb.GetBool() && !mat_postfx_sensor.GetBool() &&
 		!mat_postfx_lensdistortion.GetBool() && !mat_postfx_chromatic.GetBool() && !mat_postfx_vignette.GetBool() &&
-		mat_postfx_lensflare.GetFloat() == 0.f && mat_postfx_bloom_quality.GetInt() == 0 &&
+		mat_postfx_lensflare.GetFloat() == 0.f &&
 		mat_postfx_bloom_intensity.GetFloat() * flBloomScale > 0.f &&
 		x == 0 && y == 0 && w == s_PostScene->GetActualWidth() && h == s_PostScene->GetActualHeight();
 }
