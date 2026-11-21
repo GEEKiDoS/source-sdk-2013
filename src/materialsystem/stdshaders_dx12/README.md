@@ -1631,6 +1631,22 @@ flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead o
 `mat_postfx_lensflare * 0.1` before AgX; the output is `peak * screen( AgX( scene ) / peak, saturate( bloomT ) )`
 ahead of the LUT, dither and HDR scale. Debug view 1 shows `bloomT`.
 
+**Compact output post.** Advanced Graphics > Post selects the native path's Low (`mat_postfx_compact 1`,
+`mat_postfx_meter_stride 4`) or High (`0`, `1`) settings separately from bloom quality and blur quality.
+Low can sample the bloom layer sum at the first acquired mip; it need not upsample empty fine layers just
+to reach mip 1. On an ordinary full-size SDR view the bloom extraction's second output supplies approximate
+display luma for local contrast. AgX, layer composition, local contrast, the authored LUT, vignette and grain
+then run in one pixel pass. Scene-detail sharpening before the curve replaces display-space RCAS on eligible
+views. Exposure still uses the original camera region and adaptation; the sparse query changes sampling
+density, not exposure bounds. Fades, vomit refraction, blurred vignettes and incompatible camera/target modes
+keep the legacy pass. Stencil-based metering keeps full density.
+
+Motion blur remains independently switchable. Quality `-1` means **very low, four taps**, not disabled. After
+a successful temporal dispatch, eligible compact views gather along the center velocity in the composite,
+with render-region addressing and separate world/viewmodel rejection. This trades neighbor dilation on thin
+moving silhouettes for avoiding the scene copy and tile passes. Overlays between velocity blur and post,
+nonstandard camera modes, and higher blur qualities retain the standalone gather.
+
 ## Optical lens, auto white balance and CMOS capture
 
 **Advanced Graphics > Post-processing** exposes five independent, archived toggles. All default to off.
