@@ -278,6 +278,7 @@ static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post
 // afterwards the archived mat_postfx_dx12 is the user's choice.
 static ConVar mat_postfx_dx12_set( "mat_postfx_dx12_set", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "Set once the DX12 post stack was validated for this config" );
 static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
+static ConVar mat_postfx_taau_reduction( "mat_postfx_taau_reduction", "1", FCVAR_ARCHIVE, "Fuse TAAU output bloom/exposure reduction; 0 keeps the legacy exposure copy/query chain" );
 static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (default 300; MagicBloom's 100; 0 off, 25..400 useful)" );
 static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
@@ -556,18 +557,18 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 	if ( !PostProcessDX12_Active() || w <= 0 || h <= 0 )
 		return;
 
-	// Every pass works on whole render targets; the view rectangle only selects what is copied in and drawn out.
-	Rect_t area = { x, y, w, h };
-	// The full-view histogram has already snapshotted the same scene. Only
-	// reuse that copy for the direct final pass (never alias the output).
+	// The TAAU provider's output is already the complete reconstructed scene.  The compact
+	// bloom first pass consumes that result directly; only the explicitly disabled fusion
+	// mode may substitute the legacy histogram copy.
 	ITexture *pScene = s_PostScene;
-	if ( pGrade && pExposureCopy && !pOutput && !pExposureCopy->IsError() &&
+	if ( !mat_postfx_taau_reduction.GetBool() && pGrade && pExposureCopy && !pOutput && !pExposureCopy->IsError() &&
 		pExposureCopy->GetImageFormat() == s_PostScene->GetImageFormat() &&
 		pExposureCopy->GetActualWidth() == w && pExposureCopy->GetActualHeight() == h )
 		pScene = pExposureCopy;
-	else
+	else if ( pScene != pExposureCopy )
 	{
 		PIXEVENT( pRenderContext, "Post copy" );
+		Rect_t area = { x, y, w, h };
 		pRenderContext->CopyRenderTargetToTextureEx( s_PostScene, 0, &area, &area );
 	}
 	const int nDebugView = mat_postfx_debug.GetInt() & 0xf;
