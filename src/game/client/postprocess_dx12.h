@@ -23,6 +23,8 @@ struct PostGradeDX12_t
 };
 
 bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale );
+bool PostProcessDX12_HasDOFInput();
+void PostProcessDX12_PrepareDOFInput( IMatRenderContext *ctx, ITexture *full, int x, int y, int w, int h, float nearZ, float farZ );
 
 void PostProcessDX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig );
 // Main-thread initialization retains all post materials and primes their variable tokens before queued rendering.

@@ -14,7 +14,10 @@ bool Terror_IsDepthOfFieldEnabled( const CViewSetup *viewSetup )
 {
 	if ( PostProcessDX12_BodycamActive() )
 		return false;
-	if ( !viewSetup || g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT || g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 92 ) return false;
+	if ( !viewSetup || g_pMaterialSystemHardwareConfig->GetDXSupportLevel() < 92 )
+		return false;
+	if ( g_pMaterialSystemHardwareConfig->GetHDRType() != HDR_TYPE_FLOAT && !PostProcessDX12_HasDOFInput() )
+		return false;
 	// Original engine/SFM view overrides are unavailable on this engine ABI.
 	return mat_dof_enabled.GetInt() != 0 && ( mat_dof_override.GetInt() != 0 || g_TerrorDOFState.enabled );
 }
@@ -33,9 +36,13 @@ static void Terror_SetDOFInt( IMaterial *material, const char *name, int value )
 void Terror_DrawDepthOfField( const CViewSetup &viewSetup )
 {
 	if ( !Terror_IsDepthOfFieldEnabled( view->GetViewSetup() ) ) return;
-	UpdateScreenEffectTexture( 0, viewSetup.x, viewSetup.y, viewSetup.width, viewSetup.height, false );
 	CMatRenderContextPtr context( materials );
 	ITexture *full = materials->FindTexture( "_rt_FullFrameFB", TEXTURE_GROUP_RENDER_TARGET );
+	PIXEVENT( context, "Terror depth of field" );
+	if ( PostProcessDX12_HasDOFInput() )
+		PostProcessDX12_PrepareDOFInput( context, full, viewSetup.x, viewSetup.y, viewSetup.width, viewSetup.height, viewSetup.zNear, viewSetup.zFar );
+	else
+		UpdateScreenEffectTexture( 0, viewSetup.x, viewSetup.y, viewSetup.width, viewSetup.height, false );
 	const int fullWidth = full->GetActualWidth(), fullHeight = full->GetActualHeight();
 	if ( mat_dof_quality.GetInt() < 2 )
 	{
@@ -77,7 +84,7 @@ void Terror_DrawDepthOfField( const CViewSetup &viewSetup )
 }
 void Terror_ClearSkyboxDepthAlpha( const CViewSetup *viewSetup )
 {
-	if ( !Terror_IsDepthOfFieldEnabled( viewSetup ) ) return;
+	if ( PostProcessDX12_HasDOFInput() || !Terror_IsDepthOfFieldEnabled( viewSetup ) ) return;
 	CMatRenderContextPtr context( materials );
 	int x, y, width, height;
 	context->GetViewport( x, y, width, height );

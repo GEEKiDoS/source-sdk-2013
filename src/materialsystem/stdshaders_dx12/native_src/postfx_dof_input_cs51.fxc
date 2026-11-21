@@ -1,0 +1,30 @@
+// Pack the actual scene DSV into the existing retail DOF color/depth input.
+// STATIC: "MSAA" "0..1"
+cbuffer PostConstants : register( b0, space1 )
+{
+	uint srcWidth, srcHeight, dstWidth, dstHeight;
+	float texelX, texelY, nearZ, farZ;
+	float4 sourceRect;
+};
+Texture2D<float4> gColor : register( t0 );
+#if MSAA
+Texture2DMS<float> gDepth : register( t1 );
+#else
+Texture2D<float> gDepth : register( t1 );
+#endif
+RWTexture2D<float4> gOutput : register( u0 );
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( id.x >= dstWidth || id.y >= dstHeight ) return;
+	int2 p = int2( sourceRect.xy + ( id.xy + 0.5 ) * sourceRect.zw / float2( dstWidth, dstHeight ) );
+#if MSAA
+	float depth = gDepth.Load( p, 0 );
+#else
+	float depth = gDepth.Load( int3( p, 0 ) );
+#endif
+	float viewZ = nearZ * farZ / max( farZ * ( 1.0 - depth ) + nearZ * depth, 1e-5 );
+	// Inverse of the retail depthScale/bias (terror_depth_of_field.cpp).
+	float alpha = ( viewZ - nearZ ) * farZ / ( ( farZ - nearZ ) * 8192.0 );
+	gOutput[id.xy] = float4( gColor.Load( int3( p, 0 ) ).rgb, alpha );
+}

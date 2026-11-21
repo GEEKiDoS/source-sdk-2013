@@ -149,6 +149,7 @@ static PostMaterial_t s_GlareReduce;
 static PostMaterial_t s_AwbReduce;
 static PostMaterial_t s_CompositeMaterial;
 static PostMaterial_t s_BodycamJpeg;
+static PostMaterial_t s_DOFInput;
 static PostMaterial_t s_RcasMaterial;
 static IShaderAPIDX12 *s_pShaderAPIDX12 = nullptr;
 
@@ -448,6 +449,7 @@ void PostProcessDX12_CreateRenderTargets( IMaterialSystem *pMaterialSystem, IMat
 	CreatePassMaterial( s_GlareReduce, pMaterialSystem, "dx12/postfx_glare_reduce", 8 );
 	CreatePassMaterial( s_AwbReduce, pMaterialSystem, "dx12/postfx_awb_reduce", 9 );
 	CreatePassMaterial( s_BodycamJpeg, pMaterialSystem, "dx12/postfx_bodycam_jpeg", 10 );
+	CreatePassMaterial( s_DOFInput, pMaterialSystem, "dx12/postfx_dof_input", 11 );
 	CreateMaterial( s_CompositeMaterial, pMaterialSystem, "dx12/postfx_composite", new KeyValues( "DX12_PostFXComposite" ),
 		s_CompositeVarNames, ARRAYSIZE( s_CompositeVarNames ) );
 	CreateMaterial( s_RcasMaterial, pMaterialSystem, "dx12/postfx_rcas", new KeyValues( "DX12_PostFXRcas" ),
@@ -481,6 +483,7 @@ void PostProcessDX12_Shutdown()
 	s_GlareReduce.m_Material.Shutdown();
 	s_AwbReduce.m_Material.Shutdown();
 	s_BodycamJpeg.m_Material.Shutdown();
+	s_DOFInput.m_Material.Shutdown();
 	s_CompositeMaterial.m_Material.Shutdown();
 	s_RcasMaterial.m_Material.Shutdown();
 	s_PostScene.Shutdown();
@@ -538,6 +541,21 @@ void PostProcessDX12_SubmitFrameConfig()
 	CMatRenderContextPtr pRenderContext( materials );
 	pRenderContext->SetVectorRenderingParameter( VECTOR_RENDERPARM_DX12_DISPLAY_TRANSFORM,
 		Vector( PostProcessDX12_Active() ? HdrPeak( bHdr ) : 0.f, mat_postfx_exposure.GetFloat(), bHdr ? flWorldNits / flUiNits : 1.f ) );
+}
+
+bool PostProcessDX12_HasDOFInput()
+{
+	return s_bDX12 && s_bRenderTargetsReady && MaterialValid( s_DOFInput );
+}
+
+void PostProcessDX12_PrepareDOFInput( IMatRenderContext *ctx, ITexture *full, int x, int y, int w, int h, float nearZ, float farZ )
+{
+	Rect_t area = { x, y, w, h };
+	ctx->CopyRenderTargetToTextureEx( s_PostScene, 0, &area, &area );
+	SetPostPass( s_DOFInput, s_PostScene, 0, full, 0, nearZ, farZ );
+	const float rect[4] = { (float)x, (float)y, (float)w, (float)h };
+	SetVector4( s_DOFInput, POST_PARAMS1, rect );
+	DrawCompute( ctx, s_DOFInput );
 }
 
 bool PostProcessDX12_CanFuseGrade( int x, int y, int w, int h, float flBloomScale )

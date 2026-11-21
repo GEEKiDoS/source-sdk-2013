@@ -119,3 +119,5 @@ volumetric_upsample_ps51.fxc ps volumetric_upsample_ps51 native -
 # noparity volumetric_upsample_ps51 - native-only
 l4d2_glow_composite_ps51.fxc ps l4d2_glow_composite_ps51 native -
 # noparity l4d2_glow_composite_ps51 - native-only
+postfx_dof_input_cs51.fxc cs postfx_dof_input_cs51 native -
+# noparity postfx_dof_input_cs51 - native-only
