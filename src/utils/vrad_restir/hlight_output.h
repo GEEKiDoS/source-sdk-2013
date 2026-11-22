@@ -13,6 +13,9 @@ class CReSTIRVulkanDevice;
 // Dense SH-L2 ambient probe grid, written as the .hprobe member paired to the .hlight. No-op without
 // -restir_shadowmaps. Runs after the leaf ambient stage and UploadFinalLightmap.
 bool ReSTIR_CaptureAmbientProbes(const ReSTIROptions &, const ReSTIRScene &, CReSTIRVulkanDevice &);
+// Bake-time fake-beam replacement: scores every point_spotlight/beam_spotlight against the selected light_spots
+// (traced beam-volume overlap, switchability, colour) and stores the .hspot records. Runs after ReSTIR_CaptureHighres.
+bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &, const ReSTIRScene &, CReSTIRVulkanDevice &);
 // -restir_shadowmaps output: builds the .hlight, .hprobe and rshd manifest of the captured HDR lighting and writes
 // them to <map>.light beside the input BSP, which is not modified.
 bool ReSTIR_WriteLightSidecar(const ReSTIROptions &);

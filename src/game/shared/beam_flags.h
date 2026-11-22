@@ -32,7 +32,7 @@ enum
 	FBEAM_FOREVER			= 0x00004000,
 	FBEAM_HALOBEAM			= 0x00008000,		// When drawing a beam with a halo, don't ignore the segments and endwidth
 	FBEAM_REVERSED			= 0x00010000,
-	FBEAM_POINT_SPOTLIGHT	= 0x00020000,		// point_spotlight fake beam; DX12 volumetrics may replace it (shadowmaps_dx12.cpp)
+	FBEAM_POINT_SPOTLIGHT	= 0x00020000,		// point_spotlight/beam_spotlight fake beam; DX12 volumetrics may replace it (shadowmaps_dx12.cpp)
 	NUM_BEAM_FLAGS = 18	// KEEP THIS UPDATED!
 };
 

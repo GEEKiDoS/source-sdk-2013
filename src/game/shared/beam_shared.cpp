@@ -1059,9 +1059,10 @@ void CBeam::OnDataChanged( DataUpdateType_t updateType )
 	AddToEntityList( ENTITY_LIST_SIMULATE );
 #endif
 
-	// Point-spotlight fake beams join the DX12 volumetric pairing registry; a cleared marker leaves it.
+	// Networked fake spotlight beams come only from point_spotlight; they join the DX12 replacement registry and a
+	// cleared marker leaves it.
 	if ( GetBeamFlags() & FBEAM_POINT_SPOTLIGHT )
-		ShadowMapsDX12_UpdateSpotlightBeam( this );
+		ShadowMapsDX12_UpdateSpotlightBeam( this, hspot::kPointSpotlight );
 	else
 		ShadowMapsDX12_RemoveSpotlightBeam( this );
 }

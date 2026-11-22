@@ -8,6 +8,7 @@
 #include "restir_baked_direct.h"
 #include "restir_byte_buffer.h"
 #include "ambient_probes.h"
+#include "restir_vulkan.h"
 #include "vrad_restir.h"
 #include "bsplib.h"
 #include "bsp21_format.h"
@@ -507,10 +508,11 @@ static bool WriteLightFile(const char *path, const CUtlVector<byte> &manifest, c
     zip->AddBufferToZip(s_AssetPath,const_cast<byte *>(asset.Base()),asset.Count(),false,IZip::eCompressionType_LZMA);
     if ( hspotBytes.Count() )
     {
+        // Stored, not LZMA: the client reads this small member directly from the pak.
         char hspotPath[256]; V_strncpy( hspotPath, s_AssetPath, sizeof(hspotPath) );
         V_StripExtension( hspotPath, hspotPath, sizeof(hspotPath) );
         V_strncat( hspotPath, ".hspot", sizeof(hspotPath), COPY_ALL_CHARACTERS );
-        zip->AddBufferToZip( hspotPath, const_cast<byte *>(hspotBytes.Base()), hspotBytes.Count(), false, IZip::eCompressionType_LZMA );
+        zip->AddBufferToZip( hspotPath, const_cast<byte *>(hspotBytes.Base()), hspotBytes.Count(), false, IZip::eCompressionType_None );
     }
     zip->AddBufferToZip(probePath,const_cast<byte *>(probes.Base()),probes.Count(),false,IZip::eCompressionType_LZMA);
     CUtlBuffer pak; zip->SaveToBuffer(pak);
@@ -610,43 +612,6 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
     // The gather stage has already captured the probes. Receiver capture
     // replaces only RGB/visibility storage, not the ambient grid.
     ModeStorage &m = s_Storage; m.Clear(true); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
-    if ( options.shadowMaps )
-    {
-        CUtlVector<hspot::Light> hspotLights; CUtlVector<hspot::Beam> hspotBeams;
-        for ( int li = 0; li < scene.shadowLights.Count(); ++li )
-        {
-            hspot::Light light = { uint32(li), 0 };
-            const int source = scene.shadowLights[li].sourceEntity;
-            if ( source >= 0 && source < num_entities && !Q_stricmp(ValueForKey(&entities[source],"classname"),"light_spot") &&
-                IntForKey(&entities[source],"_volumetric") != 0 ) light.volumetric = 1;
-            hspotLights.AddToTail(light);
-        }
-        for ( int ei = 0; ei < num_entities; ++ei )
-        {
-            entity_t &entity = entities[ei];
-            const char *classname = ValueForKey(&entity,"classname");
-            const bool pointBeam = !Q_stricmp(classname,"point_spotlight");
-            const bool volumeBeam = !Q_stricmp(classname,"beam_spotlight");
-            if ( !pointBeam && !volumeBeam ) continue;
-            Vector origin; GetVectorForKey(&entity,"origin",origin);
-            int best = -1; float bestDistance = FLT_MAX;
-            for ( int li = 0; li < scene.shadowLights.Count(); ++li )
-            {
-                const ShadowMapLightDisk &candidate = scene.shadowLights[li];
-                if ( candidate.light.type != emit_spotlight || !hspotLights[li].volumetric ) continue;
-                const float distance = origin.DistToSqr(candidate.light.origin);
-                if ( distance < bestDistance ) { bestDistance = distance; best = li; }
-            }
-            if ( best < 0 || bestDistance > 128.0f*128.0f ) continue;
-            hspot::Beam beam = { pointBeam ? hspot::kPointSpotlight : hspot::kBeamSpotlight, uint32(best), uint32(atoi(ValueForKey(&entity,"hammerid"))), { origin.x, origin.y, origin.z } };
-            hspotBeams.AddToTail(beam);
-        }
-        hspot::Header header = { hspot::kMagic, hspot::kVersion, uint32(sizeof(hspot::Header)+hspotLights.Count()*sizeof(hspot::Light)+hspotBeams.Count()*sizeof(hspot::Beam)), uint32(hspotLights.Count()), uint32(hspotBeams.Count()) };
-        m.hspotBytes.SetCount(header.byteSize); memcpy(m.hspotBytes.Base(),&header,sizeof(header));
-        memcpy(m.hspotBytes.Base()+sizeof(header),hspotLights.Base(),hspotLights.Count()*sizeof(hspot::Light));
-        memcpy(m.hspotBytes.Base()+sizeof(header)+hspotLights.Count()*sizeof(hspot::Light),hspotBeams.Base(),hspotBeams.Count()*sizeof(hspot::Beam));
-        Msg("Hspot: selected lights=%d beams=%d\n",hspotLights.Count(),hspotBeams.Count());
-    }
     const int faceCount = numfaces_hdr;
     if (nummodels <= 0 || nummodels > MAX_MAP_MODELS || faceCount <= 0 || faceCount > MAX_MAP_FACES ||
         g_pFaces != dfaces_hdr || scene.dfaceToFace.Count() != faceCount || !color) return Fail("invalid model/face capture domain");
@@ -840,6 +805,200 @@ bool ReSTIR_CaptureAmbientProbes(const ReSTIROptions &options, const ReSTIRScene
     if (!s_Prepared) return Fail("probe capture without prepared storage");
     if (!ReSTIR_BuildAmbientProbeGrid(options,scene,device,s_Storage.probes)) return false;
     s_Storage.probesCaptured = true; return true;
+}
+
+namespace
+{
+// Bake-time replacement of fake spotlight beams (point_spotlight / beam_spotlight) by volumetric light_spots.
+// The runtime only applies these records; it never matches geometry itself.
+const int kBeamAxialSamples = 8, kBeamLateralSamples = 5, kBeamSamples = kBeamAxialSamples*kBeamLateralSamples;
+const float kBeamPairMinScore = 0.5f;		// majority of the beam volume lit by this light
+const float kBeamPairMinColorCos = 0.9f;	// ~25 degrees in RGB: warm vs neutral white pass, red/blue vs white fail
+const float kBeamPrefilterReach = 64.0f;	// plus the beam width, beam origin to light origin
+const float kBeamPrefilterSlack = 10.0f;	// degrees beyond the light cone + beam half-spread
+
+struct BeamSource
+{
+    uint32 classname;
+    Vector origin, axis, color; float width, length;
+    bool rotates;	// beam_spotlight with a rotation speed: never holds its authored axis long enough to pair
+};
+enum BeamReject { kRejectNoCandidate, kRejectRotating, kRejectColor, kRejectOverlap, kRejectCount };
+
+// Light reach at distance d: VRAD's quintic fade/cap and radius cutoff, else attenuation relative to 32 units.
+bool LightReaches(const ShadowMapLightDisk &disk, float d)
+{
+    const dworldlight_t &l = disk.light;
+    if (disk.capDist > 0 && d > disk.capDist) return false;
+    if (disk.endFade > 0 && d >= disk.endFade) return false;
+    if (l.radius > 0 && d > l.radius) return false;
+    const float reference = l.constant_attn + l.linear_attn*32.0f + l.quadratic_attn*32.0f*32.0f;
+    const float at = l.constant_attn + l.linear_attn*d + l.quadratic_attn*d*d;
+    return reference > 0 && at > 0 && reference/at >= 0.02f;
+}
+
+float ColorCos(const Vector &a, const Vector &b)
+{
+    const float la = a.Length(), lb = b.Length();
+    return la > 0 && lb > 0 ? DotProduct(a,b)/(la*lb) : 1.0f;
+}
+
+void BeamSample(const BeamSource &beam, float extent, int s, Vector &out)
+{
+    Vector u, v; VectorVectors(beam.axis,u,v);
+    const int axial = s / kBeamLateralSamples, lateral = s % kBeamLateralSamples;
+    const float r = 0.35f*beam.width;	// inside the beam's half width
+    static const float ox[kBeamLateralSamples] = {0,1,-1,0,0}, oy[kBeamLateralSamples] = {0,0,0,1,-1};
+    out = beam.origin + beam.axis*((axial+0.5f)/kBeamAxialSamples*extent) + u*(ox[lateral]*r) + v*(oy[lateral]*r);
+}
+// True when some entity output ("target,input,param,delay,refire", comma or ESC separated) sends input to targetname.
+bool EntityInputTargeted(const char *targetname, const char *input)
+{
+    if (!*targetname) return false;
+    const int nameLength = V_strlen(targetname), inputLength = V_strlen(input);
+    for (int ei = 0; ei < num_entities; ++ei)
+        for (epair_t *ep = entities[ei].epairs; ep; ep = ep->next)
+        {
+            const char *value = ep->value;
+            if (V_strnicmp(value,targetname,nameLength) || (value[nameLength] != ',' && value[nameLength] != '\x1b')) continue;
+            const char *in = value + nameLength + 1;
+            if (!V_strnicmp(in,input,inputLength) && (in[inputLength] == ',' || in[inputLength] == '\x1b')) return true;
+        }
+    return false;
+}
+}
+
+bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device)
+{
+    if (!options.shadowMaps) return true;
+    ModeStorage &m = s_Storage;
+    if (!s_Prepared || !m.active) return Fail("spotlight pairing without captured lighting");
+    const int lightCount = scene.shadowLights.Count();
+    // Candidate lights: selected light_spots without an explicit `_volumetric 0` (explicit 1 is applied by the runtime itself).
+    CUtlVector<unsigned char> eligible; eligible.SetCount(lightCount);
+    for (int li = 0; li < lightCount; ++li)
+    {
+        const ShadowMapLightDisk &disk = scene.shadowLights[li];
+        eligible[li] = 0;
+        if (disk.light.type != emit_spotlight || disk.sourceEntity < 0 || disk.sourceEntity >= num_entities) continue;
+        entity_t &source = entities[disk.sourceEntity];
+        const char *explicitVolume = ValueForKey(&source,"_volumetric");
+        eligible[li] = !Q_stricmp(ValueForKey(&source,"classname"),"light_spot") && (!*explicitVolume || atoi(explicitVolume) != 0);
+    }
+
+    CUtlVector<BeamSource> beams;
+    for (int ei = 0; ei < num_entities; ++ei)
+    {
+        entity_t &entity = entities[ei];
+        const char *classname = ValueForKey(&entity,"classname");
+        const bool point = !Q_stricmp(classname,"point_spotlight"), volume = !Q_stricmp(classname,"beam_spotlight");
+        if (!point && !volume) continue;
+        BeamSource &beam = beams[beams.AddToTail()];
+        beam.classname = point ? hspot::kPointSpotlight : hspot::kBeamSpotlight;
+        GetVectorForKey(&entity,"origin",beam.origin);
+        Vector angles; GetVectorForKey(&entity,"angles",angles);
+        AngleVectors(QAngle(angles.x,angles.y,angles.z),&beam.axis);
+        beam.width = *ValueForKey(&entity,"SpotlightWidth") ? FloatForKey(&entity,"SpotlightWidth") : 50.0f;
+        beam.length = *ValueForKey(&entity,"SpotlightLength") ? FloatForKey(&entity,"SpotlightLength") : 500.0f;
+        beam.color.Init(255,255,255);
+        if (*ValueForKey(&entity,"rendercolor")) GetVectorForKey(&entity,"rendercolor",beam.color);
+        // Toggled and parented beams need no special case: the runtime pairs a beam only while it is live at its
+        // authored pose, and suppresses it only while the light's volume draws (a switched-off light keeps the beam).
+        // A beam_spotlight rotates when it has a speed and either starts rotating (spawnflag 4) or receives Start.
+        beam.rotates = volume && FloatForKey(&entity,"maxspeed") != 0.0f &&
+            ( (IntForKey(&entity,"spawnflags") & 4) || EntityInputTargeted(ValueForKey(&entity,"targetname"),"Start") );
+        if (beam.width <= 0 || beam.length <= 0) beams.Remove(beams.Count()-1);
+    }
+
+    // Beam extents: the authored length, cut where the beam enters solid geometry (skipping the lamp housing).
+    CUtlVector<ReSTIRGpuRay> rays; CUtlVector<ReSTIRGpuHit> hits;
+    rays.SetCount(beams.Count());
+    for (int b = 0; b < beams.Count(); ++b)
+    {
+        const BeamSource &beam = beams[b]; ReSTIRGpuRay &ray = rays[b];
+        const float skip = MIN(8.0f,0.5f*beam.length);
+        ray.origin[0] = beam.origin.x; ray.origin[1] = beam.origin.y; ray.origin[2] = beam.origin.z; ray.origin[3] = skip/beam.length;
+        ray.direction[0] = beam.axis.x*beam.length; ray.direction[1] = beam.axis.y*beam.length; ray.direction[2] = beam.axis.z*beam.length; ray.direction[3] = 1.0f;
+    }
+    CUtlVector<float> extent; extent.SetCount(beams.Count());
+    if (rays.Count() && (!device.TraceRays(rays,RESTIR_RAY_MASK_SHADOW,hits) || hits.Count() != rays.Count())) return Fail("beam extent trace failed");
+    for (int b = 0; b < beams.Count(); ++b)
+        extent[b] = MAX(16.0f, hits[b].t >= 0 ? hits[b].t*beams[b].length : beams[b].length);
+
+    // Candidates: generous prefilter, then colour, then the traced volume overlap score.
+    struct Candidate { int beam, light, firstRay; };
+    CUtlVector<Candidate> candidates; CUtlVector<int> reject; reject.SetCount(beams.Count());
+    CUtlVector<unsigned char> geometric; rays.RemoveAll();
+    for (int b = 0; b < beams.Count(); ++b)
+    {
+        const BeamSource &beam = beams[b]; reject[b] = beam.rotates ? kRejectRotating : kRejectNoCandidate;
+        if (beam.rotates) continue;
+        const float halfSpread = RAD2DEG(atan2f(0.5f*beam.width,beam.length));
+        for (int li = 0; li < lightCount; ++li)
+        {
+            if (!eligible[li]) continue;
+            const ShadowMapLightDisk &disk = scene.shadowLights[li];
+            const float reach = kBeamPrefilterReach + beam.width;
+            if (beam.origin.DistToSqr(disk.light.origin) > reach*reach) continue;
+            const float outer = RAD2DEG(acosf(clamp(disk.light.stopdot2,-1.0f,1.0f)));
+            if (DotProduct(beam.axis,disk.light.normal) < cosf(DEG2RAD(MIN(180.0f,outer+halfSpread+kBeamPrefilterSlack)))) continue;
+            if (ColorCos(beam.color,disk.light.intensity) < kBeamPairMinColorCos) { reject[b] = MAX(reject[b],int(kRejectColor)); continue; }
+            Candidate &c = candidates[candidates.AddToTail()]; c.beam = b; c.light = li; c.firstRay = rays.Count();
+            // A sample counts when it lies in the light's outer cone and reach and the light sees it.
+            const Vector start = disk.light.origin + disk.light.normal*2.0f;	// leave the lamp housing
+            for (int s = 0; s < kBeamSamples; ++s)
+            {
+                Vector p; BeamSample(beam,extent[b],s,p);
+                Vector toSample = p - disk.light.origin; const float d = VectorNormalize(toSample);
+                geometric.AddToTail(d > 0 && DotProduct(toSample,disk.light.normal) >= disk.light.stopdot2 && LightReaches(disk,d));
+                const Vector delta = p - start; const float length = delta.Length();
+                ReSTIRGpuRay &ray = rays[rays.AddToTail()];
+                ray.origin[0] = start.x; ray.origin[1] = start.y; ray.origin[2] = start.z; ray.origin[3] = 0.0f;
+                ray.direction[0] = delta.x; ray.direction[1] = delta.y; ray.direction[2] = delta.z;
+                ray.direction[3] = length > 2.0f ? 1.0f - 2.0f/length : 0.0f;
+            }
+        }
+    }
+    if (rays.Count() && (!device.TraceRays(rays,RESTIR_RAY_MASK_SHADOW,hits) || hits.Count() != rays.Count())) return Fail("beam visibility trace failed");
+
+    CUtlVector<hspot::Beam> paired;
+    CUtlVector<int> best; best.SetCount(beams.Count()); CUtlVector<float> bestScore; bestScore.SetCount(beams.Count());
+    for (int b = 0; b < beams.Count(); ++b) { best[b] = -1; bestScore[b] = 0; }
+    for (int c = 0; c < candidates.Count(); ++c)
+    {
+        const Candidate &cand = candidates[c]; int lit = 0;
+        for (int s = 0; s < kBeamSamples; ++s)
+            lit += geometric[cand.firstRay+s] && hits[cand.firstRay+s].t < 0;
+        const float score = float(lit)/kBeamSamples;
+        const BeamSource &beam = beams[cand.beam];
+        const bool better = score > bestScore[cand.beam] || ( score == bestScore[cand.beam] && best[cand.beam] >= 0 &&
+            beam.origin.DistToSqr(scene.shadowLights[cand.light].light.origin) < beam.origin.DistToSqr(scene.shadowLights[best[cand.beam]].light.origin) );
+        if (better) { bestScore[cand.beam] = score; best[cand.beam] = cand.light; }
+        reject[cand.beam] = MAX(reject[cand.beam],int(kRejectOverlap));
+    }
+    int rejected[kRejectCount] = {};
+    static const char *const kRejectNames[kRejectCount] = { "no candidate light", "rotates", "colour", "overlap" };
+    for (int b = 0; b < beams.Count(); ++b)
+    {
+        const BeamSource &beam = beams[b];
+        const bool pair = best[b] >= 0 && bestScore[b] >= kBeamPairMinScore;
+        Msg("Hspot: %s at (%.0f %.0f %.0f): %s", beam.classname == hspot::kPointSpotlight ? "point_spotlight" : "beam_spotlight",
+            beam.origin.x, beam.origin.y, beam.origin.z, pair ? "paired" : kRejectNames[reject[b]]);
+        if (best[b] >= 0) Msg(", best light %d score %.2f", best[b], bestScore[b]);
+        Msg("\n");
+        if (!pair) { ++rejected[reject[b]]; continue; }
+        hspot::Beam record = { beam.classname, uint32(best[b]), { beam.origin.x, beam.origin.y, beam.origin.z }, { beam.axis.x, beam.axis.y, beam.axis.z } };
+        paired.AddToTail(record);
+    }
+    hspot::Header header = { hspot::kMagic, hspot::kVersion, uint32(sizeof(hspot::Header)+paired.Count()*sizeof(hspot::Beam)),
+        uint32(lightCount), uint32(paired.Count()) };
+    m.hspotBytes.SetCount(header.byteSize);
+    memcpy(m.hspotBytes.Base(),&header,sizeof(header));
+    memcpy(m.hspotBytes.Base()+sizeof(header),paired.Base(),paired.Count()*sizeof(hspot::Beam));
+    Msg("Hspot: %d beams, %d paired; rejected: no candidate %d, rotating %d, colour %d, overlap<%.2f %d\n",
+        beams.Count(),paired.Count(),rejected[kRejectNoCandidate],rejected[kRejectRotating],rejected[kRejectColor],
+        kBeamPairMinScore,rejected[kRejectOverlap]);
+    return true;
 }
 
 bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)

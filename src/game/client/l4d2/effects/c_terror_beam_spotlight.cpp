@@ -5,6 +5,7 @@
 #include "physics.h"
 #include "cliententitylist.h"
 #include <xmmintrin.h>
+#include "shadowmaps_dx12.h"
 #include "tier0/memdbgon.h"
 
 static int SpotlightTruncate( float value ) { return _mm_cvttss_si32( _mm_set_ss( value ) ); }
@@ -116,7 +117,7 @@ void C_BeamSpotLight::CreateBeam()
 	beam->SetHaloTexture( m_nHaloIndex );
 	beam->SetHaloScale( 60.0f );
 	beam->SetEndWidth( m_flSpotlightGoalWidth > 102.3f ? 102.3f : m_flSpotlightGoalWidth );
-	beam->SetBeamFlags( 640 );
+	beam->SetBeamFlags( 640 | FBEAM_POINT_SPOTLIGHT ); // fake beam: DX12 volumetrics may replace it (baked .hspot)
 	beam->SetBrightness( 64 );
 	beam->SetNoise( 0 );
 	beam->SetMinCPULevel( GetMinCPULevel() );
@@ -124,6 +125,7 @@ void C_BeamSpotLight::CreateBeam()
 	beam->SetMinGPULevel( GetMinGPULevel() );
 	beam->SetMaxGPULevel( GetMaxGPULevel() );
 	beam->PointsInit( GetAbsOrigin(), m_vecSpotlightTarget );
+	ShadowMapsDX12_UpdateSpotlightBeam( beam, hspot::kBeamSpotlight );
 }
 void C_BeamSpotLight::UpdateBeamEffects()
 {

@@ -24,6 +24,7 @@
 #include "mathlib/vector.h"
 #include "view_shared.h"
 #include "hlight_bsp.h"
+#include "hspot_bsp.h"
 #include "shaderapi/ishaderapidx12lighting.h"
 
 class IClientRenderable;
@@ -269,19 +270,20 @@ void ShadowMapsDX12_SetDynamicLights( const DeferredLight_t *lights, int count )
 // Map light_environment `_volumetric 1` (parsed once from the BSP entity string at admission through
 // ShadowMapLightDisk::sourceEntity); false on ordinary maps or when the key is absent/0. CVAR overrides live in ClientView.
 bool ShadowMapsDX12_VolumetricSunEnabled();
-// Bracket the enabled main-volume scope (ScreenSpaceDX12_BeginVolumetrics/DrawVolumetrics). Begin pairs each live
-// FBEAM_POINT_SPOTLIGHT beam with the best overlapping selected map light_spot (start within 32 units + beam width, axis
-// inside the outer cone + beam half-spread; many beams per light) once per outer main view before residency filtering;
-// receiver views inside the scope publish the light opt-in bit and the beams they replace. End clears pairs/suppression.
-// Outside the scope no light carries the bit and every beam draws normally.
+// Bracket the enabled main-volume scope (ScreenSpaceDX12_BeginVolumetrics/DrawVolumetrics). Begin applies the map's
+// baked .hspot records (vrad_restir pairs fake beams with light_spots at compile time): each live registered beam at
+// its authored pose (start within 1 unit, axis within 2 degrees) pairs with its record's light, once per outer main
+// view before residency filtering; receiver views inside the scope publish the light opt-in bit and the beams they
+// replace. End clears pairs/suppression. Outside the scope, or without .hspot, every beam draws normally.
 void ShadowMapsDX12_BeginVolumetrics();
 void ShadowMapsDX12_EndVolumetrics();
-// Live beam registry fed by C_Beam::OnDataChanged (insert when marked, remove when the marker clears) and UpdateOnRemove.
+// Live fake-beam registry: networked point_spotlight beams from C_Beam::OnDataChanged (insert when marked, remove when
+// the marker clears) and UpdateOnRemove; beam_spotlight's client beams from C_BeamSpotLight::CreateBeam.
 class C_Beam;
-void ShadowMapsDX12_UpdateSpotlightBeam( C_Beam *beam );
+void ShadowMapsDX12_UpdateSpotlightBeam( C_Beam *beam, hspot::BeamClass classname );
 void ShadowMapsDX12_RemoveSpotlightBeam( C_Beam *beam );
 // CViewRenderBeams::DrawBeam skips the stock beam only while the current receiver bracket is a suppressing main view
-// that listed this beam and its live geometry still matches its assigned light.
+// that listed this beam and the beam is still at its record's authored pose.
 bool ShadowMapsDX12_ReplaceSpotlightBeam( C_Beam *beam );
 
 // Builds/refreshes caster depth BEFORE receiver world/decal-list construction, uploads the immutable lighting

@@ -1054,6 +1054,7 @@ int CVRadRestirDLL::Bake()
 		if ( g_ReSTIROptions.shadowMaps )
 		{
 			RESTIR_STAGE( "capturing high-resolution lightmaps", output.CaptureHighres( g_ReSTIROptions, scene, result ) );
+			RESTIR_STAGE( "pairing fake spotlight beams", ReSTIR_CaptureSpotlightPairs( g_ReSTIROptions, scene, device ) );
 			RESTIR_STAGE( "writing the .light sidecar", ReSTIR_WriteLightSidecar( g_ReSTIROptions ) );
 		}
 		else

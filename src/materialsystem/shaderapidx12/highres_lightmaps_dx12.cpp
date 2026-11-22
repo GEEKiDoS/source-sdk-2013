@@ -127,16 +127,16 @@ struct PakMember
 };
 // Finds the manifest-named .hlight and its paired .hprobe with one central-directory read; member payloads are not
 // touched. Names compare case-insensitively like CZipFile/packfile lookups. A repeated name is an ambiguous pak.
-bool LocateAssets(BspFile &bsp, const ShadowMapBspLumpInfo &pak, const char *assetPath, char (&probePath)[260], PakMember (&out)[2], PakMember &hspot)
+bool LocateAssets(BspFile &bsp, const ShadowMapBspLumpInfo &pak, const char *assetPath, char (&probePath)[260], PakMember (&out)[2])
 {
-    out[0] = out[1] = {}; hspot = {};
+    out[0] = out[1] = {};
+    if (!hprobe::ProbeAssetPath(assetPath, probePath, sizeof(probePath))) probePath[0] = 0;
     ZIP_EndOfCentralDirRecord end{}; bool compatible = true;
     if (!hlight::LocatePakDirectory(BspFile::Read, &bsp, pak, end, compatible)) return false;
     std::vector<uint8> directory(end.centralDirectorySize);
     if (!directory.empty() && !BspFile::Read(&bsp, pak.fileofs + end.startOfCentralDirOffset, end.centralDirectorySize, directory.data())) return false;
-    char hspotPath[260]; V_strncpy(hspotPath,assetPath,sizeof(hspotPath)); V_StripExtension(hspotPath,hspotPath,sizeof(hspotPath)); V_strncat(hspotPath,".hspot",sizeof(hspotPath),COPY_ALL_CHARACTERS);
-    const char *const names[3] = { assetPath, probePath, hspotPath };
-    const size_t nameBytes[3] = { size_t(V_strlen(assetPath)), size_t(V_strlen(probePath)), size_t(V_strlen(hspotPath)) };
+    const char *const names[2] = { assetPath, probePath };
+    const size_t nameBytes[2] = { size_t(V_strlen(assetPath)), size_t(V_strlen(probePath)) };
     size_t cursor = 0;
     for (uint32 i = 0; i < end.nCentralDirectoryEntries_Total; ++i)
     {
@@ -147,14 +147,15 @@ bool LocateAssets(BspFile &bsp, const ShadowMapBspLumpInfo &pak, const char *ass
         const size_t span = size_t(entry.fileNameLength) + (compatible ? size_t(entry.extraFieldLength) + entry.fileCommentLength : 0);
         if (span > directory.size() - cursor) return false;
         const char *name = reinterpret_cast<const char *>(directory.data() + cursor);
-        for (uint32 n=0;n<3;++n)
+        for (uint32 n = 0; n < 2; ++n)
         {
-            if (!nameBytes[n] || nameBytes[n] != entry.fileNameLength || V_strnicmp(name,names[n],int(nameBytes[n]))) continue;
-            PakMember *member = n<2 ? &out[n] : &hspot;
-            if (member->found) return false;
-            const uint64 data=uint64(entry.relativeOffsetOfLocalHeader)+sizeof(ZIP_LocalFileHeader)+entry.fileNameLength+entry.extraFieldLength;
-            if (data>pak.filelen || entry.compressedSize>pak.filelen-data) return false;
-            member->method=entry.compressionMethod; member->crc32=entry.crc32; member->compressedBytes=entry.compressedSize; member->uncompressedBytes=entry.uncompressedSize; member->dataOffset=uint32(pak.fileofs+data); member->found=true;
+            if (!nameBytes[n] || nameBytes[n] != entry.fileNameLength || V_strnicmp(name, names[n], int(nameBytes[n]))) continue;
+            if (out[n].found) return false;
+            const uint64 data = uint64(entry.relativeOffsetOfLocalHeader) + sizeof(ZIP_LocalFileHeader) + entry.fileNameLength + entry.extraFieldLength;
+            if (data > pak.filelen || entry.compressedSize > pak.filelen - data) return false;
+            out[n].method = entry.compressionMethod; out[n].crc32 = entry.crc32;
+            out[n].compressedBytes = entry.compressedSize; out[n].uncompressedBytes = entry.uncompressedSize;
+            out[n].dataOffset = uint32(pak.fileofs + data); out[n].found = true;
         }
         cursor += span;
     }
@@ -181,18 +182,18 @@ bool ReadPakMember(BspFile &bsp, const PakMember &member, std::unique_ptr<uint8[
 // into the owned buffers; a map adopts a bundle only when its pak members carry the same content identity.
 struct MapAssets
 {
-    PakMember members[2], hspotMember;
-    std::unique_ptr<uint8[]> hlightBytes, probeBytes, hspotBytes;
+    PakMember members[2]; // .hlight, .hprobe (found=false when absent)
+    std::unique_ptr<uint8[]> hlightBytes, probeBytes;
     hlight::FileView file{};
     hprobe::FileView probeFile{};
-    bool valid = false, probeValid = false, hspotValid = false;
+    bool valid = false, probeValid = false;
     char error[512] = {}, probeReason[sizeof(DX12HighresMapStatus::probeError)] = {};
-    bool Matches(const PakMember (&m)[2], const PakMember &hspot) const { return members[0] == m[0] && members[1] == m[1] && hspotMember == hspot; }
+    bool Matches(const PakMember (&m)[2]) const { return members[0] == m[0] && members[1] == m[1]; }
 };
-std::shared_ptr<const MapAssets> BuildAssets(BspFile &bsp, const PakMember (&members)[2], const PakMember &hspot, const char *probePath)
+std::shared_ptr<const MapAssets> BuildAssets(BspFile &bsp, const PakMember (&members)[2], const char *probePath)
 {
     auto assets = std::make_shared<MapAssets>();
-    assets->members[0] = members[0]; assets->members[1] = members[1]; assets->hspotMember = hspot;
+    assets->members[0] = members[0]; assets->members[1] = members[1];
     if (!ReadPakMember(bsp, members[0], assets->hlightBytes))
     {
         assets->hlightBytes.reset();
@@ -210,11 +211,7 @@ std::shared_ptr<const MapAssets> BuildAssets(BspFile &bsp, const PakMember (&mem
         V_snprintf(assets->probeReason, sizeof(assets->probeReason), "%s is missing from the .light pak; rebake with -restir_shadowmaps", probePath);
     else assets->probeValid = hprobe::ValidateFile(assets->probeBytes.get(), members[1].uncompressedBytes, assets->probeFile, assets->probeReason, sizeof(assets->probeReason)) &&
         hprobe::ValidatePair(assets->probeFile, assets->file, assets->probeReason, sizeof(assets->probeReason));
-    if ( hspot.found )
-    {
-        assets->hspotValid = ReadPakMember(bsp,hspot,assets->hspotBytes);
-        if ( !assets->hspotValid ) V_strncpy(assets->probeReason,"invalid optional .hspot member",sizeof(assets->probeReason));
-    }
+    if (!assets->probeValid) { assets->probeBytes.reset(); assets->probeFile = {}; }
     return assets;
 }
 // Worker body: the same reads and validation OnNativeDomain would run, started at the map's first native lump. Any
@@ -233,12 +230,12 @@ std::shared_ptr<const MapAssets> PrefetchAssets(IFileSystem *fs, const char *map
             !hlight::ValidateManifest(manifest.data(), bytes, flags, view, error, sizeof(error)) ||
             (!view.mode[SHADOWMAP_MODE_LDR].runtime && !view.mode[SHADOWMAP_MODE_HDR].runtime)) return nullptr;
         const auto &pak = lumps[LUMP_PAKFILE];
-        PakMember members[2], hspot; char probePath[260];
+        PakMember members[2]; char probePath[260];
         if (pak.uncompressedSize || !pak.filelen || pak.filelen > hlight::kMaxFileBytes ||
-            !LocateAssets(bsp, pak, view.header->assetPath, probePath, members, hspot) || !members[0].found ||
-            (held && held->Matches(members,hspot))) return nullptr;
+            !LocateAssets(bsp, pak, view.header->assetPath, probePath, members) || !members[0].found ||
+            (held && held->Matches(members))) return nullptr;
         held.reset();
-        auto assets = BuildAssets(bsp, members, hspot, probePath);
+        auto assets = BuildAssets(bsp, members, probePath);
         COM_TimestampedLog("Highres lightmaps: asset prefetch - end");
         return assets;
     }
@@ -1124,16 +1121,16 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         if (!HlightEngineBridge::Supported()) { s.Fail(HlightEngineBridge::CompatibilityError()); return false; }
         const auto &pak=lumps[LUMP_PAKFILE];
         if (pak.uncompressedSize || !pak.filelen || pak.filelen>hlight::kMaxFileBytes) { s.Fail("Highres lightmaps: invalid .light pak range"); return false; }
-        PakMember members[2], hspot; char probePath[260];
-        if (!LocateAssets(bsp,pak,manifestView.header->assetPath,probePath,members,hspot)) { s.Fail("Highres lightmaps: unreadable .light pak directory"); return false; }
+        PakMember members[2]; char probePath[260];
+        if (!LocateAssets(bsp,pak,manifestView.header->assetPath,probePath,members)) { s.Fail("Highres lightmaps: unreadable .light pak directory"); return false; }
         if (!members[0].found) { s.Fail("Highres lightmaps: manifest-named .light pak asset missing"); return false; }
         // The worker started at this load's first native lump normally finished during collision/model loading.
         COM_TimestampedLog("Highres lightmaps: assets - start");
         s.JoinPrefetch();
         std::shared_ptr<const MapAssets> prefetched=std::move(s.prefetched);
-        if (held && held->Matches(members,hspot)) s.assets=std::move(held);
-        else if (prefetched && prefetched->Matches(members,hspot)) s.assets=std::move(prefetched);
-        else { held.reset(); prefetched.reset(); s.assets=BuildAssets(bsp,members,hspot,probePath); }
+        if (held && held->Matches(members)) s.assets=std::move(held);
+        else if (prefetched && prefetched->Matches(members)) s.assets=std::move(prefetched);
+        else { held.reset(); prefetched.reset(); s.assets=BuildAssets(bsp,members,probePath); }
         COM_TimestampedLog("Highres lightmaps: assets - end");
         if (!s.assets->valid) { V_strncpy(s.error,s.assets->error,sizeof(s.error)); s.status.state=DX12_HIGHRES_REJECTED; s.assets.reset(); return false; }
         s.file=s.assets->file;
