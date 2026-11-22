@@ -36,6 +36,8 @@
 #include "tier1/KeyValues.h"
 #include "l4d2/effects/terror_glow_policy.h"
 #include "l4d2/content/terror_precache_client.h"
+#include "shadowmaps_dx12.h"
+#include "model_types.h"
 #include "tier0/memdbgon.h"
 
 #undef CCSPlayer
@@ -1233,6 +1235,10 @@ int C_CSPlayer::DrawModel( int flags )
 	// Preserve the second native ToTerrorPlayer/classification query, rather
 	// than caching the result of the dead-rescue query above.
 	if ( ToTerrorPlayer( this )->IsHangingFromLedge() )
+		return BaseClass::DrawModel( flags );
+	// The hidden first-person body still casts native sun/local-light shadows. Projected-light depth views
+	// (the flashlight, whose camera sits in this head) keep skipping it.
+	if ( ( flags & STUDIO_SHADOWDEPTHTEXTURE ) && ShadowMapsDX12_InFeatureDepthView() && ShouldCastShadowWhileHidden() )
 		return BaseClass::DrawModel( flags );
 	return 0;
 }

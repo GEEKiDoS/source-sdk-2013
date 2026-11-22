@@ -15,6 +15,7 @@
 #include "particles_new.h"
 #include "l4d2/effects/terror_glow_player.h"
 
+class C_TerrorFirstPersonLegs;
 class CTerrorPlayerAnimState;
 class C_BaseAbility;
 class C_TerrorWeapon;
@@ -223,6 +224,10 @@ public:
 	void UpdateVomitParticleEffects(); // Existing SOLE body in c_vomitjar_projectile.cpp, NOT copied.
 	bool HasVomitScreenSpaceParticles() const;
 	void RenderVomitScreenSpaceParticles( IMatRenderContext * );
+	// The local player's own body as seen from its first-person camera: alive, not a ghost, not observing and no
+	// third-person or view-entity camera. Its model is hidden from that view; legs and self shadow build on it.
+	bool IsFirstPersonLocalBody();
+	virtual bool ShouldCastShadowWhileHidden() OVERRIDE;
 
 	// One ordered nontrivial union after C_CSPlayer. PE32 offsets below are
 	// provenance only: no padding, offset constants or target layout assertions.
@@ -681,6 +686,8 @@ private:
 	float m_jockeyAttachmentViewTime; // Native CLIENT10064; full Simulate owns the live writer.
 	bool m_bGrenadePresentationSuppressed; // Native CLIENT7100, constructor-only.
 	float m_roundStartTime[2];
+	// Local player only. A handle: level shutdown releases client entities before the player is destroyed.
+	CHandle< C_TerrorFirstPersonLegs > m_hFirstPersonLegs;
 };
 
 C_TerrorPlayer *GetTerrorPlayerBySurvivorCharacter( int character );

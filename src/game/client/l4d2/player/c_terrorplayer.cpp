@@ -70,6 +70,8 @@
 #include "c_recipientfilter.h"
 #include "fx_impact.h"
 #include "physics_shared.h"
+#include "l4d2/player/c_terror_fp_legs.h"
+#include "shadowmaps_dx12.h"
 #include "winlite.h"
 #undef CreateEvent
 #include <emmintrin.h>
@@ -1699,6 +1701,8 @@ C_TerrorPlayer::~C_TerrorPlayer()
 	if ( m_pSimulationDLight )
 		m_pSimulationDLight->die = gpGlobals->curtime;
 	m_pSimulationDLight = NULL;
+	if ( m_hFirstPersonLegs.Get() )
+		m_hFirstPersonLegs->Release();
 	StopSpeechVoiceParticle();
 	// No additional clears/stops/frees. In particular7160/7180 are D586-elided;
 	// the map and borrowed expression name are not replacement-owned objects.
@@ -2545,6 +2549,27 @@ int C_TerrorPlayer::DrawModel( int flags )
 	const int result = BaseClass::DrawModel( flags );
 	if ( stencil ) TerrorGlow_EndStencilMask();
 	return result;
+}
+
+static ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
+	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
+extern ConVar cl_fp_legs;
+
+bool C_TerrorPlayer::IsFirstPersonLocalBody()
+{
+	if ( this != C_BasePlayer::GetLocalPlayer( 0 ) || !IsAlive() || IsGhost() || IsEffectActive( EF_NODRAW ) )
+		return false;
+	if ( ShouldDrawLocalPlayerModel() || GetObserverMode() != OBS_MODE_NONE )
+		return false;
+	C_BaseEntity *viewEntity = GetViewEntity();
+	return ( !viewEntity || viewEntity == this ) && GetModelPtr() != NULL;
+}
+
+// The first-person body draws only into native sun/local-light shadowmaps (C_CSPlayer::DrawModel), never into the
+// flashlight's projected depth: the camera sits inside its head. Its active world weapon follows (C_BaseCombatWeapon).
+bool C_TerrorPlayer::ShouldCastShadowWhileHidden()
+{
+	return cl_fp_self_shadow.GetBool() && ShadowMapsDX12_ShadowsEnabled() && IsFirstPersonLocalBody();
 }
 
 extern "C" double L4D2_GlowNormalize( Vector *direction );
@@ -5303,6 +5328,8 @@ bool C_TerrorPlayer::Simulate()
 		UpdateClientMotionTimers();
 	UpdateFlashlightParticles();
 	UpdateSimulationDLight();
+	if ( !m_hFirstPersonLegs.Get() && cl_fp_legs.GetBool() && IsLocalPlayer() && GetModel() )
+		m_hFirstPersonLegs = C_TerrorFirstPersonLegs::Create( this );
 	BaseClass::Simulate();
 	return true; // Native10260F82 MOV AL,1, after the discarded CS result.
 }

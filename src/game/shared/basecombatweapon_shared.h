@@ -173,6 +173,9 @@ public:
 	virtual bool GetAttachmentVelocity( int number, Vector &origin, Quaternion &angles ) OVERRIDE;
 	virtual void InvalidateAttachments() OVERRIDE;
 	void EnsureCorrectRenderingModel();
+	// The local first-person body's active world weapon casts shadows with it (see C_BaseEntity::ShouldCastShadowWhileHidden).
+	bool CastsLocalBodyShadow();
+	virtual bool ShouldCastShadowWhileHidden() OVERRIDE;
 private:
 	friend class C_CombatWeaponClone;
 	bool IsCarriedByObservedPlayer();

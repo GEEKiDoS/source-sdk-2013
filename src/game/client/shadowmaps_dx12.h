@@ -230,6 +230,10 @@ bool ShadowMapsDX12_Active();
 // Active enhanced runtime with runtime shadowing enabled; false during shutdown/reset/failure.
 // Legacy entity projections use this, not Active (flashlights remain independent).
 bool ShadowMapsDX12_ShadowsEnabled();
+// True while CFeatureShadowDepthView draws native sun/local-light casters. Projected-light (flashlight) depth views
+// share VIEW_SHADOW_DEPTH_TEXTURE and STUDIO_SHADOWDEPTHTEXTURE, so draws that differ between the two test this.
+bool ShadowMapsDX12_InFeatureDepthView();
+void ShadowMapsDX12_SetInFeatureDepthView( bool inView );
 // Latched admission/runtime error (empty when none).
 const char *ShadowMapsDX12_LastError();
 // Client-system validation after shadow admission (CHLClient admits before LevelInitPreEntityAllSystems).

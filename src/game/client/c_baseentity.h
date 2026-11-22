@@ -821,6 +821,12 @@ public:
 	inline	bool					IsVisible() const { return m_hRender != INVALID_CLIENT_RENDER_HANDLE; }
 #endif
 	virtual void					UpdateVisibility();
+#if defined( L4D2 )
+	// An entity hidden from the local view that still casts native shadowmaps: UpdateVisibility keeps it registered
+	// in the leaf system with its local-user draw bit cleared, so view lists skip it and shadow caster queries
+	// (which do not test that bit) still collect it.
+	virtual bool					ShouldCastShadowWhileHidden() { return false; }
+#endif
 	
 	// Returns true if the entity changes its position every frame on the server but it doesn't
 	// set animtime. In that case, the client returns true here so it copies the server time to

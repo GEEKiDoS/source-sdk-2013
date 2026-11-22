@@ -1596,7 +1596,7 @@ void C_BaseEntity::UpdateVisibility()
 		m_nLocalViewVisibility |= 1u;
 	if ( oldVisibility != m_nLocalViewVisibility )
 		UpdateLeafLocalViewVisibility();
-	if ( m_nLocalViewVisibility != 0 )
+	if ( m_nLocalViewVisibility != 0 || ( !IsDormant() && ShouldCastShadowWhileHidden() ) )
 		AddToLeafSystem( m_bRenderWithViewModels );
 	else
 		RemoveFromLeafSystem();

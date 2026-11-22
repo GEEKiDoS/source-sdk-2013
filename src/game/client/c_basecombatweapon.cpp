@@ -11,6 +11,8 @@
 #include "weapon_selection.h"
 #include "hud_crosshair.h"
 #include "engine/ivmodelinfo.h"
+#include "model_types.h"
+#include "shadowmaps_dx12.h"
 #include "tier0/vprof.h"
 #include "hltvcamera.h"
 #include "tier1/KeyValues.h"
@@ -92,6 +94,7 @@ public:
 	virtual ~C_CombatWeaponClone();
 	void UpdateClone();
 	virtual bool ShouldDraw() OVERRIDE;
+	virtual bool ShouldCastShadowWhileHidden() OVERRIDE;
 	virtual int DrawModel( int flags ) OVERRIDE;
 	virtual bool SetupBones( matrix3x4_t *bones, int maximum, int mask, float time ) OVERRIDE;
 	virtual bool GetStencilState( ShaderStencilState_t &state ) OVERRIDE;
@@ -169,6 +172,11 @@ bool C_CombatWeaponClone::ShouldDraw()
 		!m_pOriginalWeapon->IsDormant() && C_BaseEntity::ShouldDraw();
 }
 
+bool C_CombatWeaponClone::ShouldCastShadowWhileHidden()
+{
+	return !IsEffectActive( EF_NODRAW ) && m_pOriginalWeapon->CastsLocalBodyShadow();
+}
+
 // Whole C6E8B0, projected onto existing one-arg DrawModel. Incoming per-pass
 // blend/color were applied by the caller. Never substitute GetFxBlend()/255.
 int C_CombatWeaponClone::DrawModel( int flags )
@@ -176,7 +184,7 @@ int C_CombatWeaponClone::DrawModel( int flags )
 	if ( m_pOriginalWeapon->IsCarriedByObservedPlayer() )
 		return 0;
 	UpdateClone();
-	if ( !ShouldDraw() )
+	if ( !ShouldDraw() && !( ( flags & STUDIO_SHADOWDEPTHTEXTURE ) && ShadowMapsDX12_InFeatureDepthView() && ShouldCastShadowWhileHidden() ) )
 		return 0;
 	return BaseClass::DrawModel( flags );
 }
@@ -744,6 +752,20 @@ bool C_BaseCombatWeapon::ShouldDrawWeapon()
 	if ( !owner->IsPlayer() ) return true;
 	return active;
 }
+
+bool C_BaseCombatWeapon::CastsLocalBodyShadow()
+{
+	if ( m_iWorldModelIndex == 0 || IsEffectActive( EF_NODRAW ) || m_iState != WEAPON_IS_ACTIVE )
+		return false;
+	C_BaseCombatCharacter *owner = GetOwner();
+	return owner && owner == C_BasePlayer::GetLocalPlayer( 0 ) && owner->ShouldCastShadowWhileHidden();
+}
+
+// Without a clone this entity renders the world model itself (its render model is the world model).
+bool C_BaseCombatWeapon::ShouldCastShadowWhileHidden()
+{
+	return m_pWeaponClone == NULL && CastsLocalBodyShadow();
+}
 #else
 bool C_BaseCombatWeapon::ShouldDraw( void )
 {
@@ -831,7 +853,7 @@ int C_BaseCombatWeapon::DrawModel( int flags )
 {
 	VPROF_BUDGET( "C_BaseCombatWeapon::DrawModel", VPROF_BUDGETGROUP_MODEL_RENDERING );
 	if ( !m_bReadyToDraw ) return 0;
-	if ( !IsVisible() ) return 0;
+	if ( !IsVisible() && !( ( flags & STUDIO_SHADOWDEPTHTEXTURE ) && ShadowMapsDX12_InFeatureDepthView() && ShouldCastShadowWhileHidden() ) ) return 0;
 	if ( IsCarriedByObservedPlayer() ) return 0; // B's sole410B0 NONCONST provider.
 	EnsureCorrectRenderingModel();
 	return BaseClass::DrawModel( flags );

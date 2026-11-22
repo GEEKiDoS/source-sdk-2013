@@ -522,6 +522,8 @@ $Project "Client (L4D2)"
 			$File	"l4d2\player\c_cs_player.h"
 			$File	"l4d2\player\c_terrorplayer.cpp"
 			$File	"l4d2\player\c_terrorplayer.h"
+			$File	"l4d2\player\c_terror_fp_legs.cpp"
+			$File	"l4d2\player\c_terror_fp_legs.h"
 			$File "l4d2\effects\glow_property_math_x64.asm" [$WIN64]
 			{
 				$Configuration

@@ -6695,6 +6695,7 @@ public:
 		unsigned char allAreas[32]; memset( allAreas, 255, sizeof(allAreas) );
 		*areaBits = allAreas;
 		SetupCurrentView( origin, angles, VIEW_SHADOW_DEPTH_TEXTURE );
+		ShadowMapsDX12_SetInFeatureDepthView( true );
 		unsigned int visFlags = 0;
 		// Explicit caster arrays and spatial detail queries do not consume BSP
 		// visibility marks. Only a world traversal needs full-map visibility.
@@ -6842,6 +6843,7 @@ public:
 				m_pMainView->SetupVis( s.receiverView, visFlags, m_pReceiverVis );
 			}
 			SetupCurrentView( savedOrigin, savedAngles, savedId );
+			ShadowMapsDX12_SetInFeatureDepthView( false );
 			s_bCanAccessCurrentView = savedAccess;
 			render->SetBlend( savedBlend ); render->SetColorModulation( savedColor );
 		}

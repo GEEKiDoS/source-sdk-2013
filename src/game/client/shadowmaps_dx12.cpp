@@ -4185,6 +4185,9 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 	prop.publishedGeneration = cached->generation;
 }
 bool ShadowMapsDX12_ShadowsEnabled() { return !g_ClientLevelShutdown && ShadowMapsDX12_Active() && r_shadowmap_enable.GetBool(); }
+static bool s_bInFeatureDepthView = false;
+bool ShadowMapsDX12_InFeatureDepthView() { return s_bInFeatureDepthView; }
+void ShadowMapsDX12_SetInFeatureDepthView( bool inView ) { s_bInFeatureDepthView = inView; }
 const char *ShadowMapsDX12_LastError() { PollCompletedViews(); return g_Error; }
 void ShadowMapsDX12_RejectMap( const char *reason ) { Fail(reason); }
 bool ShadowMapsDX12_CanDrawReceiverViews()
