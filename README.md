@@ -339,6 +339,15 @@ Scripted use models forward their native `Use` input to the attached
 `point_script_use_target` after handling the model itself. This is required for
 authored Holdout resource purchases and other scripted build interactions.
 
+The x64 SDK VGUI localization loader has a 13,000-byte search-path buffer. A
+large enough collection of mounted paths can push the stock resources out of
+that buffer even when none of the add-ons ship translations. The client
+enumerates the complete paths instead, then uses the SDK parser for each
+matching file in the shared VGUI table. Add-ons can override individual tokens
+without replacing an entire stock file. For copies of the same localization
+file, the last mounted add-on wins token collisions. The selected language
+still overrides English fallback strings.
+
 For an already-built payload laid out as `dlls/` and `vcs/`, add
 `--artifact-root <payload-directory>` to deploy the three DLL/PDB pairs to
 `game/mod_l4d2/bin/x64` and the tracked-catalog-defined VCS files to `shaders/fxc`.

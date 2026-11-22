@@ -19,6 +19,9 @@ namespace vgui
 	class Panel;
 }
 
+#if defined( L4D2 ) && defined( _WIN32 ) && defined( PLATFORM_64BITS )
+void VGui_InstallLocalizationSearchPatch();
+#endif
 bool VGui_Startup( CreateInterfaceFn appSystemFactory );
 void VGui_Shutdown( void );
 void VGui_CreateGlobalPanels( void );

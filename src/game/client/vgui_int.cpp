@@ -19,6 +19,9 @@
 #include <vgui/IInput.h>
 #if defined( L4D2 )
 #include <vgui/ILocalize.h>
+#if defined( _WIN32 ) && defined( PLATFORM_64BITS )
+#include <windows.h>
+#endif
 #endif // L4D2
 #include "tier0/vprof.h"
 #include "iclientmode.h"
@@ -165,6 +168,216 @@ static void VGui_OneTimeInit()
     g_pMaterialSystem->AddModeChangeCallBack( &VGui_VideoMode_AdjustForModeChange );
 }
 
+#if defined( L4D2 ) && defined( _WIN32 ) && defined( PLATFORM_64BITS )
+namespace
+{
+using AddLocalizationFileFn = bool ( * )( ::ILocalize *, const char *, const char *, bool );
+
+AddLocalizationFileFn s_pSDKAddFile;
+IFileSystem *s_pLocalizationFS;
+void **s_pAddFileSlot;
+char s_AddonsRoot[MAX_PATH];
+int s_nAddonsRootLength;
+
+// GetSearchPath returns the required byte count including the terminator.
+// If a mount changes between the two calls, don't consume a truncated list.
+bool GetLocalizationSearchPaths( const char *pathID, bool packs, CUtlVector< char > &paths )
+{
+	int length = s_pLocalizationFS->GetSearchPath( pathID, packs, NULL, 0 );
+	while ( length > 0 )
+	{
+		paths.SetCount( length );
+		length = s_pLocalizationFS->GetSearchPath( pathID, packs, paths.Base(), paths.Count() );
+		if ( length > 0 && length <= paths.Count() )
+			return true;
+	}
+	return false;
+}
+
+bool LoadLocalizationProvider( ::ILocalize *localize, const char *absolute )
+{
+	FileHandle_t file = s_pLocalizationFS->Open( absolute, "rb", NULL );
+	if ( file == FILESYSTEM_INVALID_HANDLE )
+		return false;
+
+	const unsigned int length = s_pLocalizationFS->Size( file );
+	unsigned char bom[2];
+	const bool valid = length > sizeof( bom ) && !( length & 1 ) &&
+		s_pLocalizationFS->Read( bom, sizeof( bom ), file ) == sizeof( bom ) &&
+		bom[0] == 0xff && bom[1] == 0xfe;
+	s_pLocalizationFS->Close( file );
+	if ( !valid )
+	{
+		Warning( "Ignoring invalid UTF-16LE localization file \"%s\".\n", absolute );
+		return false;
+	}
+
+	// The name already identifies the provider. MOD keeps the native parser's
+	// internal path query small; absolute member opens do not filter by path ID.
+	return s_pSDKAddFile( localize, absolute, "MOD", false );
+}
+
+bool AddLocalizationFile( ::ILocalize *localize, const char *name, const char *pathID, bool fallbacks )
+{
+	// Keep the SDK's language selection, English-before-translation ordering and
+	// -all_languages behavior. It dispatches each concrete name through AddFile.
+	if ( V_IsAbsolutePath( name ) || V_strstr( name, "%language%" ) )
+		return s_pSDKAddFile( localize, name, pathID, fallbacks );
+
+	CUtlVector< char > paths;
+	if ( !GetLocalizationSearchPaths( pathID, true, paths ) )
+		return s_pSDKAddFile( localize, name, pathID, fallbacks );
+
+	char relative[MAX_PATH];
+	V_strncpy( relative, name, sizeof( relative ) );
+	V_strlower( relative );
+	const int relativeLength = V_strlen( relative );
+	CUtlVector< const char * > overrides;
+	bool loaded = false;
+	for ( char *path = paths.Base(); *path; )
+	{
+		char *next = V_strchr( path, ';' );
+		if ( next )
+			*next++ = '\0';
+		V_FixSlashes( path );
+		const int pathLength = V_strlen( path );
+		if ( pathLength && pathLength + 1 + relativeLength < MAX_PATH )
+		{
+			char absolute[MAX_PATH];
+			if ( fallbacks || ( s_nAddonsRootLength && !V_strnicmp( path, s_AddonsRoot, s_nAddonsRootLength ) ) )
+			{
+				overrides.AddToTail( path );
+			}
+			else
+			{
+				V_ComposeFileName( path, relative, absolute, sizeof( absolute ) );
+				if ( LoadLocalizationProvider( localize, absolute ) )
+				{
+					// A first-match request still selects one stock provider.
+					// Add-ons above it only override tokens they actually supply.
+					loaded = true;
+					break;
+				}
+			}
+		}
+		if ( !next )
+			break;
+		path = next;
+	}
+
+	// Search paths are highest precedence first; parse in reverse so a token in
+	// the last-mounted add-on wins. Each native call handles just one file, so a
+	// broken copy cannot short-circuit parsing the other providers.
+	for ( int i = overrides.Count() - 1; i >= 0; --i )
+	{
+		char absolute[MAX_PATH];
+		V_ComposeFileName( overrides[i], relative, absolute, sizeof( absolute ) );
+		loaded |= LoadLocalizationProvider( localize, absolute );
+	}
+
+	if ( !loaded )
+		Warning( "CLocalizedStringTable::AddFile() failed to load file \"%s\".\n", name );
+	return loaded;
+}
+
+// The engine and GameUI share this object with the client. Patch its AddFile
+// slot, not the client pointer, so their native and reload callers also bypass
+// the shipped SDK vgui2.dll's 13,000-byte relative search-path buffer.
+class CLocalizationSearchPatch
+{
+public:
+	void Install()
+	{
+		if ( s_pAddFileSlot )
+			return;
+
+		HMODULE module = GetModuleHandleW( L"vgui2.dll" );
+		CreateInterfaceFn vguiFactory = Sys_GetFactory( "vgui2.dll" );
+		CreateInterfaceFn fsFactory = Sys_GetFactory( "filesystem_stdio.dll" );
+		if ( !module || !vguiFactory || !fsFactory )
+			return;
+		void *localize = vguiFactory( VGUI_LOCALIZE_INTERFACE_VERSION, NULL );
+		IFileSystem *fs = static_cast< IFileSystem * >( fsFactory( FILESYSTEM_INTERFACE_VERSION, NULL ) );
+		if ( !localize || !fs )
+			return;
+		void **slot = *reinterpret_cast< void *** >( localize );
+		HMODULE owner = NULL;
+		HMODULE tableOwner = NULL;
+		const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
+		if ( !GetModuleHandleExW( flags, reinterpret_cast< LPCWSTR >( slot ), &tableOwner ) || tableOwner != module ||
+			!GetModuleHandleExW( flags, reinterpret_cast< LPCWSTR >( *slot ), &owner ) || owner != module )
+		{
+			Warning( "Unable to verify SDK VGUI localization interface ownership\n" );
+			return;
+		}
+
+		// The x64 SDK implementation accepts absolute pak members; retail's
+		// different implementation rejects them. Fail closed on an unknown DLL.
+		static const unsigned char expected[] = { 0x48, 0x89, 0x5C, 0x24, 0x18, 0x44, 0x88, 0x4C,
+			0x24, 0x20, 0x48, 0x89, 0x54, 0x24, 0x10, 0x48 };
+		if ( *slot != reinterpret_cast< unsigned char * >( module ) + 0x8EC0 ||
+			memcmp( *slot, expected, sizeof( expected ) ) )
+		{
+			Warning( "Unrecognized SDK VGUI localization loader; using its native search behavior\n" );
+			return;
+		}
+
+		s_pLocalizationFS = fs;
+		// Match TerrorMountAddons: add-ons live under the last physical MOD root.
+		CUtlVector< char > mods;
+		s_nAddonsRootLength = 0;
+		if ( GetLocalizationSearchPaths( "MOD", false, mods ) && mods[0] )
+		{
+			const char *mod = V_strrchr( mods.Base(), ';' );
+			V_ComposeFileName( mod ? mod + 1 : mods.Base(), "addons", s_AddonsRoot, sizeof( s_AddonsRoot ) );
+			V_AppendSlash( s_AddonsRoot, sizeof( s_AddonsRoot ) );
+			V_FixSlashes( s_AddonsRoot );
+			s_nAddonsRootLength = V_strlen( s_AddonsRoot );
+		}
+
+		DWORD protection;
+		if ( !VirtualProtect( slot, sizeof( *slot ), PAGE_READWRITE, &protection ) )
+		{
+			Warning( "Unable to adapt SDK VGUI localization search paths\n" );
+			return;
+		}
+		s_pSDKAddFile = reinterpret_cast< AddLocalizationFileFn >( *slot );
+		s_pAddFileSlot = slot;
+		m_hModule = module;
+		InterlockedExchangePointer( slot, reinterpret_cast< void * >( AddLocalizationFile ) );
+		if ( !VirtualProtect( slot, sizeof( *slot ), protection, &protection ) )
+			Warning( "Unable to restore SDK VGUI localization table protection\n" );
+	}
+
+	void Uninstall()
+	{
+		if ( !s_pAddFileSlot || GetModuleHandleW( L"vgui2.dll" ) != m_hModule )
+			return;
+		DWORD protection;
+		if ( !VirtualProtect( s_pAddFileSlot, sizeof( *s_pAddFileSlot ), PAGE_READWRITE, &protection ) )
+			Error( "Unable to detach SDK VGUI localization handler before client unload\n" );
+		InterlockedCompareExchangePointer( s_pAddFileSlot,
+			reinterpret_cast< void * >( s_pSDKAddFile ), reinterpret_cast< void * >( AddLocalizationFile ) );
+		if ( !VirtualProtect( s_pAddFileSlot, sizeof( *s_pAddFileSlot ), protection, &protection ) )
+			Warning( "Unable to restore SDK VGUI localization table protection\n" );
+		s_pAddFileSlot = NULL;
+	}
+
+	~CLocalizationSearchPatch() { Uninstall(); }
+
+private:
+	HMODULE m_hModule = NULL;
+};
+
+CLocalizationSearchPatch s_LocalizationSearchPatch;
+}
+
+void VGui_InstallLocalizationSearchPatch()
+{
+	s_LocalizationSearchPatch.Install();
+}
+#endif
+
 bool VGui_Startup( CreateInterfaceFn appSystemFactory )
 {
 	if ( !vgui::VGui_InitInterfacesList( "CLIENT", &appSystemFactory, 1 ) )
@@ -256,6 +469,10 @@ void VGui_Shutdown()
 	// Make sure anything "marked for deletion"
 	//  actually gets deleted before this dll goes away
 	vgui::ivgui()->RunFrame();
+
+#if defined( L4D2 ) && defined( _WIN32 ) && defined( PLATFORM_64BITS )
+	s_LocalizationSearchPatch.Uninstall();
+#endif
 }
 
 static ConVar cl_showpausedimage( "cl_showpausedimage", "1", 

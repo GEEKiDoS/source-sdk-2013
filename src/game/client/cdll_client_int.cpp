@@ -826,7 +826,18 @@ private:
 CHLClient gHLClient;
 IBaseClientDLL *clientdll = &gHLClient;
 
+#if defined( L4D2 ) && defined( _WIN32 ) && defined( PLATFORM_64BITS )
+static void *CreateTerrorClientInterface()
+{
+	// The SDK requests this interface before server startup mounts the add-ons
+	// and before native EngineVGui/GameUI load their localization files.
+	VGui_InstallLocalizationSearchPatch();
+	return static_cast< IBaseClientDLL * >( &gHLClient );
+}
+EXPOSE_INTERFACE_FN( CreateTerrorClientInterface, IBaseClientDLL, CLIENT_DLL_INTERFACE_VERSION );
+#else
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CHLClient, IBaseClientDLL, CLIENT_DLL_INTERFACE_VERSION, gHLClient );
+#endif
 
 
 //-----------------------------------------------------------------------------
