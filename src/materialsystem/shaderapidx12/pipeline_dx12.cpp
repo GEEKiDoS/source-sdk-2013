@@ -11,6 +11,7 @@
 #include "tier0/icommandline.h"
 #include "tracy_dx12.h"
 #include <utility>
+#include "hitch_stats_dx12.h"
 
 namespace shaderapidx12
 {
@@ -1531,6 +1532,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	HRESULT hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
 	++m_Stats.pipelinesCreated;
+	++g_FirstUse.creates;
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
 	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.

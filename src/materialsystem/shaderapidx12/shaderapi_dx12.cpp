@@ -5,6 +5,7 @@
 //=============================================================================//
 
 #include "shaderapi_dx12.h"
+#include "hitch_stats_dx12.h"
 #include "shader_reflect_dx12.h"
 #include "shadershadow_dx12.h"
 #include "hardwareconfig_dx12.h"
@@ -41,6 +42,13 @@
 #include <d3d12shader.h>
 
 using namespace shaderapidx12;
+
+CON_COMMAND( dx12_firstuse_stats, "Cumulative renderer first-use counts and CPU decode time" )
+{
+	Msg( "DX12 firstuse: decodes %llu decodeUs %llu textures %llu uploads %llu creates %llu libraryHits %llu\n",
+		g_FirstUse.decodes.load(), g_FirstUse.decodeUs.load(), g_FirstUse.textures.load(),
+		g_FirstUse.uploads.load(), g_FirstUse.creates.load(), g_FirstUse.libraryHits.load() );
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: FNV-1a key of a vertex layout's semantics, formats and offsets

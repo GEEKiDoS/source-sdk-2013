@@ -25,6 +25,7 @@
 #include <d3dcompiler.h>
 #include <climits>
 
+#include "hitch_stats_dx12.h"
 namespace shaderapidx12
 {
 namespace
@@ -388,6 +389,7 @@ bool CreateUpload( ID3D12Device *pDevice, CCommandRecorderDX12 *pList, ID3D12Res
 	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 	src.PlacedFootprint = footprint;
 	pList->CopyTextureRegion( &dst, 0, 0, 0, &src, nullptr );
+	++g_FirstUse.uploads;
 	pOwner->RetainResource( pUpload.Get() );
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -960,6 +962,7 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 		Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
 		if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, initial, ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) ? &clear : nullptr, IID_PPV_ARGS( &pResource ), TextureMemoryCategory( texture.name.Get(), ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) != 0 ), texture.name.Get() ) ) )
 			return false;
+		++g_FirstUse.textures;
 		wchar_t wszDebugName[512];
 		if ( !texture.name.IsEmpty() && MultiByteToWideChar( CP_UTF8, 0, texture.name.Get(), -1, wszDebugName, static_cast<int>( ARRAYSIZE( wszDebugName ) ) ) )
 			pResource->SetName( wszDebugName );
