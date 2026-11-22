@@ -898,6 +898,9 @@ The publisher and runtime validate the prop cbuffer members, 64-byte structured 
 prop resource group and primitive system input; stale ABI-5 lit model programs must be republished.
 For `.hlight` v4 world owners with `kFaceHasBakedLocalDirect` (bit 16) and the exact baked pose,
 RGB lightmap planes contain styled local direct diffuse for lights whose styles fit the face palette.
+For unrotated translated brushes, the DX12 draw constants canonicalize the engine's few-ULP
+`cos(0)` scale error before this comparison. A different translation or any nonzero rotation
+still fails the pose check. This key gates both baked sun and selected-local visibility, not probe sampling.
 These pixels read the resident GPU-index tail of `t1028` (`cSunIdentity.zw` is offset/count), not the
 tile CSR, and merge sparse per-face style-overflow exceptions when present. The resident tail contains
 every positive-weight record in ascending GPU-index order; its bounds, exact membership and CSR
