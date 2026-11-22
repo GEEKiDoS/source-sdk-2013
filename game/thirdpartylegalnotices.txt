@@ -1308,7 +1308,7 @@ listed below in bin\x64, with the license texts in the package's licenses folder
 - libbinkdec (binkdec.dll, LGPL-2.1): src/thirdparty/libbinkdec/COPYING [licenses/binkdec_COPYING.txt, bin/x64/binkdec_COPYING.txt]
 - LunarG Vulkan SDK subset (Vulkan-Headers, Vulkan-Loader import library, shaderc, SPIRV-Tools; Apache-2.0 OR MIT): src/thirdparty/vulkan_sdk/LICENSE.txt [licenses/vulkan_sdk_LICENSE.txt]
 - Intel Open Image Denoise 2.5.1 with oneTBB (vrad_restir denoiser runtime: OpenImageDenoise*.dll, tbb12.dll, tbbbind_2_5.dll; Apache-2.0): see src/utils/vrad_restir/README.md [licenses/oidn/]
-- VPhysics-Box3D 0.2.0 (vphysics.dll, replaces the SDK's IVP physics; MIT, Copyright (c) 2026 Asphaltian,
+- VPhysics-Box3D 0.2.0 (vphysics.dll, optional replacement for the SDK's IVP physics, enabled with -box3dphysics; MIT, Copyright (c) 2026 Asphaltian,
   https://github.com/Asphaltian/VPhysics-Box3D) with Box3D (MIT, Copyright (c) 2026 Erin Catto,
   https://github.com/erincatto/box3d) [licenses/vphysics_box3d_LICENSE.txt, licenses/box3d_LICENSE.txt]
 - Steamworks API (steam_api64.dll), redistributed under the Steamworks SDK terms
