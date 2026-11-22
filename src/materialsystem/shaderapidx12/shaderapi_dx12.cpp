@@ -5,6 +5,7 @@
 //=============================================================================//
 
 #include "shaderapi_dx12.h"
+#include "hitch_stats_dx12.h"
 #include "shader_reflect_dx12.h"
 #include "shadershadow_dx12.h"
 #include "hardwareconfig_dx12.h"
@@ -35,12 +36,20 @@
 #include <cstring>
 #include <climits>
 #include <cmath>
+#include <thread>
 #include <intrin.h>
 #include <emmintrin.h>
 #include <d3dcompiler.h>
 #include <d3d12shader.h>
 
 using namespace shaderapidx12;
+
+CON_COMMAND( dx12_firstuse_stats, "Cumulative renderer first-use counts and CPU decode time" )
+{
+	Msg( "DX12 firstuse: decodes %llu decodeUs %llu textures %llu uploads %llu creates %llu libraryHits %llu\n",
+		g_FirstUse.decodes.load(), g_FirstUse.decodeUs.load(), g_FirstUse.textures.load(),
+		g_FirstUse.uploads.load(), g_FirstUse.creates.load(), g_FirstUse.libraryHits.load() );
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: FNV-1a key of a vertex layout's semantics, formats and offsets
@@ -736,26 +745,8 @@ CShaderAPIDX12::~CShaderAPIDX12()
 		m_pDebugTextureEntries->deleteThis();
 }
 
-//-----------------------------------------------------------------------------
-// Purpose: Loads (once per file) and creates the record of one named VCS shader combo
-//-----------------------------------------------------------------------------
-ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex )
+ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel )
 {
-	ZoneNamedN( ___tracy_scoped_zone, "DX12 ResolveNamedShader", DX12_DRAW_ZONES_ACTIVE );
-	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() || !*pszName )
-		return nullptr;
-	const NamedShaderKeyView referenceKey{ pszName, nStaticIndex, -1, bPixel };
-	UtlHashHandle_t &hReference = m_NamedReferenceHints[bPixel ? 1 : 0];
-	if ( !m_NamedShaderReferences.IsValidHandle( hReference ) || !NamedShaderEqual()( m_NamedShaderReferences.Key( hReference ), referenceKey ) )
-		hReference = m_NamedShaderReferences.Insert( referenceKey, true );
-	m_NamedShaderReferences[hReference] = true;
-	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamicIndex, bPixel };
-	UtlHashHandle_t &hFound = m_NamedComboHints[bPixel ? 1 : 0];
-	if ( !m_NamedShaderCombos.IsValidHandle( hFound ) || !NamedShaderEqual()( m_NamedShaderCombos.Key( hFound ), key ) )
-		hFound = m_NamedShaderCombos.Find( key );
-	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
-		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
-	hFound = m_NamedShaderCombos.Insert( key, nullptr );
 	CUtlString fileKey( bPixel ? "p:" : "v:" );
 	fileKey.Append( pszName );
 	UtlHashHandle_t hShaderFile = m_NamedShaderFiles.Find( fileKey.String() );
@@ -777,7 +768,101 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 			Msg( "ShaderAPIDX12: %s shader %s from %s\n", bPixel ? "pixel" : "vertex", pszName, pNewFile->Path() );
 		hShaderFile = m_NamedShaderFiles.Insert( fileKey.String(), pNewFile );
 	}
-	ShaderVcsFile *pFile = m_NamedShaderFiles[hShaderFile];
+	return m_NamedShaderFiles[hShaderFile];
+}
+
+// One worker owns an entire file's CPU cache. Filesystem and GPU calls stay
+// on the loading owner, and every worker joins before rendering resumes.
+static void WarmShaderFiles( ShaderVcsFile **files, int count, std::atomic<int> &next )
+{
+	CUtlString error;
+	for ( int i = next++; i < count; i = next++ )
+	{
+		uint32_t index;
+		for ( size_t n = 0; files[i]->StaticComboIndex( n, index ); ++n )
+			files[i]->LoadStaticCombo( index, error );
+	}
+}
+
+// The map-load owner transaction has drained queued material work. Snapshots
+// already contain the static choices made by the shader DLL; each VCS static
+// record contains all of its dynamic payloads, including skipped indices.
+void CShaderAPIDX12::WarmLevelShaderCombos()
+{
+	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() )
+		return;
+	const uint64_t before = g_FirstUse.decodes.load();
+	const double start = Plat_FloatTime();
+	ReleaseLevelShaderPins();
+	CUtlString error;
+	FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )
+	{
+		const NamedShaderKey &key = m_NamedShaderReferences.Key( entry );
+		if ( !m_NamedShaderReferences[entry] || key.staticIndex < 0 )
+			continue;
+		ShaderVcsFile *file = OpenNamedShader( key.name.String(), key.pixel );
+		if ( !file )
+			continue;
+		// Retail FXC files may have thousands of unrelated static records.
+		// The authored static already includes every dynamic variant.
+		const bool native = V_strnicmp( file->Path(), "shaders/fxc/", 12 ) != 0;
+		m_LevelShaderFiles.InsertOrReplace( file, native );
+		if ( !native )
+			file->LoadStaticCombo( uint32_t( key.staticIndex ), error );
+	}
+	// Procedural detail and damage effects need not have a material snapshot yet.
+	static const struct { const char *name; bool pixel; } effects[] =
+	{
+		{ "terror_post_prepare_ps20b", true }, { "terror_engine_post_ps20b", true },
+		{ "screenspaceeffect_vs20", false }, { "dx12_detailshadowlit_vs51", false },
+		{ "dx12_detailshadowlit_ps51", true }, { "pbr_model_depthprepass_ps51", true }
+	};
+	for ( const auto &effect : effects )
+	{
+		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
+		if ( file )
+			m_LevelShaderFiles.InsertOrReplace( file, true );
+	}
+	CUtlVector<ShaderVcsFile *> files;
+	FOR_EACH_MAP( m_LevelShaderFiles, it )
+		if ( m_LevelShaderFiles[it] )
+			files.AddToTail( m_LevelShaderFiles.Key( it ) );
+	std::atomic<int> next{ 0 };
+	std::thread workers[2];
+	try
+	{
+		for ( int i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.Count(); ++i )
+			workers[i] = std::thread( WarmShaderFiles, files.Base(), files.Count(), std::ref( next ) );
+	}
+	catch ( const std::system_error & ) {} // Loading owner drains the remaining work.
+	WarmShaderFiles( files.Base(), files.Count(), next );
+	for ( std::thread &worker : workers )
+		if ( worker.joinable() )
+			worker.join();
+	Msg( "DX12 level shader warmup: %llu canonical records in %.2f ms\n", g_FirstUse.decodes.load() - before, ( Plat_FloatTime() - start ) * 1000.0 );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Loads (once per file) and creates the record of one named VCS shader combo
+//-----------------------------------------------------------------------------
+ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex )
+{
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 ResolveNamedShader", DX12_DRAW_ZONES_ACTIVE );
+	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() || !*pszName )
+		return nullptr;
+	const NamedShaderKeyView referenceKey{ pszName, nStaticIndex, -1, bPixel };
+	UtlHashHandle_t &hReference = m_NamedReferenceHints[bPixel ? 1 : 0];
+	if ( !m_NamedShaderReferences.IsValidHandle( hReference ) || !NamedShaderEqual()( m_NamedShaderReferences.Key( hReference ), referenceKey ) )
+		hReference = m_NamedShaderReferences.Insert( referenceKey, true );
+	m_NamedShaderReferences[hReference] = true;
+	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamicIndex, bPixel };
+	UtlHashHandle_t &hFound = m_NamedComboHints[bPixel ? 1 : 0];
+	if ( !m_NamedShaderCombos.IsValidHandle( hFound ) || !NamedShaderEqual()( m_NamedShaderCombos.Key( hFound ), key ) )
+		hFound = m_NamedShaderCombos.Find( key );
+	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
+		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
+	hFound = m_NamedShaderCombos.Insert( key, nullptr );
+	ShaderVcsFile *pFile = OpenNamedShader( pszName, bPixel );
 	if ( !pFile )
 		return nullptr;
 	const ComboFoldTableDX12 *foldTable = pFile->ComboFold();
@@ -5006,7 +5091,7 @@ bool CShaderAPIDX12::InitializeDeviceResources( CShaderDeviceDX12 *pDevice )
 	ConVarRef pixelFog( "r_pixelfog", true );
 	m_pPixelFogConVar = pixelFog.IsValid() ? static_cast<ConVar *>( pixelFog.GetLinkedConVar() ) : nullptr;
 	m_bFogDirty = true;
-	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice(), pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW ) )
+	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice(), pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW, g_pShaderDeviceMgrDX12 ? g_pShaderDeviceMgrDX12->HostFileSystem() : nullptr ) )
 	{
 		Warning( "ShaderAPIDX12: pipeline initialization failed\n" );
 		ShutdownDeviceResources();
@@ -6278,6 +6363,13 @@ void CShaderAPIDX12::PurgeUnusedVertexAndPixelShaders()
 	}
 	for ( UtlHashHandle_t it = m_NamedShaderFiles.FirstHandle(); it != m_NamedShaderFiles.InvalidHandle(); )
 	{
+		// Sign-on clears material reference marks after level warmup. Infrequent
+		// effects must not lose their decoded CPU payloads in that sweep.
+		if ( m_LevelShaderFiles.Find( m_NamedShaderFiles[it] ) != m_LevelShaderFiles.InvalidIndex() )
+		{
+			it = m_NamedShaderFiles.NextHandle( it );
+			continue;
+		}
 		bool referenced = false;
 		const char *fileKey = m_NamedShaderFiles.Key( it ).String();
 		FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )

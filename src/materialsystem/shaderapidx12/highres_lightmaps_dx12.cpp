@@ -1266,7 +1266,11 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
         // materials before the domain existed (ordinary); materials kept from a receiver map carry receiver snapshots.
         const bool receiver = s.status.state==DX12_HIGHRES_PENDING || s.status.state==DX12_HIGHRES_READY ||
             s.status.state==DX12_HIGHRES_REJECTED || (s.device && s.device->Lighting().ReceiverFeatureGeneration());
-        if (!materials || !s.device || (!receiver && !s.receiverSnapshots)) return;
+        if (!materials || !s.device || (!receiver && !s.receiverSnapshots))
+        {
+            if (s.api) s.api->WarmLevelShaderCombos();
+            return;
+        }
         s.receiverSnapshots = receiver;
     }
     // Re-snapshot without reparsing VMTs, before R_LevelInit builds world meshes from the materials' vertex formats.
@@ -1279,6 +1283,7 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
         if (material && material->IsPrecached()) material->RefreshPreservingMaterialVars();
     }
     COM_TimestampedLog("Highres lightmaps: material snapshots - end");
+    if (s.api) s.api->WarmLevelShaderCombos();
 }
 void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas)
 {
@@ -1577,6 +1582,7 @@ void CHighresLightmapsDX12::OnNativeRetire(uint64 generation)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (!s.domain || generation!=s.domain->mapGeneration) return;
+    if (s.api) s.api->ReleaseLevelShaderPins();
     if (s.device && s.device->CommandList() && !s.CopyFailure()) s.Fail("Highres lightmaps: cannot retire GPU validation");
     s.ClearGpu(); s.ClearProbes(); s.domain.reset(); s.atlas.reset(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
     s.enhancedRequired=false; s.views.clear();

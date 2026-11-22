@@ -1,6 +1,7 @@
 // Native SM5.1 HDR composite: MagicBloom's layered bloom screened over the Minimal AgX scene, Froyok's lens flare and
 // glare added to the HDR scene, and four Source 32^3 LUT lookups.
 // DYNAMIC: "CAMERA_MODEL" "0..2"
+// DYNAMIC: "COMPACT_IDLE" "0..1"
 #define DX12_NATIVE_PS 1
 #include "dx12_preamble.h"
 #ifdef HDRTYPE
@@ -418,6 +419,11 @@ float4 main( PS_INPUT input ) : SV_Target0
 #else
 	float2 uv = input.vUv0;
 	uint flags = (uint)gOutput.y;
+#if COMPACT_IDLE
+	// Ordinary compact gameplay always has a packed grade field, unit-output
+	// SDR and no particle displacement. Keep each event in the general shader.
+	flags = ( flags | 16u ) & ~( 64u | 1u );
+#endif
 	float2 screenUv = uv;
 	float coverage = 0;
 	[branch] if ( ( flags & 64 ) != 0 )
@@ -505,6 +511,7 @@ float4 main( PS_INPUT input ) : SV_Target0
 	float3 dirt = ( flags & 2 ) != 0 ? gDirt.SampleLevel( gDirtSampler, uv, 0 ).rgb * gDirtPeak.x : 0;
 	bloomT = Screen( bloomT, dirt * bloomT );
 	// The glare buffer is quarter resolution; four diagonal taps one half-resolution texel apart soften its quads.
+#if !COMPACT_IDLE
 #if !CAMERA_MODEL
 	float2 sceneSize;
 	gScene.GetDimensions( sceneSize.x, sceneSize.y );
@@ -522,6 +529,10 @@ float4 main( PS_INPUT input ) : SV_Target0
 	}
 	float3 lens = ( flare + glare ) * kFlareTint * gSceneBloomFlare.z;
 	uint debugView = (uint)gOutput.z;
+#else
+	float3 lens = 0;
+	const uint debugView = 0;
+#endif
 	uint lutCount = (uint)gOutput.w;
 	float3 c = scene + lens;
 #if CAMERA_MODEL
@@ -529,10 +540,12 @@ float4 main( PS_INPUT input ) : SV_Target0
 		c = CaptureSensor( c, input.projPos.xy );
 	c = ApplyAwb( c );
 #endif
+#if !COMPACT_IDLE
 	if ( debugView == 2 ) c = flare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 3 ) c = glare * kFlareTint * gSceneBloomFlare.z;
 	else if ( debugView == 4 ) c = dirt;
-	float peak = max( gDirtPeak.y, 1e-4 );
+#endif
+	float peak = COMPACT_IDLE ? 1.0 : max( gDirtPeak.y, 1e-4 );
 	float3 e = AgXEncoded( max( c, 0 ), peak );
 #if CAMERA_MODEL
 	[branch] if ( gSensor.x > 0.0 && gAwbParams.z > 0.0 )
@@ -552,7 +565,9 @@ float4 main( PS_INPUT input ) : SV_Target0
 		float radial = smoothstep( gContrast.z, gContrast.w, length( screenUv * 2 - 1 ) );
 		float contrast = lerp( gContrast.x, gContrast.y, radial );
 		e += max( ( dot( e, luma ) - base ) * contrast, contrast >= 0 ? 0 : -1 );
+#if !COMPACT_IDLE
 		e = lerp( e, base.xxx, radial * gController.x );
+#endif
 	}
 	if ( ( flags & 4 ) != 0 && lutCount != 0 )
 	{
@@ -585,7 +600,9 @@ float4 main( PS_INPUT input ) : SV_Target0
 	if ( ( flags & 1 ) == 0 )
 		e += ( InterleavedGradientNoise( input.projPos.xy ) - 0.5 ) / 255.0;
 	float3 d = SRGBToLinear( e ) * peak;
+#if !COMPACT_IDLE
 	d *= gOutput.x;
+#endif
 	return DX12FinishPixel( FinalOutput( float4( d, 1 ), 0, PIXEL_FOG_TYPE_NONE, TONEMAP_SCALE_NONE ), 0.0f );
 #endif
 }

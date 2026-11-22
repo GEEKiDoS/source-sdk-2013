@@ -408,6 +408,12 @@ public:
 	void SetShaderUtil( IShaderUtil *pShaderUtil ) { m_pShaderUtil = pShaderUtil; }
 
 	bool InitializeDeviceResources( CShaderDeviceDX12 *pDevice );
+	void WarmLevelShaderCombos();
+	void ReleaseLevelShaderPins() { m_LevelShaderFiles.Purge(); }
+	bool ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped )
+	{
+		return m_Pipeline.ReserveTextureUpload( bytes, fence, resource, offset, mapped );
+	}
 	void ShutdownDeviceResources();
 	// Development-only shader_precache: any thread queues; the recording owner validates in BeginFrame.
 	void QueueShaderPrecacheRequest( const char *pszName, int nStaticIndex, int nDynamicIndex );
@@ -435,6 +441,7 @@ public:
 	void DrawMaterialMesh( CMeshDX12 *pMesh, int nFirstIndex, int nIndexCount );
 	void RetireShaderPipelines( ShaderRecordDX12 *pRecord );
 	void ResetNativeState();
+	ShaderVcsFile *OpenNamedShader( const char *pszName, bool bPixel );
 	ShaderRecordDX12 *ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex );
 	ShaderRecordDX12 *ResolveComputeShader( const char *pszName, int nStaticIndex, int nDynamicIndex );
 	bool PrepareSampledTexture( ShaderAPITextureHandle_t hTexture, bool bSRGB, ID3D12Resource **ppResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv, D3D12_SAMPLER_DESC &sampler, D3D12_CPU_DESCRIPTOR_HANDLE *pSource = nullptr, bool bComparison = false, int nFirstMip = -1, int nMipCount = 0 );
@@ -1273,6 +1280,7 @@ private:
 	ShaderRasterState_t m_RasterState{};
 	bool m_bRasterOverride = false;
 	CUtlHashtable<CUtlString, ShaderVcsFile *, StringHashFunctor, StringEqualFunctor, const char *> m_NamedShaderFiles;
+	CUtlMap<ShaderVcsFile *, bool> m_LevelShaderFiles{ DefLessFunc( ShaderVcsFile * ) };
 	struct NamedShaderRecordDX12
 	{
 		NamedShaderKey key;

@@ -24,6 +24,9 @@
 #include "tier1/smartptr.h"
 #include "engine/ivdebugoverlay.h"
 #include "filesystem.h"
+#include "networkstringtable_clientdll.h"
+#include "igamesystem.h"
+#include "tier1/utldict.h"
 #include "studio.h"
 #include "model_types.h"
 #include "worldsize.h"
@@ -390,6 +393,53 @@ void PublishModelMeshMetadata( const model_t *model, const studiohdr_t *hdr, con
 	}
 }
 
+// The draw-time visibility builder needs authored strip groups even for
+// switchable physics props not registered as BSP static receivers. Cache only
+// VTX metadata from this map's modelprecache; don't force models onto the GPU.
+class CPropStripPrecache : public CAutoGameSystem
+{
+public:
+	void LevelInitPostEntity() override
+	{
+		if ( !ShadowMapsDX12_Active() )
+			return;
+		INetworkStringTable *models = networkstringtable->FindTable( "modelprecache" );
+		const unsigned budget = 16 * 1024 * 1024;
+		unsigned used = 0;
+		for ( int i = 0; models && i < models->GetNumStrings(); ++i )
+		{
+			const char *name = models->GetString( i );
+			if ( V_strnicmp( name, "models/props_", 13 ) || V_stristr( name, ".." ) || V_strchr( name, ':' ) )
+				continue;
+			char path[MAX_PATH];
+			V_StripExtension( name, path, sizeof( path ) );
+			V_strncat( path, ".dx90.vtx", sizeof( path ) );
+			if ( Find( path ) )
+				continue;
+			const unsigned size = filesystem->Size( path, "GAME" );
+			if ( !size || size > budget - used )
+				continue;
+			CUtlBuffer *data = new CUtlBuffer;
+			if ( filesystem->ReadFile( path, "GAME", *data, size ) && data->TellPut() == int( size ) )
+			{
+				m_Files.Insert( path, data );
+				used += size;
+			}
+			else
+				delete data;
+		}
+	}
+	void LevelShutdownPostEntity() override { m_Files.PurgeAndDeleteElements(); }
+	CUtlBuffer *Find( const char *path ) const
+	{
+		const int i = m_Files.Find( path );
+		return i == m_Files.InvalidIndex() ? nullptr : m_Files[i];
+	}
+private:
+	CUtlDict<CUtlBuffer *, int> m_Files;
+};
+static CPropStripPrecache g_PropStrips;
+
 bool BuildStaticPropModelVisibility( const model_t *model, const studiohdr_t *hdr,
 	const studiohwdata_t *hw, StaticPropModelVisibility &out )
 {
@@ -399,8 +449,10 @@ bool BuildStaticPropModelVisibility( const model_t *model, const studiohdr_t *hd
 	char path[MAX_PATH];
 	V_StripExtension( modelinfo->GetModelName(model), path, sizeof(path) );
 	V_strncat( path, ".dx90.vtx", sizeof(path) );
-	CUtlBuffer bytes;
-	if ( !filesystem->ReadFile(path, "GAME", bytes) || bytes.TellPut() < int(sizeof(OptimizedModel::FileHeader_t)) ) return false;
+	CUtlBuffer local;
+	CUtlBuffer *cached = g_PropStrips.Find( path );
+	CUtlBuffer &bytes = cached ? *cached : local;
+	if ( ( !cached && !filesystem->ReadFile( path, "GAME", bytes ) ) || bytes.TellPut() < int(sizeof(OptimizedModel::FileHeader_t)) ) return false;
 	const OptimizedModel::FileHeader_t *vtx = static_cast<const OptimizedModel::FileHeader_t *>(bytes.Base());
 	if ( vtx->version != OPTIMIZED_MODEL_FILE_VERSION || vtx->checkSum != hdr->checksum ||
 		vtx->numLODs != hw->m_NumLODs || vtx->numBodyParts != hdr->numbodyparts ) return false;

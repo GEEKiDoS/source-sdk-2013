@@ -11,11 +11,13 @@
 #include "resources_dx12.h"
 #include "bindings_dx12.h"
 #include "command_recorder_dx12.h"
+#include "persistent_pipeline_dx12.h"
 #include "tier1/utlhashtable.h"
 #include "tier1/utlvector.h"
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+class IFileSystem;
 
 namespace shaderapidx12
 {
@@ -75,7 +77,7 @@ struct PipelineKeyDX12
 class CPipelineCacheDX12
 {
 public:
-	bool Initialize( ID3D12Device *pDevice, bool lowTier );
+	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 
@@ -86,6 +88,7 @@ public:
 	// Renderer frame counter, independent of recording/retirement fences.
 	void BeginUploadFrame( uint64_t nFrame );
 	void Reclaim( uint64_t nCompletedFence );
+	bool ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped );
 	bool UploadTransient( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
 	// Borrowed upload resource, retained through nRetireFence; offset is a multiple of nStride.
 	bool UploadStructured( const void *pData, size_t nBytes, uint32_t nStride, uint64_t nRetireFence, ID3D12Resource **ppResource, uint64_t *pOffset );
@@ -378,8 +381,9 @@ private:
 	static constexpr UINT kRootHighresTable = 33, kRootHighresConstants = 34, kRootHighresFailure = 35, kHighresRootParameterCount = 36;
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
-	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride );
+	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
+	CPersistentPipelineDX12 m_Library;
 	CBindingCacheDX12 m_Bindings;
 	CUtlVector<UploadPage> m_UploadPages;
 	int m_nUploadPageHint = 0;

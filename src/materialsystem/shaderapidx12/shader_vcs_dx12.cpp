@@ -4,6 +4,7 @@
 //
 //=============================================================================//
 #include "shader_vcs_dx12.h"
+#include "hitch_stats_dx12.h"
 
 #include "filesystem.h"
 #include "materialsystem/shader_vcs_version.h"
@@ -921,6 +922,7 @@ bool ShaderVcsFile::LoadStaticCombo( uint32_t nStaticIndex, CUtlString &error )
 	const StaticCombos *pCombos = nullptr;
 	if ( nCached == m_Cache.InvalidIndex() )
 	{
+		const double start = Plat_FloatTime();
 		StaticCombos *pDecoded = new StaticCombos;
 		bool bDecoded;
 		if ( m_nVersion <= 4 )
@@ -943,6 +945,8 @@ bool ShaderVcsFile::LoadStaticCombo( uint32_t nStaticIndex, CUtlString &error )
 			return false;
 		}
 		m_Cache.Insert( nCanonicalIndex, pDecoded );
+		++g_FirstUse.decodes;
+		g_FirstUse.decodeUs += uint64_t( ( Plat_FloatTime() - start ) * 1e6 );
 		pCombos = pDecoded;
 	}
 	else

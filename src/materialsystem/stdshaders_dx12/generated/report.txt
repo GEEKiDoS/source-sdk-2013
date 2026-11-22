@@ -4475,7 +4475,7 @@ logical=postfx_glare_cs51 stage=cs source=postfx_glare_cs51.fxc legacy=- legacyN
     member=pad0 type=3 class=0 offset=36 size=4 elements=0 arrayStride=0 legacy=
     member=pad1 type=3 class=0 offset=40 size=4 elements=0 arrayStride=0 legacy=
     member=pad2 type=3 class=0 offset=44 size=4 elements=0 arrayStride=0 legacy=
-logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=3 present=3
+logical=postfx_composite_ps51 stage=ps source=postfx_composite_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=6 present=6
   cbuffer=DX12PSEngine space=1 register=b0 size=288 layoutHash=0xa620f773842926be engine
     member=cPixelFogParams type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=none
     member=cLinearFogColor type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=none

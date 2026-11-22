@@ -25,6 +25,7 @@
 #include <d3dcompiler.h>
 #include <climits>
 
+#include "hitch_stats_dx12.h"
 namespace shaderapidx12
 {
 namespace
@@ -340,34 +341,21 @@ bool CreateUpload( ID3D12Device *pDevice, CCommandRecorderDX12 *pList, ID3D12Res
 	UINT nRows = 0;
 	UINT64 nRequired = 0;
 	pDevice->GetCopyableFootprints( &targetDesc, nSubresource, 1, 0, &footprint, &nRows, nullptr, &nRequired );
-	D3D12_HEAP_PROPERTIES heapProps{};
-	heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
-	D3D12_RESOURCE_DESC bufferDesc{};
-	bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	bufferDesc.Width = nRequired;
-	bufferDesc.Height = 1;
-	bufferDesc.DepthOrArraySize = 1;
-	bufferDesc.MipLevels = 1;
-	bufferDesc.SampleDesc.Count = 1;
-	bufferDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	Microsoft::WRL::ComPtr<ID3D12Resource> pUpload;
-	if ( FAILED( CreateCommittedResourceDX12( pDevice, &heapProps, D3D12_HEAP_FLAG_NONE, &bufferDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS( &pUpload ), "upload pages", "Texture upload" ) ) )
-		return false;
-	void *pMapped = nullptr;
-	D3D12_RANGE range{};
-	if ( FAILED( pUpload->Map( 0, &range, &pMapped ) ) )
+	// The recording fence owns this page until CopyTextureRegion completes.
+	ID3D12Resource *pUpload;
+	unsigned char *pDestBytes;
+	size_t offset;
+	if ( !g_pShaderAPIDX12->ReserveTextureUpload( nRequired, pOwner->NextFenceValue(), &pUpload, offset, &pDestBytes ) )
 		return false;
 	const UINT nSlices = MAX( 1u, footprint.Footprint.Depth );
 	const UINT nSourceRow = nRows ? static_cast<UINT>( nSourceBytes / ( static_cast<size_t>( nRows ) * nSlices ) ) : 0;
 	const UINT nCopyRow = MIN( nSourceRow, footprint.Footprint.RowPitch );
 	const unsigned char *pSourceBytes = static_cast<const unsigned char *>( pSource );
-	unsigned char *pDestBytes = static_cast<unsigned char *>( pMapped ) + footprint.Offset;
 	for ( UINT nSlice = 0; nSlice < nSlices; ++nSlice )
 	{
 		for ( UINT nRow = 0; nRow < nRows; ++nRow )
 			memcpy( pDestBytes + ( static_cast<size_t>( nSlice ) * nRows + nRow ) * footprint.Footprint.RowPitch, pSourceBytes + ( static_cast<size_t>( nSlice ) * nRows + nRow ) * nSourceRow, nCopyRow );
 	}
-	pUpload->Unmap( 0, nullptr );
 	if ( state != D3D12_RESOURCE_STATE_COPY_DEST )
 	{
 		D3D12_RESOURCE_BARRIER barrier{};
@@ -384,11 +372,12 @@ bool CreateUpload( ID3D12Device *pDevice, CCommandRecorderDX12 *pList, ID3D12Res
 	dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 	dst.SubresourceIndex = nSubresource;
 	D3D12_TEXTURE_COPY_LOCATION src{};
-	src.pResource = pUpload.Get();
+	src.pResource = pUpload;
+	footprint.Offset = offset;
 	src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 	src.PlacedFootprint = footprint;
 	pList->CopyTextureRegion( &dst, 0, 0, 0, &src, nullptr );
-	pOwner->RetainResource( pUpload.Get() );
+	++g_FirstUse.uploads;
 	D3D12_RESOURCE_BARRIER barrier{};
 	barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
 	barrier.Transition.pResource = pTarget;
@@ -960,6 +949,7 @@ bool CShaderAPIDX12::AllocateNativeTexture( TextureRecord &texture )
 		Microsoft::WRL::ComPtr<ID3D12Resource> pResource;
 		if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc, initial, ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) ? &clear : nullptr, IID_PPV_ARGS( &pResource ), TextureMemoryCategory( texture.name.Get(), ( texture.flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) != 0 ), texture.name.Get() ) ) )
 			return false;
+		++g_FirstUse.textures;
 		wchar_t wszDebugName[512];
 		if ( !texture.name.IsEmpty() && MultiByteToWideChar( CP_UTF8, 0, texture.name.Get(), -1, wszDebugName, static_cast<int>( ARRAYSIZE( wszDebugName ) ) ) )
 			pResource->SetName( wszDebugName );
