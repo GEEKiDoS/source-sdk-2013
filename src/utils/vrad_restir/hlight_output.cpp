@@ -1,3 +1,4 @@
+#include "hspot_bsp.h"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include <DirectXPackedVector.h> // before the Source min/max macros
 #include "hlight_output.h"
@@ -497,13 +498,18 @@ void MatchRemovedWorldlights(const CUtlVector<ShadowMapLightDisk> &lights, CUtlV
     for (int i = 0; i < used.Count(); ++i) if (used[i]) removed.AddToTail(uint32(i));
     Msg("Hlight: %d of %d selected lights matched to BSP worldlights (dropped from the engine's lump at load)\n",removed.Count(),lights.Count());
 }
-// <map>.light: a BSP v20 container holding only LUMP_MAP_FLAGS, the rshd game lump and the pak of the two assets.
-// Written to a temporary sibling and renamed over the previous file, so a failed bake leaves the old one in place.
-bool WriteLightFile(const char *path, const CUtlVector<byte> &manifest, const CUtlVector<byte> &asset,
-    const char *probePath, const CUtlVector<byte> &probes)
+static bool WriteLightFile(const char *path, const CUtlVector<byte> &manifest, const CUtlVector<byte> &asset,
+    const char *probePath, const CUtlVector<byte> &probes, const CUtlVector<byte> &hspotBytes)
 {
     IZip *zip = IZip::CreateZip(NULL,true);
     zip->AddBufferToZip(s_AssetPath,const_cast<byte *>(asset.Base()),asset.Count(),false,IZip::eCompressionType_LZMA);
+    if ( hspotBytes.Count() )
+    {
+        char hspotPath[256]; V_strncpy( hspotPath, s_AssetPath, sizeof(hspotPath) );
+        V_StripExtension( hspotPath, hspotPath, sizeof(hspotPath) );
+        V_strncat( hspotPath, ".hspot", sizeof(hspotPath), COPY_ALL_CHARACTERS );
+        zip->AddBufferToZip( hspotPath, const_cast<byte *>(hspotBytes.Base()), hspotBytes.Count(), false, IZip::eCompressionType_LZMA );
+    }
     zip->AddBufferToZip(probePath,const_cast<byte *>(probes.Base()),probes.Count(),false,IZip::eCompressionType_LZMA);
     CUtlBuffer pak; zip->SaveToBuffer(pak);
     IZip::ReleaseZip(zip);
@@ -888,11 +894,13 @@ bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)
     hlight::ManifestView mv;
     if (!hlight::ValidateManifest(bytes.Base(),bytes.Count(),LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR,mv,error,sizeof(error)) ||
         !hlight::ValidateManifestAsset(verified,mv,error,sizeof(error))) return Fail(error);
-    CUtlVector<byte> probeFile; char probePath[256]; ProbePath(probePath);
+    CUtlVector<byte> probeFile; CUtlVector<byte> hspotFile; char probePath[256]; ProbePath(probePath);
     if (!BuildProbeAsset(verified,probeFile)) return false;
+    hspot::Header hspotHeader = { hspot::kMagic, hspot::kVersion, sizeof(hspot::Header), uint32(m.lights.Count()), 0 };
+    hspotFile.SetCount(sizeof(hspotHeader)); memcpy(hspotFile.Base(),&hspotHeader,sizeof(hspotHeader));
     char lightPath[MAX_PATH*2], basename[MAX_PATH]; V_FileBase(options.mapPath.String(),basename,sizeof(basename));
     if (options.lightDir.Length()) V_ComposeFileName(options.lightDir.String(),basename,lightPath,sizeof(lightPath));
     else V_strncpy(lightPath,options.mapPath.String(),sizeof(lightPath));
     V_SetExtension(lightPath,".light",sizeof(lightPath));
-    return WriteLightFile(lightPath,bytes,file,probePath,probeFile);
+    return WriteLightFile(lightPath,bytes,file,probePath,probeFile,hspotFile);
 }
