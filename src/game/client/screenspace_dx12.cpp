@@ -43,6 +43,8 @@ static ConVar r_volumetric( "r_volumetric", "1", FCVAR_ARCHIVE, "DX12: additive 
 static ConVar r_volumetric_quality( "r_volumetric_quality", "0", FCVAR_ARCHIVE, "Volumetric quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
 static ConVar r_volumetric_density( "r_volumetric_density", "0.00025", FCVAR_ARCHIVE, "Volumetric scattering coefficient in inverse Source units", true, 0.f, true, 0.01f );
 static ConVar r_volumetric_strength( "r_volumetric_strength", "1", FCVAR_ARCHIVE, "Volumetric radiance multiplier", true, 0.f, true, 8.f );
+static ConVar r_volumetric_beam_density( "r_volumetric_beam_density", "0.0012", FCVAR_ARCHIVE, "Scattering coefficient for paired spotlight beams; zero keeps the stock beams", true, 0.f, true, 0.01f );
+static ConVar r_volumetric_beam_strength( "r_volumetric_beam_strength", "1", FCVAR_ARCHIVE, "Radiance multiplier for paired spotlight beams", true, 0.f, true, 8.f );
 static ConVar r_volumetric_anisotropy( "r_volumetric_anisotropy", "0.2", FCVAR_ARCHIVE, "Volumetric Henyey-Greenstein phase anisotropy", true, -0.9f, true, 0.9f );
 static ConVar r_volumetric_max_distance( "r_volumetric_max_distance", "2048", FCVAR_ARCHIVE, "Volumetric ray distance in Source units", true, 64.f, true, 8192.f );
 static ConVar r_volumetric_sun_override( "r_volumetric_sun_override", "0", FCVAR_NONE, "Override the sun's map volumetric opt-in and medium settings", true, 0, true, 1 );
@@ -181,6 +183,8 @@ void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view )
 	settings.medium[1] = r_volumetric_strength.GetFloat();
 	settings.medium[2] = r_volumetric_anisotropy.GetFloat();
 	settings.medium[3] = r_volumetric_max_distance.GetFloat();
+	settings.beamMedium[0] = r_volumetric_beam_density.GetFloat();
+	settings.beamMedium[1] = r_volumetric_beam_strength.GetFloat();
 	const bool bSunOverride = r_volumetric_sun_override.GetBool();
 	if ( bSunOverride )
 	{
@@ -197,6 +201,16 @@ void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view )
 	const bool bSunEnabled = bSunOverride ? r_volumetric_sun_enable.GetBool() : ShadowMapsDX12_VolumetricSunEnabled();
 	settings.control[0] = kVolumetricSteps[r_volumetric_quality.GetInt()];
 	settings.control[1] = bSunEnabled && settings.sunMedium[0] > 0.f && settings.sunMedium[1] > 0.f ? 1u : 0u;
+	const bool bLocalMedium = settings.medium[0] > 0.f && settings.medium[1] > 0.f;
+	const bool bBeamMedium = settings.beamMedium[0] > 0.f && settings.beamMedium[1] > 0.f;
+	if ( !settings.control[1] && !bLocalMedium && !bBeamMedium )
+		return;
+	const bool bPairedBeam = ShadowMapsDX12_BeginVolumetrics();
+	if ( !settings.control[1] && !bLocalMedium && !bPairedBeam )
+	{
+		ShadowMapsDX12_EndVolumetrics();
+		return;
+	}
 	settings.control[2] = 1u;
 	// All volume paths use the same rotating 64-frame IGN sequence. It is
 	// deliberately independent of the selected AA provider so quarter-res
@@ -204,7 +218,6 @@ void ScreenSpaceDX12_BeginVolumetrics( const CViewSetup &view )
 	settings.control[3] = static_cast<uint32>( gpGlobals->framecount & 63u );
 	s_VolumetricSettings = settings;
 	s_bVolumetricScope = true;
-	ShadowMapsDX12_BeginVolumetrics();
 	s_pScreenSpace->BeginVolumetrics( settings );
 }
 

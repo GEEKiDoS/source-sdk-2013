@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_010"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_011"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
@@ -58,16 +58,17 @@ struct DX12ScreenSpaceViewDesc
 	uint32 bounceDebug;
 };
 
-// Snapshot of the volumetric controls for one main camera view. 48 bytes; the first 48 bytes of HLSL cbuffer
+// Snapshot of the volumetric controls for one main camera view. 64 bytes; the first 64 bytes of HLSL cbuffer
 // DX12Volumetric (b1 space6), which appends float4 outputScale.
 struct alignas( 16 ) DX12VolumetricSettings
 {
 	float	medium[4];				// local/projected lights: density (scattering coefficient, 1/unit), strength, HG g, maxDistance
 	float	sunMedium[4];			// sun: density, strength, HG g, maxDistance
+	float	beamMedium[4];			// paired map spotlights: density, strength, 0, 0; shares medium.zw
 	uint32	control[4];				// steps per light segment, sun enabled, master enabled, rotating noise frame (framecount & 63)
 };
 
-struct alignas( 16 ) DX12VolumetricConstants	// 64 bytes, HLSL cbuffer DX12Volumetric (b1 space6)
+struct alignas( 16 ) DX12VolumetricConstants	// 80 bytes, HLSL cbuffer DX12Volumetric (b1 space6)
 {
 	DX12VolumetricSettings settings;
 	float	outputScale[4];			// native LINEAR_LIGHT_SCALE (m_ToneScale.x), 0, 0, 0
@@ -75,8 +76,8 @@ struct alignas( 16 ) DX12VolumetricConstants	// 64 bytes, HLSL cbuffer DX12Volum
 
 static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 256, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
 static_assert( sizeof( DX12SSRSettings ) == 20, "DX12SSRSettings layout" );
-static_assert( sizeof( DX12VolumetricSettings ) == 48, "DX12VolumetricSettings layout" );
-static_assert( sizeof( DX12VolumetricConstants ) == 64, "DX12VolumetricConstants must match HLSL DX12Volumetric" );
+static_assert( sizeof( DX12VolumetricSettings ) == 64, "DX12VolumetricSettings layout" );
+static_assert( sizeof( DX12VolumetricConstants ) == 80, "DX12VolumetricConstants must match HLSL DX12Volumetric" );
 
 abstract_class IShaderAPIDX12ScreenSpace
 {

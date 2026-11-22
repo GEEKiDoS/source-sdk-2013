@@ -2660,7 +2660,10 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			const bool bakedAvailable = ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0;
 			if ( light.type != DX12_SHADOW_LIGHT_POINT && light.type != DX12_SHADOW_LIGHT_SPOT || ( light.faceCount != 1 && light.faceCount != 6 ) || light.type == DX12_SHADOW_LIGHT_POINT && light.faceCount != 6 || !ShadowMap_IsFiniteFloat( light.shadowNear ) || !ShadowMap_IsFiniteFloat( light.shadowFar ) || light.shadowNear <= 0 || light.shadowFar <= light.shadowNear ) { failure = kPacketError; break; }
 			if ( !ShadowMap_IsFiniteFloat( light.realtimeWeight ) || light.realtimeWeight < 0 || light.realtimeWeight > 1 ||
-				light.visibilityFlags & ~( DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE | DX12_SHADOW_VISIBILITY_UNSHADOWED ) || light.reserved0 & ~DX12_VOLUMETRIC_LIGHT_ENABLED ||
+				light.visibilityFlags & ~( DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE | DX12_SHADOW_VISIBILITY_UNSHADOWED ) ||
+				light.reserved0 & ~( DX12_VOLUMETRIC_LIGHT_ENABLED | DX12_VOLUMETRIC_LIGHT_BEAM ) ||
+				( ( light.reserved0 & DX12_VOLUMETRIC_LIGHT_BEAM ) &&
+				  ( !( light.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED ) || !bakedAvailable || light.type != DX12_SHADOW_LIGHT_SPOT ) ) ||
 				( !bakedAvailable && light.bakedLightIndex && light.bakedLightIndex != 0xffffffffu ) ||
 				( unshadowed && light.realtimeWeight != 0 && !lightUnshadowed ) ) { failure = kPacketError; break; }
 			const float *lightFloats = light.origin;

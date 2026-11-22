@@ -204,7 +204,7 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 }
 
 // Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (256 B, 10 members), cbuffer DX12Volumetric b1
-// (64 B, 4 members), cbuffer DX12ShadowSkyClip b2 (16 B, 1 member), g_ScreenContactShadow t0 / g_ScreenSceneDepth t2 /
+// (80 B, 5 members), cbuffer DX12ShadowSkyClip b2 (16 B, 1 member), g_ScreenContactShadow t0 / g_ScreenSceneDepth t2 /
 // g_ShadowSkyClip t4 / g_ScreenSSRDepth t6 / g_ScreenAO t7 (Texture2D<float>), g_ScreenSceneDepthMS t3 (Texture2DMS<float>)
 // and g_ScreenSSRScene t5 (Texture2D<float4>). Private contact depth is compute-only; t1 and unknown space-6 resources
 // are rejected. screenSeen collects one bit per name.
@@ -222,9 +222,9 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		  { "cScreenWorldToClip", "cScreenClipToWorld", "cScreenEyeLength", "cScreenForwardThickness", "cScreenViewport", "cScreenControl", "cScreenDepth",
 		    "cScreenContactParams", "cScreenContactDepth", "cScreenContactControl" },
 		  { 64, 64, 16, 16, 16, 16, 16, 16, 16, 16 } },
-		{ "DX12Volumetric", DX12_SCREENSPACE_B_VOLUMETRIC, 64, 4,
-		  { "cVolumeMedium", "cVolumeSunMedium", "cVolumeControl", "cVolumeOutputScale" },
-		  { 16, 16, 16, 16 } },
+		{ "DX12Volumetric", DX12_SCREENSPACE_B_VOLUMETRIC, 80, 5,
+		  { "cVolumeMedium", "cVolumeSunMedium", "cVolumeBeamMedium", "cVolumeControl", "cVolumeOutputScale" },
+		  { 16, 16, 16, 16, 16 } },
 		{ "DX12ShadowSkyClip", DX12_SCREENSPACE_B_SHADOW_SKY_CLIP, 16, 1,
 		  { "cShadowSkyClip" },
 		  { 16 } },

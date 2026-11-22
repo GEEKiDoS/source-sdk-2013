@@ -719,6 +719,13 @@ balanced/high profiles retain the half-resolution march. Every provider receives
 `cVolumeControl.w` is `framecount & 63`, and each step offsets the sequence independently. The temporal pass below
 integrates this dither before compositing, so r0, DLAA, FSR and native SMAA converge to the same shaft instead of
 depending on an AA provider to hide march slices.
+Map spotlights opted in by a live baked `.hspot` pair use `r_volumetric_beam_density` (default `0.0012`) and
+`r_volumetric_beam_strength` (default `1`) in place of the global density and strength. Both still share local
+anisotropy and max distance. This can replace the stock fake beam even when `r_volumetric_density` is zero;
+zero beam density or strength keeps the stock beam. Explicit `_volumetric` map settings take precedence over pairing,
+and `r_volumetric 0` disables all scattering and stock-beam replacement.
+Pairing selects the medium, not its shape: the baked `light_spot` supplies the position, cone, attenuation and
+shadows. If the mapper offset the fake beam from its paired light, the volume follows the real light.
 `volumetric_temporal_ps51` resolves the current reduced-resolution RGB scatter and representative depth against ping-pong
 RGBA16F history. It reprojects from the footprint centre using the previous camera transform, prefers the closest scene
 depth/motion sample in the footprint at silhouettes, rejects history when depth differs beyond the upsample tolerance or

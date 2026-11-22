@@ -2570,18 +2570,18 @@ void CommitChart( CShadowViewData &data, ShadowCache_t &cache, int chartLight = 
 	}
 }
 
-// §8/§9 opt-in. Map lights: explicit _volumetric 1 on, explicit 0 off; absent light_spot on only while a live fake
-// beam baked to it (.hspot) is at its authored pose in this main-volume scope. Editor lights: the Volumetric checkbox. Residency/shadow state is not
-// required: a record published without sampled charts is marched unshadowed by the volume pass. Requires the
-// screen-space-capable backend; the master switch owns g_VolumeScope.
-bool VolumetricLightEnabled( const LocalLight_t &local )
+// Explicit map/editor opt-ins use the ordinary medium. A map light_spot without an explicit setting uses the
+// beam medium only while a live fake beam baked to it (.hspot) is at its authored pose. Residency is not required:
+// a published light without sampled charts is marched unshadowed.
+uint32 VolumetricLightFlags( const LocalLight_t &local )
 {
-	if ( !g_VolumeScope || !ScreenSpaceDX12_Available() ) return false;
-	if ( local.dynamic ) return local.volumetric;
-	if ( local.bakedLightIndex>=(uint32)g_LightEntities.Count() ) return false;
+	if ( !g_VolumeScope || !ScreenSpaceDX12_Available() ) return 0;
+	if ( local.dynamic ) return local.volumetric ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
+	if ( local.bakedLightIndex>=(uint32)g_LightEntities.Count() ) return 0;
 	const MapLightEntity_t &entity=g_LightEntities[local.bakedLightIndex];
-	if ( entity.volumetric>=0 ) return entity.volumetric==1;
-	return entity.classname==MAPLIGHT_SPOT && local.spotlightPaired;
+	if ( entity.volumetric>=0 ) return entity.volumetric==1 ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
+	return entity.classname==MAPLIGHT_SPOT && local.spotlightPaired ?
+		DX12_VOLUMETRIC_LIGHT_ENABLED | DX12_VOLUMETRIC_LIGHT_BEAM : 0;
 }
 
 bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
@@ -2600,7 +2600,7 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( !data.shadowsEnabled && gpu.realtimeWeight!=0 ) gpu.visibilityFlags|=DX12_SHADOW_VISIBILITY_UNSHADOWED;
 	gpu.bakedLightIndex=local.dynamic ? 0xffffffffu : local.bakedLightIndex;
 	// §8 opt-in rides every published record (charted or not); older backends receive zero.
-	gpu.reserved0=VolumetricLightEnabled(local) ? DX12_VOLUMETRIC_LIGHT_ENABLED : 0;
+	gpu.reserved0=VolumetricLightFlags(local);
 	memcpy(gpu.origin,light.origin,sizeof(gpu.origin)); memcpy(gpu.travelDirection,light.direction,sizeof(gpu.travelDirection));
 	float style=data.packet.styles[light.style];
 	for ( int c=0;c<3;++c ) gpu.radiance[c]=light.radiance[c]*style;
@@ -4192,8 +4192,8 @@ void ClearSpotlightPairs()
 		if ( g_SpotlightPairs[p].light<g_Locals.Count() ) g_Locals[g_SpotlightPairs[p].light].spotlightPaired=false;
 	g_SpotlightPairs.RemoveAll();
 }
-// Applies the baked .hspot records, independent of residency: each live registered beam at its authored pose pairs
-// with its record's light (a paired light that loses its shadow map restores its beams). Storage is reused after warmup.
+// Applies the baked .hspot records independently of shadow chart residency: each live registered beam at its
+// authored pose pairs with its record's light. Storage is reused after warmup.
 void PairSpotlightBeams()
 {
 	ClearSpotlightPairs();
@@ -4208,7 +4208,8 @@ void PairSpotlightBeams()
 			const hspot::Beam &record=g_BakedBeams[r];
 			if ( record.classname!=g_SpotlightBeams[b].classname || !SpotlightBeamAtRecord(beam,record) ) continue;
 			const int light=g_BakedLightToLocal[record.light];
-			if ( light>=0 )
+			if ( light>=0 && record.light<(uint32)g_LightEntities.Count() &&
+				g_LightEntities[record.light].classname==MAPLIGHT_SPOT && g_LightEntities[record.light].volumetric<0 )
 			{
 				SpotlightPair_t &pair=g_SpotlightPairs[g_SpotlightPairs.AddToTail()];
 				pair.beam=beam; pair.light=light; pair.record=(int)r;
@@ -4218,31 +4219,30 @@ void PairSpotlightBeams()
 		}
 	}
 }
-// After the CPU packet is built: the paired beams this eligible main bracket replaces. Each needs the opt-in bit on its
-// light's published record (charted or not: an uncharted light is marched unshadowed), nonzero radiance, and the enabled
-// main-volume scope with nonzero medium density/strength. Anything else leaves the stock beam visible.
+// Only suppress a stock beam when its paired light participates in the independent beam medium.
+// An explicit _volumetric opt-in still uses the ordinary medium and does not replace the stock beam.
 void PublishSuppressedBeams( CShadowViewData &data )
 {
 	data.suppressedBeams.RemoveAll();
 	const DX12VolumetricSettings *settings=g_VolumeScope && data.kind==SHADOWMAP_VIEW_MAIN ? ScreenSpaceDX12_GetVolumetricSettings() : NULL;
-	if ( !settings || !settings->control[2] || settings->medium[0]<=0 || settings->medium[1]<=0 || !g_SpotlightPairs.Count() ) return;
+	if ( !settings || !settings->control[2] || !(settings->beamMedium[0]>0 && settings->beamMedium[1]>0) || !g_SpotlightPairs.Count() ) return;
+	const uint32 beamFlags=DX12_VOLUMETRIC_LIGHT_ENABLED | DX12_VOLUMETRIC_LIGHT_BEAM;
 	for ( int i=0;i<data.relevant.Count();++i )
 	{
-		if ( data.relevant[i] & kDynamicOwnerBit ) continue;
-		if ( !g_Locals[data.relevant[i]].spotlightPaired ) continue;
 		const RuntimeShadowLightGpu &gpu=data.lights[i];
-		if ( !(gpu.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED) ) continue;
+		if ( (gpu.reserved0 & beamFlags)!=beamFlags ) continue;
 		if ( gpu.radiance[0]<=0 && gpu.radiance[1]<=0 && gpu.radiance[2]<=0 ) continue;
 		for ( int p=0;p<g_SpotlightPairs.Count();++p )
 			if ( g_SpotlightPairs[p].light==data.relevant[i] ) data.suppressedBeams.AddToTail(g_SpotlightPairs[p].beam);
 	}
 }
 
-void ShadowMapsDX12_BeginVolumetrics()
+bool ShadowMapsDX12_BeginVolumetrics()
 {
 	g_VolumeScope=true;
 	if ( ShadowMapsDX12_Active() && ScreenSpaceDX12_Available() ) PairSpotlightBeams();
 	else ClearSpotlightPairs();
+	return g_SpotlightPairs.Count()!=0;
 }
 void ShadowMapsDX12_EndVolumetrics()
 {

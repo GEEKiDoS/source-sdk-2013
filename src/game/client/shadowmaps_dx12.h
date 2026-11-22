@@ -273,9 +273,9 @@ bool ShadowMapsDX12_VolumetricSunEnabled();
 // Bracket the enabled main-volume scope (ScreenSpaceDX12_BeginVolumetrics/DrawVolumetrics). Begin applies the map's
 // baked .hspot records (vrad_restir pairs fake beams with light_spots at compile time): each live registered beam at
 // its authored pose (start within 1 unit, axis within 2 degrees) pairs with its record's light, once per outer main
-// view before residency filtering; receiver views inside the scope publish the light opt-in bit and the beams they
-// replace. End clears pairs/suppression. Outside the scope, or without .hspot, every beam draws normally.
-void ShadowMapsDX12_BeginVolumetrics();
+// view before residency filtering; receiver views inside the scope publish the light's opt-in flags and the stock
+// beams replaced by the independent beam medium. Outside the scope, or without .hspot, every beam draws normally.
+bool ShadowMapsDX12_BeginVolumetrics(); // returns whether any live pairs were found
 void ShadowMapsDX12_EndVolumetrics();
 // Live fake-beam registry: networked point_spotlight beams from C_Beam::OnDataChanged (insert when marked, remove when
 // the marker clears) and UpdateOnRemove; beam_spotlight's client beams from C_BeamSpotLight::CreateBeam.

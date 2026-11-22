@@ -816,6 +816,8 @@ const float kBeamPairMinScore = 0.5f;		// majority of the beam volume lit by thi
 const float kBeamPairMinColorCos = 0.9f;	// ~25 degrees in RGB: warm vs neutral white pass, red/blue vs white fail
 const float kBeamPrefilterReach = 64.0f;	// plus the beam width, beam origin to light origin
 const float kBeamPrefilterSlack = 10.0f;	// degrees beyond the light cone + beam half-spread
+const float kBeamPairMaxOffset = 8.0f;		// no detached shaft even if the cones overlap downstream
+const float kBeamPairMinAxisCos = 0.93969262f; // cos(20 degrees)
 
 struct BeamSource
 {
@@ -823,7 +825,7 @@ struct BeamSource
     Vector origin, axis, color; float width, length;
     bool rotates;	// beam_spotlight with a rotation speed: never holds its authored axis long enough to pair
 };
-enum BeamReject { kRejectNoCandidate, kRejectRotating, kRejectColor, kRejectOverlap, kRejectCount };
+enum BeamReject { kRejectNoCandidate, kRejectRotating, kRejectColor, kRejectOffset, kRejectOverlap, kRejectCount };
 
 // Light reach at distance d: VRAD's quintic fade/cap and radius cutoff, else attenuation relative to 32 units.
 bool LightReaches(const ShadowMapLightDisk &disk, float d)
@@ -928,10 +930,12 @@ bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScen
     // Candidates: generous prefilter, then colour, then the traced volume overlap score.
     struct Candidate { int beam, light, firstRay; };
     CUtlVector<Candidate> candidates; CUtlVector<int> reject; reject.SetCount(beams.Count());
+    CUtlVector<int> closestOffsetReject; closestOffsetReject.SetCount(beams.Count());
     CUtlVector<unsigned char> geometric; rays.RemoveAll();
     for (int b = 0; b < beams.Count(); ++b)
     {
         const BeamSource &beam = beams[b]; reject[b] = beam.rotates ? kRejectRotating : kRejectNoCandidate;
+        closestOffsetReject[b] = -1;
         if (beam.rotates) continue;
         const float halfSpread = RAD2DEG(atan2f(0.5f*beam.width,beam.length));
         for (int li = 0; li < lightCount; ++li)
@@ -939,10 +943,20 @@ bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScen
             if (!eligible[li]) continue;
             const ShadowMapLightDisk &disk = scene.shadowLights[li];
             const float reach = kBeamPrefilterReach + beam.width;
-            if (beam.origin.DistToSqr(disk.light.origin) > reach*reach) continue;
+            const float offsetSqr = beam.origin.DistToSqr(disk.light.origin);
+            if (offsetSqr > reach*reach) continue;
             const float outer = RAD2DEG(acosf(clamp(disk.light.stopdot2,-1.0f,1.0f)));
-            if (DotProduct(beam.axis,disk.light.normal) < cosf(DEG2RAD(MIN(180.0f,outer+halfSpread+kBeamPrefilterSlack)))) continue;
+            const float axisCos = DotProduct(beam.axis,disk.light.normal);
+            if (axisCos < cosf(DEG2RAD(MIN(180.0f,outer+halfSpread+kBeamPrefilterSlack)))) continue;
             if (ColorCos(beam.color,disk.light.intensity) < kBeamPairMinColorCos) { reject[b] = MAX(reject[b],int(kRejectColor)); continue; }
+            if (offsetSqr > kBeamPairMaxOffset*kBeamPairMaxOffset || axisCos < kBeamPairMinAxisCos)
+            {
+                const int previous = closestOffsetReject[b];
+                if (previous < 0 || offsetSqr < beam.origin.DistToSqr(scene.shadowLights[previous].light.origin))
+                    closestOffsetReject[b] = li;
+                reject[b] = MAX(reject[b],int(kRejectOffset));
+                continue;
+            }
             Candidate &c = candidates[candidates.AddToTail()]; c.beam = b; c.light = li; c.firstRay = rays.Count();
             // A sample counts when it lies in the light's outer cone and reach and the light sees it.
             const Vector start = disk.light.origin + disk.light.normal*2.0f;	// leave the lamp housing
@@ -977,7 +991,7 @@ bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScen
         reject[cand.beam] = MAX(reject[cand.beam],int(kRejectOverlap));
     }
     int rejected[kRejectCount] = {};
-    static const char *const kRejectNames[kRejectCount] = { "no candidate light", "rotates", "colour", "overlap" };
+    static const char *const kRejectNames[kRejectCount] = { "no candidate light", "rotates", "colour", "offset/axis", "overlap" };
     for (int b = 0; b < beams.Count(); ++b)
     {
         const BeamSource &beam = beams[b];
@@ -985,6 +999,14 @@ bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScen
         Msg("Hspot: %s at (%.0f %.0f %.0f): %s", beam.classname == hspot::kPointSpotlight ? "point_spotlight" : "beam_spotlight",
             beam.origin.x, beam.origin.y, beam.origin.z, pair ? "paired" : kRejectNames[reject[b]]);
         if (best[b] >= 0) Msg(", best light %d score %.2f", best[b], bestScore[b]);
+        const int diagnostic = best[b] >= 0 ? best[b] : closestOffsetReject[b];
+        if (diagnostic >= 0)
+        {
+            const dworldlight_t &light = scene.shadowLights[diagnostic].light;
+            if (best[b] < 0) Msg(", rejected light %d", diagnostic);
+            Msg(", offset %.2f units, angle %.2f degrees", beam.origin.DistTo(light.origin),
+                RAD2DEG(acosf(clamp(DotProduct(beam.axis,light.normal),-1.0f,1.0f))));
+        }
         Msg("\n");
         if (!pair) { ++rejected[reject[b]]; continue; }
         hspot::Beam record = { beam.classname, uint32(best[b]), { beam.origin.x, beam.origin.y, beam.origin.z }, { beam.axis.x, beam.axis.y, beam.axis.z } };
@@ -995,9 +1017,9 @@ bool ReSTIR_CaptureSpotlightPairs(const ReSTIROptions &options, const ReSTIRScen
     m.hspotBytes.SetCount(header.byteSize);
     memcpy(m.hspotBytes.Base(),&header,sizeof(header));
     memcpy(m.hspotBytes.Base()+sizeof(header),paired.Base(),paired.Count()*sizeof(hspot::Beam));
-    Msg("Hspot: %d beams, %d paired; rejected: no candidate %d, rotating %d, colour %d, overlap<%.2f %d\n",
+    Msg("Hspot: %d beams, %d paired; rejected: no candidate %d, rotating %d, colour %d, offset/axis %d, overlap<%.2f %d\n",
         beams.Count(),paired.Count(),rejected[kRejectNoCandidate],rejected[kRejectRotating],rejected[kRejectColor],
-        kBeamPairMinScore,rejected[kRejectOverlap]);
+        rejected[kRejectOffset],kBeamPairMinScore,rejected[kRejectOverlap]);
     return true;
 }
 

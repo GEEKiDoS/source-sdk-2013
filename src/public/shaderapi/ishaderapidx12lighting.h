@@ -167,9 +167,10 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_SHADOW_VIEW_DEFERRED				0x10	// budgeted warm-up: missing charts are wholly zero; direct lighting remains active
 #define DX12_SHADOW_VIEW_LOCAL_SMOOTH			0x20	// local lights use the sharpened cubic 4x4 PCF instead of four bilinear taps
 
-// RuntimeShadowLightGpu::reserved0 and DX12ProjectedLightDesc::reserved: the light opted into volumetric
-// in-scattering (ishaderapidx12screenspace.h). Set only when that interface is available; the only known bit.
+// ENABLED opts RuntimeShadowLightGpu::reserved0 or DX12ProjectedLightDesc::reserved into volumetric in-scattering.
+// BEAM is valid only alongside ENABLED on baked map spotlight records; it selects the independent beam medium.
 #define DX12_VOLUMETRIC_LIGHT_ENABLED			0x1
+#define DX12_VOLUMETRIC_LIGHT_BEAM				0x2
 
 //-----------------------------------------------------------------------------
 // GPU-visible record layouts retained from ABI 1. Row-major float4x4; HLSL mul(matrix, float4(world,1)).
@@ -194,7 +195,7 @@ struct RuntimeShadowLightGpu				// 608 bytes: 7 rows + 6 matrices + 6 rects + hy
 	float	realtimeWeight;				// [0,1]; zero never references an atlas; positive requires complete charts unless UNSHADOWED
 	uint32	visibilityFlags;			// DX12_SHADOW_VISIBILITY_*; no unknown bits
 	uint32	bakedLightIndex;			// manifest ordinal iff BAKED_AVAILABLE; otherwise 0 or 0xFFFFFFFF
-	uint32	reserved0;					// DX12_VOLUMETRIC_LIGHT_ENABLED or zero; no unknown bits
+	uint32	reserved0;					// DX12_VOLUMETRIC_LIGHT_*; no unknown bits
 };
 
 struct DX12LightingViewConstantsV1		// 672 bytes, cbuffer b0 space2 (see HLSL twin)

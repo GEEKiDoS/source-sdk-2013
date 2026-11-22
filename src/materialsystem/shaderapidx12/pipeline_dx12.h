@@ -21,7 +21,7 @@ namespace shaderapidx12
 {
 // Register space 6: backend-owned screen-space inputs (ishaderapidx12screenspace.h, native_src/screenspace_view.hlsli).
 // t0 Texture2D<float> sun contact visibility, t1 reserved, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (256 B),
-// b1 DX12Volumetric (64 B). The sun shadow-chart sky clip (ishaderapidx12lighting.h, native_src/shadow_sky_clip.hlsli)
+// b1 DX12Volumetric (80 B). The sun shadow-chart sky clip (ishaderapidx12lighting.h, native_src/shadow_sky_clip.hlsli)
 // adds t4 Texture2D<float> sky entry depth and b2 DX12ShadowSkyClip (16 B). Forward screen-space effects of the draws
 // after the opaque bracket (screenspace_dx12.cpp, native_src/pbr_forward_screenspace.hlsli) add t5 Texture2D<float4>
 // SSR scene colour (from its mip 1), t6 Texture2D<float> SSR view depth and t7 Texture2D<float> GTAO term, with the

@@ -36,7 +36,12 @@ void CShaderAPIDX12::ReplayBeginVolumetrics( const DX12VolumetricSettings &setti
 {
 	if ( m_Volumetric.scope && m_pDevice )
 		m_pDevice->Lighting().EndVolumetrics(); // an unterminated scope never draws; release its capture
-	if ( m_Volumetric.historyValid && ( m_Volumetric.historyFrame + 1 != m_nFrameCounter ) )
+	// A disabled medium must not leave its previous scattering in the history.
+	if ( m_Volumetric.historyValid && ( m_Volumetric.historyFrame + 1 != m_nFrameCounter ||
+		memcmp( m_Volumetric.settings.medium, settings.medium, sizeof( settings.medium ) ) ||
+		memcmp( m_Volumetric.settings.sunMedium, settings.sunMedium, sizeof( settings.sunMedium ) ) ||
+		memcmp( m_Volumetric.settings.beamMedium, settings.beamMedium, sizeof( settings.beamMedium ) ) ||
+		m_Volumetric.settings.control[1] != settings.control[1] ) )
 		m_Volumetric.historyValid = false;
 	m_Volumetric.settings = settings;
 	m_Volumetric.scope = true;

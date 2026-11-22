@@ -265,10 +265,11 @@ PS_OUTPUT main( PS_INPUT i )
 	// over time so all AA providers receive the same unbiased volume input.
 	const float2 stepNoiseStride = float2( 17.071, 31.113 );
 
-	// Local map/editor lights of this footprint's tile and the projected lights share the global medium.
+	// Paired map spotlights have their own scattering density and strength.
 	float localScatter = cVolumeMedium.x * cVolumeMedium.y;
+	float beamScatter = cVolumeBeamMedium.x * cVolumeBeamMedium.y;
 	float localLimit = min( opaqueDistance, cVolumeMedium.w );
-	[branch] if ( localScatter > 0.0 && localLimit > 0.0 )
+	[branch] if ( ( localScatter > 0.0 || beamScatter > 0.0 ) && localLimit > 0.0 )
 	{
 		ShadowMapReceiver tileReceiver = (ShadowMapReceiver)0;
 		tileReceiver.screenPos = center;
@@ -279,6 +280,9 @@ PS_OUTPUT main( PS_INPUT i )
 			uint index = g_ShadowTileIndices[range.x + n];
 			RuntimeShadowLightGpu light = g_ShadowLights[index];
 			if ( ( light.reserved0 & DX12_VOLUMETRIC_LIGHT_ENABLED ) == 0 )
+				continue;
+			float lightScatter = ( light.reserved0 & DX12_VOLUMETRIC_LIGHT_BEAM ) != 0 ? beamScatter : localScatter;
+			if ( lightScatter <= 0.0 )
 				continue;
 			// Charts are sampled only when this view published them; otherwise the light is marched unshadowed.
 			bool shadowed = light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
@@ -307,9 +311,13 @@ PS_OUTPUT main( PS_INPUT i )
 				if ( visibility <= 0.0 ) continue;
 				scattered += radiance * ( visibility * Volume_Phase( cVolumeMedium.z, dot( L, D ) ) );
 			}
-			delta += scattered * ( localScatter * ds );
+			delta += scattered * ( lightScatter * ds );
 		}
+	}
 
+	// Projected lights always use the global medium.
+	[branch] if ( localScatter > 0.0 && localLimit > 0.0 )
+	{
 		uint count, stride;
 		g_ProjectedLights.GetDimensions( count, stride );
 		[loop] for ( uint p = 0; p < count; ++p )

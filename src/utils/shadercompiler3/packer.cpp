@@ -723,7 +723,7 @@ void validateProbePbrResources(ID3D12ShaderReflection *reflection, const D3D12_S
 	if (probeSeen && !(probeSeen & 1)) throw std::runtime_error("Space-4 resources require DX12ProbeConstantsV1: " + logical);
 }
 // Space 6 is backend-owned and pixel-stage only: cbuffer DX12ScreenSpaceView b0 (256 bytes) and DX12Volumetric b1
-// (64 bytes), byte-identical to ishaderapidx12screenspace.h, plus the viewport-local sun visibility g_ScreenContactShadow
+// (80 bytes), byte-identical to ishaderapidx12screenspace.h, plus the viewport-local sun visibility g_ScreenContactShadow
 // t0 (Texture2D<float>), final scene depth g_ScreenSceneDepth t2 / g_ScreenSceneDepthMS t3, and the sun shadow-chart
 // sky clip: DX12ShadowSkyClip b2 (16 bytes, ishaderapidx12lighting.h) with g_ShadowSkyClip t4.
 // and the forward screen-space inputs of the draws after the opaque bracket (native_src/pbr_forward_screenspace.hlsli):
@@ -739,7 +739,8 @@ const ScreenSpaceMember kScreenSpaceViewMembers[] = {
 	{"cScreenContactParams", 208, 16}, {"cScreenContactDepth", 224, 16}, {"cScreenContactControl", 240, 16},
 };
 const ScreenSpaceMember kVolumetricMembers[] = {
-	{"cVolumeMedium", 0, 16}, {"cVolumeSunMedium", 16, 16}, {"cVolumeControl", 32, 16}, {"cVolumeOutputScale", 48, 16},
+	{"cVolumeMedium", 0, 16}, {"cVolumeSunMedium", 16, 16}, {"cVolumeBeamMedium", 32, 16},
+	{"cVolumeControl", 48, 16}, {"cVolumeOutputScale", 64, 16},
 };
 // Sun shadow-chart sky clip (native_src/shadow_sky_clip.hlsli): b2 block and the t4 sky entry depth plane.
 const ScreenSpaceMember kShadowSkyClipMembers[] = {
@@ -747,7 +748,7 @@ const ScreenSpaceMember kShadowSkyClipMembers[] = {
 };
 const ScreenSpaceLayout kScreenSpaceLayouts[] = {
 	{"DX12ScreenSpaceView", 0, 256, 10, kScreenSpaceViewMembers},
-	{"DX12Volumetric", 1, 64, 4, kVolumetricMembers},
+	{"DX12Volumetric", 1, 80, 5, kVolumetricMembers},
 	{"DX12ShadowSkyClip", 2, 16, 1, kShadowSkyClipMembers},
 };
 const ScreenSpaceLayout *screenSpaceLayout(const std::string &name) {
