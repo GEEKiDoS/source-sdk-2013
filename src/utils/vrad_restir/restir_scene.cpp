@@ -1188,7 +1188,12 @@ bool ReSTIR_SceneBuildGeometry( ReSTIRSceneBuildContext &context, ReSTIRScene &s
 	for ( int entityIndex = 0; entityIndex < num_entities; ++entityIndex )
 	{
 		entity_t &entity = entities[entityIndex];
-		if ( IntForKey( &entity, "vrad_brush_cast_shadows" ) == 0 )
+		const char *classname = ValueForKey( &entity, "classname" );
+		const bool authoredShadowCaster = IntForKey( &entity, "vrad_brush_cast_shadows" ) != 0;
+		const bool breakableShadowCaster = classname &&
+			( !Q_stricmp( classname, "func_breakable" ) || !Q_stricmp( classname, "func_breakable_surf" ) ) &&
+			IntForKey( &entity, "disableshadows" ) == 0;
+		if ( !authoredShadowCaster && !breakableShadowCaster )
 			continue;
 		const char *modelName = ValueForKey( &entity, "model" );
 		if ( Q_strlen( modelName ) <= 1 )
