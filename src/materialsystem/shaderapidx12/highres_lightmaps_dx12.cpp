@@ -24,14 +24,6 @@
 #include <system_error>
 #include <thread>
 #include <new>
-        // A translated, unrotated brush goes through SetupMatrixOrgAngles in the
-        // engine. Its cos(0) approximation leaves the diagonal a few ULPs off
-        // one. Canonicalize only the pose key, not the geometry transform: keep
-        // translation and every nonzero rotation exact for moved receivers.
-        auto &pose = constants.cHlightModelToWorld;
-        if (!pose[0][1] && !pose[0][2] && !pose[1][0] && !pose[1][2] && !pose[2][0] && !pose[2][1] &&
-            fabsf(pose[0][0]-1) <= 4*FLT_EPSILON && fabsf(pose[1][1]-1) <= 4*FLT_EPSILON && fabsf(pose[2][2]-1) <= 4*FLT_EPSILON)
-            pose[0][0] = pose[1][1] = pose[2][2] = 1;
 
 namespace shaderapidx12
 {
@@ -1770,6 +1762,14 @@ bool CHighresLightmapsDX12::PrepareDraw(uint32 samplerMask,const float modelToWo
         constants.cHlightRoute[1]=neutral?1:page.nativeWidth; constants.cHlightRoute[2]=neutral?1:page.nativeHeight;
         constants.cHlightRoute[3]=neutral?0:pageIndex+1;
         memcpy(constants.cHlightModelToWorld,modelToWorld,sizeof(constants.cHlightModelToWorld));
+        // A translated, unrotated brush goes through SetupMatrixOrgAngles in the
+        // engine. Its cos(0) approximation leaves the diagonal a few ULPs off
+        // one. Canonicalize only the pose key, not the geometry transform: keep
+        // translation and every nonzero rotation exact for moved receivers.
+        auto &pose = constants.cHlightModelToWorld;
+        if (!pose[0][1] && !pose[0][2] && !pose[1][0] && !pose[1][2] && !pose[2][0] && !pose[2][1] &&
+            fabsf(pose[0][0]-1) <= 4*FLT_EPSILON && fabsf(pose[1][1]-1) <= 4*FLT_EPSILON && fabsf(pose[2][2]-1) <= 4*FLT_EPSILON)
+            pose[0][0] = pose[1][1] = pose[2][2] = 1;
         memcpy(constants.cHlightStyles,s.views.back().values.data(),sizeof(constants.cHlightStyles));
         if (!pipeline.UploadTransient(&constants,sizeof(constants),512,256,fence,page.constantsAddress)) { s.Fail("Highres lightmaps: draw constants residency failed"); return false; }
         page.constantsFence=fence; page.constantsView=s.views.back().serial;
