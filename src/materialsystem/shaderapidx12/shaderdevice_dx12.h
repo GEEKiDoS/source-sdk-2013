@@ -467,6 +467,8 @@ private:
 		int width = 0, height = 0;
 		uint64_t lastFence = 0;
 		bool suspended = false, occluded = false;
+		// ReleaseResources left exclusive fullscreen on a kept chain; the next resize re-enters it before ResizeBuffers.
+		bool fullscreenReleased = false;
 
 		~View() { ReleaseBackBuffers(); }
 

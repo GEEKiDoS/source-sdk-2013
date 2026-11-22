@@ -1069,7 +1069,11 @@ bool CShaderDeviceDX12::CreateView( View &view, HWND hWnd, int nWidth, int nHeig
 	HRESULT hr = pFactory->CreateSwapChainForHwnd( m_pQueue.Get(), hWnd, &desc, nullptr, nullptr, &swap );
 	if ( FAILED( hr ) )
 	{
-		Warning( "ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n", static_cast<unsigned>( hr ) );
+		// E_ACCESSDENIED: the HWND still owns a flip-model chain, typically one this device released while an
+		// injected overlay/capture hook kept a reference to it.
+		Warning( hr == E_ACCESSDENIED ?
+			"ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x): the window still has a swap chain (an overlay or capture hook holds the previous one)\n" :
+			"ShaderAPIDX12: CreateSwapChainForHwnd failed (0x%08x)\n", static_cast<unsigned>( hr ) );
 		return false;
 	}
 	if ( FAILED( swap.As( &view.swap ) ) )
@@ -1149,6 +1153,12 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight, bool bF
 	if ( FAILED( view.swap->GetDesc1( &old ) ) )
 		return false;
 	m_FrameGen.BeforeResize( view.swap.Get() );
+	if ( view.fullscreenReleased )
+	{
+		view.fullscreenReleased = false;
+		if ( !m_bWindowed && !CheckDevice( "SetFullscreenState", view.swap->SetFullscreenState( TRUE, nullptr ) ) )
+			return false;
+	}
 	HRESULT hr = view.swap->ResizeBuffers( kBackBufferCount, nWidth, nHeight, m_PresentFormat, old.Flags );
 	if ( !CheckDevice( "ResizeBuffers", hr ) )
 		return false;
@@ -2103,8 +2113,21 @@ void CShaderDeviceDX12::ReleaseResources()
 		pView->sceneRTVHeap.Reset();
 		pView->sceneDSVHeap.Reset();
 		if ( pView->swap && !m_bWindowed )
+		{
 			pView->swap->SetFullscreenState( FALSE, nullptr );
-		m_FrameGen.ReleaseSwapChain( pView->swap );
+			pView->fullscreenReleased = true;
+		}
+		// A native chain is kept and resized back on reacquire: overlay and capture hooks commonly hold a reference to
+		// the chain they hooked, so a released chain can outlive this device's reference and keep the HWND bound,
+		// failing the replacement's CreateSwapChainForHwnd with E_ACCESSDENIED. Provider-adopted chains are torn
+		// down with their frame-generation features (ReleaseFrameGenResources relies on that).
+		if ( m_FrameGen.Kind() != FrameGenKindDX12::None )
+		{
+			m_FrameGen.ReleaseSwapChain( pView->swap );
+			pView->fullscreenReleased = false;
+		}
+		else
+			pView->suspended = true;
 	}
 }
 
@@ -2119,16 +2142,19 @@ void CShaderDeviceDX12::ReacquireResources()
 		return;
 	}
 	for ( View *pView : m_Views )
-		if ( !pView->swap )
+	{
+		if ( pView->swap && !pView->suspended )
+			continue;
+		RECT rect{};
+		GetClientRect( pView->hwnd, &rect );
+		const int nWidth = rect.right - rect.left, nHeight = rect.bottom - rect.top;
+		const bool bOk = pView->swap ? ResizeView( *pView, nWidth, nHeight, true ) : CreateView( *pView, pView->hwnd, nWidth, nHeight );
+		if ( !bOk )
 		{
-			RECT rect{};
-			GetClientRect( pView->hwnd, &rect );
-			if ( !CreateView( *pView, pView->hwnd, rect.right - rect.left, rect.bottom - rect.top ) )
-			{
-				FailDevice( "reacquire view", E_FAIL );
-				return;
-			}
+			FailDevice( "reacquire view", E_FAIL );
+			return;
 		}
+	}
 }
 
 //-----------------------------------------------------------------------------
