@@ -1039,6 +1039,16 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 	uint entryCount = 1;
 	float distance = dot( r.positionWS - cEyePosition.xyz, cViewForward.xyz );
 	float farDistance = cSunTravel.w;
+	// The private chart includes the receiver's own mesh. At the smooth terminator
+	// even the center PCF has lateral extent (the bilinear quad). Start that
+	// footprint outside the faceted surface, along the projected vertex normal.
+	// Moving perpendicular to travel leaves the independent axial bias unchanged.
+	float3 cascadePosition = r.positionWS;
+	if ( cShadowDepthRecords[0].w > 0.0 )
+	{
+		float3 lateral = r.vertexNormalWS - cSunTravel.xyz * dot( r.vertexNormalWS, cSunTravel.xyz );
+		cascadePosition += lateral * ( 2.0 * cShadowDepthRecords[0].z );
+	}
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0 && farDistance > cEyePosition.w && distance >= cEyePosition.w && distance < farDistance )
 	{
 		uint first = ShadowMap_Cascade( distance );
@@ -1055,8 +1065,8 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 				blend = saturate( ( distance - ( split - width ) ) / ( 2.0 * width ) );
 			}
 		}
-		bool firstValid = ShadowMap_SunMapValid( first, r.positionWS, r.planeNormalWS );
-		bool secondValid = second != first && ShadowMap_SunMapValid( second, r.positionWS, r.planeNormalWS );
+		bool firstValid = ShadowMap_SunMapValid( first, cascadePosition, r.planeNormalWS );
+		bool secondValid = second != first && ShadowMap_SunMapValid( second, cascadePosition, r.planeNormalWS );
 		if ( firstValid || secondValid )
 		{
 			float coverage = 1.0 - smoothstep( 0.9 * farDistance, farDistance, distance );
@@ -1093,7 +1103,7 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 		uint mapIndex = entry == 0 ? map0 : entry == 1 ? map1 : map2;
 		float3 mapResult = float3( invalidVisibility, 0.0, 0.0 );
 		// The chart's validity is ShadowMap_SunMapValid's: one evaluation of the projection test per entry.
-		ShadowMapSunChart c = ShadowMap_MakeSunChart( mapIndex, r.positionWS, r.planeNormalWS );
+		ShadowMapSunChart c = ShadowMap_MakeSunChart( mapIndex, mapIndex < DX12_SHADOW_CSM_CASCADES ? cascadePosition : r.positionWS, r.planeNormalWS );
 		if ( c.valid )
 		{
 			float2 diagnostics;
@@ -1281,8 +1291,10 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		// A zero dilated baked bound makes visibility exactly zero under either cap. Keep real map evaluation
 		// for blocker/radius debug views, which observe diagnostics even when capped.
 		bool sunDiagnostics = cShadowView0.w == 5 || cShadowView0.w == 6;
+		// In the private chart, let the smooth lighting lobe, not the sign of a
+		// triangle's flat normal, handle the terminator.
 		[branch] if ( ( r.bakedSunDilated != 0.0 || sunDiagnostics ) &&
-			( s.mode == 4 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) )
+			( s.mode == 4 || cShadowDepthRecords[0].w > 0.0 || dot( r.planeNormalWS, -cSunTravel.xyz ) > 0.0 ) )
 		{
 			sunResult = float3( 1.0, 0.0, 0.0 );
 			[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_UNSHADOWED ) == 0 )

@@ -2821,6 +2821,13 @@ bool AddViewModelSelfShadow( CShadowViewData &data, const SunCascadeTargets_t &s
 		scene.skyClip=NULL; scene.skyRegion=-1;
 		++g_FrameDepthRenders; ++data.stats.depthRenders; ++data.stats.dynamicRedraws;
 		ViewRender_DrawShadowMapScene(scene);
+		// DX12Position in the studio depth shader moves clip.xy by (+1,-1)/viewportSize
+		// for D3D9 raster compatibility. Match its texel centers in the private receiver
+		// chart: a half-texel XY error becomes a signed, face-dependent depth error
+		// in a receiver-plane comparison. This is independent of the axial acne bias.
+		const float halfPixelClip=1.0f/size;
+		constants.cSunWorldToClip[i][3]+=halfPixelClip;
+		constants.cSunWorldToClip[i][7]-=halfPixelClip;
 		// Axial bias always moves the comparison toward the sun. Normal bias
 		// moves back-facing triangles away from it at a smooth terminator.
 		constants.cShadowDepthRecords[i][3]=0.5f;
