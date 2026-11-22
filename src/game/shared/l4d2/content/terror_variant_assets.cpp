@@ -16,6 +16,8 @@
 #include "tier1/smartptr.h"
 #include "tier1/utlbuffer.h"
 #include "tier1/utldict.h"
+#include "l4d2/sound/terror_sound_gamedata.h"
+#include "l4d2/sound/terror_music.h"
 
 #if defined( CLIENT_DLL )
 #if defined( _WIN32 )
@@ -1780,8 +1782,23 @@ void RegisterSoundOverrides( const CUtlVector<Variant> &variants )
 		return;
 	// SDK2013 MP x64 VSoundEmitter002: slot 39 takes (this, path, preload)
 	// and calls the sound file loader as an override, matching the header.
+	// This runs after the emitter's own override phase, so it repeats that phase's
+	// GameData/music bookkeeping (CSoundEmitterSystem::AddSoundOverrides) itself.
+	bool added = false;
 	for ( const Variant &variant : variants )
-		if ( !variant.soundScript.IsEmpty() && filesystem->FileExists( variant.soundScript, "GAME" ) )
-			soundemitterbase->AddSoundOverrides( variant.soundScript, true );
+	{
+		if ( variant.soundScript.IsEmpty() || !filesystem->FileExists( variant.soundScript, "GAME" ) )
+			continue;
+		if ( !added )
+			InvalidateSoundGameDataHandles();
+		soundemitterbase->AddSoundOverrides( variant.soundScript, true );
+		AddSoundGameDataOverrides( variant.soundScript );
+		added = true;
+	}
+	if ( added )
+	{
+		RefreshSoundGameDataHandles();
+		InvalidateMusicSoundHashes();
+	}
 }
 } // namespace TerrorVariantAssets

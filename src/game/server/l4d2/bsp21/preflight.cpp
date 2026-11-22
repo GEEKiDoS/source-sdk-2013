@@ -42,7 +42,8 @@ static bool CheckFile( const wchar_t *path, const char *expected )
 	char actual[65];
 	for ( int i = 0; i < 32; ++i ) sprintf_s( actual + i * 2, 3, "%02x", digest[i] );
 	bool matches = !strcmp( actual, expected );
-	BspLog( "%s module SHA256 path=%ls expected=%s actual=%s", matches ? "PASS" : "REJECT", path, expected, actual );
+	if ( matches ) BspTrace( "PASS module SHA256 path=%ls", path );
+	else BspLog( "REJECT module SHA256 path=%ls expected=%s actual=%s", path, expected, actual );
 	return matches;
 }
 

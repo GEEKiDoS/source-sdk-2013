@@ -182,7 +182,7 @@ static FileHandle_t CubemapRuntimeOpen( void *self, const char *name, const char
 		if ( file != FILESYSTEM_INVALID_HANDLE )
 		{
 			if ( resolved ) *resolved = NULL; // There is no standalone VTF file to resolve.
-			BspLog( "Cubemap VTF source=%s bytes=%d name=%s", source, size, path );
+			BspTrace( "Cubemap VTF source=%s bytes=%d name=%s", source, size, path );
 			return file;
 		}
 	}
@@ -191,7 +191,7 @@ static FileHandle_t CubemapRuntimeOpen( void *self, const char *name, const char
 	if ( scoped )
 	{
 		if ( file != FILESYSTEM_INVALID_HANDLE )
-			BspLog( "Cubemap VTF source=native bytes=%u name=%s", FileSystem()->Size( file ), path );
+			BspTrace( "Cubemap VTF source=native bytes=%u name=%s", FileSystem()->Size( file ), path );
 		else BspLog( "Cubemap VTF source=missing name=%s", path );
 	}
 	return file;

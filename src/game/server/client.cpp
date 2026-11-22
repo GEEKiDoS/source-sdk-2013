@@ -399,31 +399,9 @@ void Host_Say( edict_t *pEdict, const CCommand &args, bool teamonly )
 void ClientPrecache( void )
 {
 #ifdef L4D2
-	// Native S08E2B0: shared assets were registered earlier by S08E0C0.
+	// Native S08E2B0: shared assets were registered earlier by S08E0C0. Its ForceExactFile
+	// registrations of the .ekv configs are omitted: this engine only warns on them (sv_pure owns consistency).
 	ClientGamePrecache();
-	char file[MAX_PATH];
-	for ( int i = 0; i < 3; ++i )
-	{
-		Q_snprintf( file, sizeof( file ), "cfg/cpu_level_%d_pc.ekv", i );
-		engine->ForceExactFile( file );
-		Q_snprintf( file, sizeof( file ), "cfg/cpu_level_%d_pc_ss.ekv", i );
-		engine->ForceExactFile( file );
-	}
-	for ( int i = 0; i < 4; ++i )
-	{
-		Q_snprintf( file, sizeof( file ), "cfg/gpu_level_%d_pc.ekv", i );
-		engine->ForceExactFile( file );
-	}
-	for ( int i = 0; i < 3; ++i )
-	{
-		Q_snprintf( file, sizeof( file ), "cfg/mem_level_%d_pc.ekv", i );
-		engine->ForceExactFile( file );
-	}
-	for ( int i = 0; i < 3; ++i )
-	{
-		Q_snprintf( file, sizeof( file ), "cfg/gpu_mem_level_%d_pc.ekv", i );
-		engine->ForceExactFile( file );
-	}
 #else
 	// Precache cable textures.
 	CBaseEntity::PrecacheModel( "cable/cable.vmt" );	

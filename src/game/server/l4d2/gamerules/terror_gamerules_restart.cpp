@@ -57,13 +57,13 @@ void CCSGameRules::CheckMapConditions()
 	while ( ( spot = gEntList.FindEntityByClassname( spot, "info_player_terrorist" ) ) != NULL )
 	{
 		if ( IsSpawnPointValid( spot, NULL ) ) ++m_iNumSpawnTerrorist;
-		else Warning( "Invalid terrorist spawnpoint at (%.1f,%.1f,%.1f)\n", spot->GetAbsOrigin().x,
+		else DevWarning( "Invalid terrorist spawnpoint at (%.1f,%.1f,%.1f)\n", spot->GetAbsOrigin().x,
 			spot->GetAbsOrigin().y, spot->GetAbsOrigin().z );
 	}
 	while ( ( spot = gEntList.FindEntityByClassname( spot, "info_zombie_spawn" ) ) != NULL )
 	{
 		if ( IsSpawnPointValid( spot, NULL ) ) ++m_iNumSpawnCT;
-		else Warning( "Invalid counterterrorist spawnpoint at (%.1f,%.1f,%.1f)\n", spot->GetAbsOrigin().x,
+		else DevWarning( "Invalid counterterrorist spawnpoint at (%.1f,%.1f,%.1f)\n", spot->GetAbsOrigin().x,
 			spot->GetAbsOrigin().y, spot->GetAbsOrigin().z );
 	}
 	if ( gEntList.FindEntityByClassname( NULL, "info_player_logo" ) ) m_bLogoMap = true;

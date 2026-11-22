@@ -166,11 +166,6 @@ void CCSWeaponInfo::Parse( KeyValues *pKeyValuesData, const char *szWeaponName )
 
 	Q_strncpy( m_szAddonModel, pKeyValuesData->GetString( "AddonModel", "" ), sizeof( m_szAddonModel ) );
 	Q_strncpy( m_szAddonAttachment, pKeyValuesData->GetString( "AddonAttachment", "" ), sizeof( m_szAddonAttachment ) );
-#ifndef CLIENT_DLL
-	char szScriptName[MAX_PATH];
-	Q_snprintf( szScriptName, sizeof( szScriptName ), "scripts/%s.txt", szWeaponName );
-	engine->ForceExactFile( szScriptName );
-#endif
 	m_iTier = pKeyValuesData->GetInt( "Tier", 0 );
 	Q_strncpy( m_szResponseRulesName, pKeyValuesData->GetString( "ResponseRulesName", "" ), sizeof( m_szResponseRulesName ) );
 	Q_strncpy( m_szMuzzleFlashEffect1stPerson, pKeyValuesData->GetString( "MuzzleFlashEffect_1stPerson", "" ), sizeof( m_szMuzzleFlashEffect1stPerson ) );

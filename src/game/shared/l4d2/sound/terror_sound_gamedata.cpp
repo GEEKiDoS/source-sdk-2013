@@ -343,10 +343,17 @@ public:
 			int entry = m_sounds.Find( name );
 			if ( entry == m_sounds.InvalidIndex() )
 			{
-				// An unobserved native add/rename is a missing provider, not
-				// proof that the new entry has no GameData.
-				entry = m_sounds.Insert( name, SoundEntry_t() );
-				Warning( "Sound GameData: unobserved native entry '%s'\n", name );
+				// A native add this side did not observe (the other DLL's override phase, e.g. weapon-variant
+				// scripts, shares this registry): resolve it from the script the registry selected, as Init does.
+				SoundEntry_t observed;
+				const char *source = soundemitterbase->GetSourceFileForSound( i );
+				const int root = source && source[0] ? Load( filesystem->FindOrAddFileName( source ), false ) : -1;
+				const SoundDefinition_t *definition = root < 0 ? NULL : m_roots[root]->FindFirst( name );
+				if ( definition )
+					observed.active = *definition;
+				else
+					Warning( "Sound GameData: unobserved native entry '%s' has no recoverable script\n", name );
+				entry = m_sounds.Insert( name, observed );
 			}
 			m_handles[i] = entry;
 			CSoundParametersInternal *parameters = soundemitterbase->InternalGetParametersForSound( i );

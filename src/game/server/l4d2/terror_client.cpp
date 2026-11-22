@@ -141,8 +141,6 @@ void ClientGamePrecache()
 	CBaseEntity::PrecacheScriptSound( "Bounce.PistolShell" );
 	CBaseEntity::PrecacheScriptSound( "Bounce.RifleShell" );
 	CBaseEntity::PrecacheScriptSound( "Bounce.ShotgunShell" );
-	engine->ForceExactFile( "scripts/dsp_presets.txt" );
-	engine->ForceExactFile( "scripts/instructor_lessons.txt" );
 }
 
 void GameStartFrame()

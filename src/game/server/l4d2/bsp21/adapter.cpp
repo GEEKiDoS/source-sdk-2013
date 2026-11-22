@@ -18,7 +18,9 @@
 #include "tier1/strtools.h"
 #include "l4d2/gamerules/terror_mode.h"
 
+// BspLog: rejections, failures and command results (always printed). BspTrace: routine success traces (developer only).
 static void BspLog( const char *format, ... );
+static void BspTrace( const char *format, ... );
 #include "preflight.cpp"
 
 // The engine/filesystem ABI is pinned; mounted content is structurally checked.
@@ -60,6 +62,12 @@ static void BspLog( const char *format, ... )
 	char message[1024];
 	va_list args; va_start(args,format); vsnprintf_s(message,sizeof(message),_TRUNCATE,format,args); va_end(args);
 	Msg("[BSP21] %s\n",message);
+}
+static void BspTrace( const char *format, ... )
+{
+	char message[1024];
+	va_list args; va_start(args,format); vsnprintf_s(message,sizeof(message),_TRUNCATE,format,args); va_end(args);
+	DevMsg("[BSP21] %s\n",message);
 }
 static __declspec(noreturn) void Fail( const char *reason )
 {
@@ -143,7 +151,7 @@ static bool MapValid( void *self, const char *name, bool quiet )
 	Close( file );
 	if ( !valid ) return false;
 	CopyString( &Engine<char>( 0x69FDC0 ), nativeName );
-	BspLog( "Map_IsValid accepted mounted BSP21 path=%s", nativeName );
+	BspTrace( "Map_IsValid accepted mounted BSP21 path=%s", nativeName );
 	return true;
 }
 
@@ -243,7 +251,7 @@ static uintptr_t DiskInit( void *model, const char *loadName )
 	Engine<void *>( 0x69FDA0 ) = &Engine<char>( 0x470BC8 );
 	g_SourceMap = true;
 	LoadLumpFiles();
-	BspLog( "CMapLoadHelper disk private header normalized map=%s revision=%u", name, g_Source.header.revision );
+	BspTrace( "CMapLoadHelper disk private header normalized map=%s revision=%u", name, g_Source.header.revision );
 	return reinterpret_cast< uintptr_t >( Engine<void *>( 0x69FDA0 ) );
 }
 typedef void (*MemoryFn)(void *,void *,void *,int,int);
@@ -297,7 +305,7 @@ static void MemoryInit( void *model, void *context, void *data, int size, int er
 	Function<void (*)(int)>( 0x1B8C80 )( 20 );
 	Engine<void *>( 0x69FDA0 ) = &Engine<char>( 0x470BC8 );
 	g_SourceMap = true;
-	BspLog( "CMapLoadHelper memory private header normalized map=%s prefix=%d", name, size );
+	BspTrace( "CMapLoadHelper memory private header normalized map=%s prefix=%d", name, size );
 }
 
 typedef bool (*DigestFn)(void *,const char *);
@@ -325,7 +333,7 @@ static __declspec(noinline) bool Digest( void *out, const char *name, bool md5 )
 	}
 	Close(file);
 	if ( md5 ) Function<void (*)(void *,void *)>(0x291DB0)(out,context);
-	BspLog("source %s computed from original bytes numeric lump order",md5?"MD5":"CRC32");
+	BspTrace("source %s computed from original bytes numeric lump order",md5?"MD5":"CRC32");
 	return true;
 }
 static bool CRC( void *out,const char *name ) { HookCall call; return Digest( out, name, false ); }
@@ -354,7 +362,7 @@ static intptr_t PakRead( void *self, void *out, intptr_t capacity, intptr_t size
 		Method<void (*)(void *,int64_t,int)>( file, 3 )( file, position, SEEK_SET );
 		if ( !valid ) return 0;
 		NormalizeHeader( out );
-		BspLog( "embedded-pak private header normalized; mounted source offsets unchanged" );
+		BspTrace( "embedded-pak private header normalized; mounted source offsets unchanged" );
 	}
 	return result;
 }
@@ -549,7 +557,7 @@ static __declspec(noinline) uintptr_t Worldlights( void *helper, bool hdr )
 	Put32( localHelper, count * 88 );
 	*reinterpret_cast< void ** >( localHelper + 24 ) = canonical.Base();
 	uintptr_t result = g_Worldlights( localHelper, hdr );
-	BspLog( "worldlights v1 map=%s decoded=%u native88 bytes=%u", g_SourceName, count, count * 88 );
+	BspTrace( "worldlights v1 map=%s decoded=%u native88 bytes=%u", g_SourceName, count, count * 88 );
 	return result;
 }
 static uintptr_t WorldlightsEntry( void *helper, bool hdr )
@@ -654,7 +662,7 @@ static bool LoadV20PropTints( const char *name, const void *sprp, int sprpBytes 
 				g_PropTint[prop].rgb[channel] = ( ( tints[prop].rgba >> ( channel * 8 ) ) & 0xff ) * ( 1.0f / 255.0f );
 		}
 		g_PropCount = propCount;
-		BspLog( "v20 prop tint lump map=%s count=%u", name, propCount );
+		BspTrace( "v20 prop tint lump map=%s count=%u", name, propCount );
 		return true;
 	}
 	return false;
@@ -720,14 +728,14 @@ static bool GameLoad( int id, void *data, int bytes )
 			Bsp21StaticPropV9ToSdkV10( native, p );
 	}
 	g_PropCount = g_Source.propCount;
-	BspLog( "sprp%u map=%s private manager view count=%u; RGB tint retained", g_Source.propVersion, g_SourceName, g_Source.propCount );
+	BspTrace( "sprp%u map=%s private manager view count=%u; RGB tint retained", g_Source.propVersion, g_SourceName, g_Source.propCount );
 	return true;
 }
 static void PropsShutdown( void *self )
 {
 	HookCall call;
 	g_PropsShutdown(self); g_PropCount=0;
-	BspLog("static prop shutdown tint state released");
+	BspTrace("static prop shutdown tint state released");
 }
 
 typedef int (*DrawFn)(void *,unsigned);
@@ -820,7 +828,7 @@ public:
 		if(!m_FS->AsyncSuspend()) { BspLog("REJECT filesystem AsyncSuspend"); return false; }
 		m_FSPaused=true;
 		if(g_pThreadPool) { g_pThreadPool->SuspendExecution(); m_PoolPaused=true; }
-		BspLog("QUIESCENCE render=%d filesystem=1 global_pool=%d main_thread=%lu",
+		BspTrace("QUIESCENCE render=%d filesystem=1 global_pool=%d main_thread=%lu",
 			m_MaterialLocked,m_PoolPaused,GetCurrentThreadId());
 		return true;
 	}
@@ -881,7 +889,7 @@ static bool ReleaseHooks()
 	// No cache entry can be published after the owner instructions are drained.
 	g_PackedVersions.RemoveAll();
 	g_HooksOwned=false;
-	BspLog("DRAIN all hook/native/trampoline calls complete; owner instruction windows clear");
+	BspTrace("DRAIN all hook/native/trampoline calls complete; owner instruction windows clear");
 	return true;
 }
 static bool ModulePath( const wchar_t *name, HMODULE module, wchar_t (&path)[MAX_PATH] )
@@ -987,7 +995,7 @@ bool L4D2_BSP21Install()
 		ReleaseSource(); FreeLibrary(g_OwnerModule); g_OwnerModule=NULL; return false;
 	}
 	g_Installed=true;
-	BspLog("INSTALL module-pinned BSP21/VPK readers hooks=%zu thread=%lu",hookCount,g_OwnerThread);
+	BspTrace("INSTALL module-pinned BSP21/VPK readers hooks=%zu thread=%lu",hookCount,g_OwnerThread);
 	return true;
 }
 bool L4D2_BSP21Remove()
@@ -1007,6 +1015,6 @@ bool L4D2_BSP21Remove()
 	ReleaseSource();
 	HMODULE owner=g_OwnerModule; g_OwnerModule=NULL; g_OwnerThread=0;
 	FreeLibrary(owner);
-	BspLog("REMOVE detours restored; source/owner retained resources released");
+	BspTrace("REMOVE detours restored; source/owner retained resources released");
 	return true;
 }
