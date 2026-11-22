@@ -10,9 +10,7 @@
 #include "tier2/riff.h"
 #include "soundchars.h"
 #include "SoundEmitterSystem/isoundemittersystembase.h"
-#if defined( GAME_DLL )
 #include "filesystem.h"
-#endif
 #include "tier0/memdbgon.h"
 
 extern ISoundEmitterSystemBase *soundemitterbase;
@@ -49,6 +47,35 @@ public:
 	CMusicSoundHashes() : CAutoGameSystem( "MusicSoundHashes" ), m_hashes( DefLessFunc( unsigned int ) ), m_built( false ) {}
 	void Invalidate() { m_hashes.RemoveAll(); m_built = false; s_musicWaveLoops.RemoveAll(); }
 	virtual void LevelShutdownPostEntity() { Invalidate(); }
+#ifdef CLIENT_DLL
+	void LevelInitPostEntity() override
+	{
+		// Per-map trace manifest. Prefetch only observed waves through the
+		// sound system; don't retain a second copy of their PCM here.
+		char map[MAX_PATH], path[MAX_PATH];
+		V_FileBase( engine->GetLevelName(), map, sizeof( map ) );
+		V_snprintf( path, sizeof( path ), "scripts/horde_precache/%s.txt", map );
+		FileHandle_t file = filesystem->Open( path, "rb", "GAME" );
+		if ( !file )
+			return;
+		Find( 0 );
+		char wave[MAX_PATH];
+		int count = 0;
+		while ( count < 1024 && filesystem->ReadLine( wave, sizeof( wave ), file ) )
+		{
+			V_StripTrailingWhitespace( wave );
+			const char *ext = V_GetFileExtension( wave );
+			if ( !ext || V_stricmp( ext, "wav" ) || V_IsAbsolutePath( wave ) || V_strstr( wave, ".." ) || V_strchr( wave, ':' ) )
+				continue;
+			CBaseEntity::PrefetchSound( wave );
+			if ( !V_strnicmp( wave, "music/", 6 ) )
+				IsMusicSoundLooping( wave );
+			++count;
+		}
+		filesystem->Close( file );
+		DevMsg( "Horde sound prefetch: %d waves for %s\n", count, map );
+	}
+#endif
 	const char *Find( unsigned int hash )
 	{
 		if ( !m_built )

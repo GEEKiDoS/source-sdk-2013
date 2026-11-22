@@ -779,28 +779,35 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		return;
 	const uint64_t before = g_FirstUse.decodes.load();
 	const double start = Plat_FloatTime();
-	CUtlString error;
+	CUtlMap<ShaderVcsFile *, bool> warmFiles( DefLessFunc( ShaderVcsFile * ) );
 	FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )
 	{
 		const NamedShaderKey &key = m_NamedShaderReferences.Key( entry );
 		if ( !m_NamedShaderReferences[entry] || key.staticIndex < 0 )
 			continue;
 		ShaderVcsFile *file = OpenNamedShader( key.name.String(), key.pixel );
-		if ( !file )
-			continue;
-		ComboFoldProjectionDX12 projection{};
-		if ( file->ComboFold() && !ProjectComboFoldDX12( *file->ComboFold(), key.staticIndex, 0, projection ) )
-			continue;
-		file->LoadStaticCombo( file->ComboFold() ? projection.staticIndex : uint32_t( key.staticIndex ), error );
+		if ( file )
+			warmFiles.InsertOrReplace( file, true );
 	}
-	// Screen effects are not world material snapshots. Their first invocation
-	// on damage opens the legacy post shaders, including their dynamic combos.
-	static const char *const post[] = { "terror_post_prepare_ps20b", "terror_engine_post_ps20b" };
-	for ( const char *name : post )
+	// Procedural detail and damage effects need not have a material snapshot yet.
+	static const struct { const char *name; bool pixel; } effects[] =
 	{
-		ShaderVcsFile *file = OpenNamedShader( name, true );
+		{ "terror_post_prepare_ps20b", true }, { "terror_engine_post_ps20b", true },
+		{ "screenspaceeffect_vs20", false }, { "dx12_detailshadowlit_vs51", false },
+		{ "dx12_detailshadowlit_ps51", true }
+	};
+	for ( const auto &effect : effects )
+	{
+		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
+		if ( file )
+			warmFiles.InsertOrReplace( file, true );
+	}
+	CUtlString error;
+	FOR_EACH_MAP( warmFiles, it )
+	{
+		ShaderVcsFile *file = warmFiles.Key( it );
 		uint32_t index;
-		for ( size_t i = 0; file && file->StaticComboIndex( i, index ); ++i )
+		for ( size_t i = 0; file->StaticComboIndex( i, index ); ++i )
 			file->LoadStaticCombo( index, error );
 	}
 	Msg( "DX12 level shader warmup: %llu canonical records in %.2f ms\n", g_FirstUse.decodes.load() - before, ( Plat_FloatTime() - start ) * 1000.0 );

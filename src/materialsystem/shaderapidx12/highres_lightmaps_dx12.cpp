@@ -1262,12 +1262,15 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
     {
         std::lock_guard<std::recursive_mutex> lock(s.mutex);
         if (s.device) s.device->RequestMapMemoryReport();
-        if (s.api) s.api->WarmLevelShaderCombos();
         // Same predicate the material DLL snapshots with (DX12ShadowmapSnapshot::Select). The engine cached this load's
         // materials before the domain existed (ordinary); materials kept from a receiver map carry receiver snapshots.
         const bool receiver = s.status.state==DX12_HIGHRES_PENDING || s.status.state==DX12_HIGHRES_READY ||
             s.status.state==DX12_HIGHRES_REJECTED || (s.device && s.device->Lighting().ReceiverFeatureGeneration());
-        if (!materials || !s.device || (!receiver && !s.receiverSnapshots)) return;
+        if (!materials || !s.device || (!receiver && !s.receiverSnapshots))
+        {
+            if (s.api) s.api->WarmLevelShaderCombos();
+            return;
+        }
         s.receiverSnapshots = receiver;
     }
     // Re-snapshot without reparsing VMTs, before R_LevelInit builds world meshes from the materials' vertex formats.
@@ -1280,6 +1283,7 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
         if (material && material->IsPrecached()) material->RefreshPreservingMaterialVars();
     }
     COM_TimestampedLog("Highres lightmaps: material snapshots - end");
+    if (s.api) s.api->WarmLevelShaderCombos();
 }
 void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtlas> atlas)
 {
