@@ -190,7 +190,8 @@ struct State
     uintptr_t engine = 0, materialModule = 0;
     IMaterialSystem *materials = nullptr;
     IHlightNativeSink *sink = nullptr;
-    bool supported = false, callbacks = false, ownsMinHook = false;
+    std::atomic<bool> supported{false};
+    bool installed = false, callbacks = false, ownsMinHook = false;
     bool faceScope = false, loadAnnounced = false;
     uint32 selectedFace = hlight::kMissing, selectedLighting = hlight::kMissing;
     char compatibility[256] = "High-resolution lightmaps: native bridge is not initialized";
@@ -244,6 +245,7 @@ bool CreateExpandedCallArena(QueuedCallArena &arena)
 
 bool QueuedCallArenaInitHook(QueuedCallArena *arena, uint32 capacity, uint32 commitStep, uint32 initialCommit, uint32 alignment)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&QueuedCallArenaInitHook)>(g_Hooks[10].original)(arena, capacity, commitStep, initialCommit, alignment);
     using Init = bool (*)(QueuedCallArena *, uint32, uint32, uint32, uint32);
     const Init init = reinterpret_cast<Init>(g_QueuedCallArenaInit.original);
     const uintptr_t address = reinterpret_cast<uintptr_t>(arena);
@@ -428,6 +430,7 @@ void ReplayQueuedContext(IMatRenderContext *context)
 
 void QueuedMeshLockHook(void *mesh, int vertices, int indices, MeshDesc_t &desc)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&QueuedMeshLockHook)>(g_Hooks[9].original)(mesh, vertices, indices, desc);
     using Original = void (*)(void *, int, int, MeshDesc_t &);
     auto original = reinterpret_cast<Original>(g_Hooks[9].original);
     if (g.capture.load(std::memory_order_acquire))
@@ -1122,6 +1125,7 @@ void PatchLump(void *helper, uint32 requested)
 }
 void *LumpHook(void *helper, uint32 lump)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&LumpHook)>(g_Hooks[8].original)(helper, lump);
     const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
     void *result = reinterpret_cast<void *(*)(void *, uint32)>(g_Hooks[8].original)(helper, lump);
     OwnedWork([&] { RecordLump(helper, lump, caller); PatchLump(helper, lump); return true; });
@@ -1129,6 +1133,7 @@ void *LumpHook(void *helper, uint32 lump)
 }
 void FaceLoadHook()
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&FaceLoadHook)>(g_Hooks[0].original)();
     const bool transaction = BeginTransaction();
     if (transaction) Retire();
     g.faceScope = true; g.selectedFace = hlight::kMissing;
@@ -1140,6 +1145,7 @@ void FaceLoadHook()
 }
 void LevelInitHook()
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&LevelInitHook)>(g_Hooks[1].original)();
     const bool transaction = BeginTransaction();
     if (transaction && !g.dataPoolsReported)
     {
@@ -1176,6 +1182,7 @@ void LevelInitHook()
 }
 void GeometryHook(bool client)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&GeometryHook)>(g_Hooks[2].original)(client);
     const bool enhanced = g.capture.load(std::memory_order_acquire);
     const bool transaction = enhanced && BeginTransaction();
     const bool outer = transaction && g.transactionDepth == 1;
@@ -1194,6 +1201,7 @@ void GeometryHook(bool client)
 }
 void UnloadHook(void *loader, void *model)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&UnloadHook)>(g_Hooks[3].original)(loader, model);
     const uintptr_t p = reinterpret_cast<uintptr_t>(model);
     const bool brush = Readable(p, 0x24) && Load<int>(p + 0x20) == 1;
     const bool transaction = brush && BeginTransaction();
@@ -1212,6 +1220,7 @@ void UnloadHook(void *loader, void *model)
 }
 void BuildHook(void *dlights, void *surface, const void *matrix, uint32 mask, bool bump, bool base)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&BuildHook)>(g_Hooks[4].original)(dlights, surface, matrix, mask, bump, base);
     using Original = void (*)(void *, void *, const void *, uint32, bool, bool);
     auto original = reinterpret_cast<Original>(g_Hooks[4].original);
     if (!g.capture.load(std::memory_order_acquire)) { original(dlights, surface, matrix, mask, bump, base); return; }
@@ -1263,6 +1272,7 @@ void BuildHook(void *dlights, void *surface, const void *matrix, uint32 mask, bo
 }
 bool PlanarHook(void *light, void *surface, const float *position, float perpendicular, float radius)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&PlanarHook)>(g_Hooks[5].original)(light, surface, position, perpendicular, radius);
     BeforeAccumulator(surface, nullptr);
     const bool result = reinterpret_cast<bool (*)(void *, void *, const float *, float, float)>(g_Hooks[5].original)(light, surface, position, perpendicular, radius);
     AfterAccumulator();
@@ -1270,12 +1280,14 @@ bool PlanarHook(void *light, void *surface, const float *position, float perpend
 }
 void BumpedHook(void *light, void *surface, const float *position, float perpendicular, float radius, const float *basis, const float *base)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&BumpedHook)>(g_Hooks[6].original)(light, surface, position, perpendicular, radius, basis, base);
     BeforeAccumulator(surface, nullptr);
     reinterpret_cast<void (*)(void *, void *, const float *, float, float, const float *, const float *)>(g_Hooks[6].original)(light, surface, position, perpendicular, radius, basis, base);
     AfterAccumulator();
 }
 void DisplacementHook(void *displacement, void *lights, uint32 mask)
 {
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&DisplacementHook)>(g_Hooks[7].original)(displacement, lights, mask);
     BeforeAccumulator(nullptr, displacement);
     reinterpret_cast<void (*)(void *, void *, uint32)>(g_Hooks[7].original)(displacement, lights, mask);
     AfterAccumulator();
@@ -1308,31 +1320,29 @@ void RestoreCallback(int)
         EndTransaction();
     }
 }
-void RemoveHooks()
+bool RemoveHooks()
 {
     bool queued = true;
     for (const auto &hook : g_Hooks)
         if (hook.created) queued = (MH_QueueDisableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
     if (!queued || MH_ApplyQueued() != MH_OK)
-        Error("High-resolution lightmaps: cannot safely disable native entry hooks\n");
+        return false;
     for (auto &hook : g_Hooks)
     {
         if (hook.created && MH_RemoveHook(reinterpret_cast<void *>(HookTarget(hook))) != MH_OK)
-            Error("High-resolution lightmaps: cannot release disabled native entry hook\n");
+            return false;
         hook.created = false; hook.original = nullptr;
     }
-    if (g.ownsMinHook) MH_Uninitialize();
+    if (g.ownsMinHook && MH_Uninitialize() != MH_OK) return false;
     g.ownsMinHook = false;
+    return true;
 }
 }
 
 namespace HlightEngineBridge
 {
-bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
+static bool InstallHooks()
 {
-    if (g.supported) return materials == g.materials && sink == g.sink;
-    if (!materials || !sink || !ThreadInMainThread())
-    { V_strncpy(g.compatibility, "High-resolution lightmaps: bridge requires main-thread material-system initialization", sizeof(g.compatibility)); return false; }
     const HMODULE engine = GetModuleHandleW(L"engine.dll"), material = GetModuleHandleW(L"materialsystem.dll");
     if (!engine || !material)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: installed engine/material system unavailable", sizeof(g.compatibility)); return false; }
@@ -1345,27 +1355,21 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
         { V_strncpy(g.compatibility, "High-resolution lightmaps: native entry signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     if (!EntryMatches(g.materialModule + kNativeQueueReplay, "405356415641574883ec38488b0586fe0c004c8db17803000033db48897c2468"))
     { V_strncpy(g.compatibility, "High-resolution lightmaps: native queue replay signature differs from the supported profile", sizeof(g.compatibility)); return false; }
-    const uintptr_t currentBrush = Load<uintptr_t>(g.engine + kWorldBrush);
-    const bool lateAttach = Readable(currentBrush, 256) && Load<int>(currentBrush + 216) != 0;
     const bool canHookQueueArena = EntryMatches(HookTarget(g_QueuedCallArenaInit), g_QueuedCallArenaInit.bytes) &&
         EntryMatches(g.materialModule + 0xE076, "ba00008000c74424200400000041b90000040041b800000100488bcbe8399206");
-    if (!canHookQueueArena) QueueArenaWarningOnce("queued-context factory signature differs; new contexts keep the SDK size");
+    if (!canHookQueueArena)
+    { V_strncpy(g.compatibility, "High-resolution lightmaps: queued-context initializer signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     const MH_STATUS init = MH_Initialize();
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook initialization failed", sizeof(g.compatibility)); return false; }
-    g.ownsMinHook = init == MH_OK; g.materials = materials; g.sink = sink;
+    g.ownsMinHook = init == MH_OK;
     for (auto &hook : g_Hooks)
     {
-        if (&hook == &g_QueuedCallArenaInit && !canHookQueueArena) continue;
-        if (MH_CreateHook(reinterpret_cast<void *>(HookTarget(hook)), hook.detour, &hook.original) != MH_OK)
+        const MH_STATUS status = MH_CreateHook(reinterpret_cast<void *>(HookTarget(hook)), hook.detour, &hook.original);
+        if (status != MH_OK)
         {
-            if (&hook == &g_QueuedCallArenaInit)
-            {
-                QueueArenaWarningOnce("could not install the queued-context initializer hook");
-                continue;
-            }
             RemoveHooks();
-            V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook creation failed", sizeof(g.compatibility));
+            V_snprintf(g.compatibility, sizeof(g.compatibility), "High-resolution lightmaps: entry-hook creation failed at RVA %zx (%s)", hook.rva, MH_StatusToString(status));
             return false;
         }
         hook.created = true;
@@ -1375,6 +1379,35 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
         if (hook.created) queued = (MH_QueueEnableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
     if (!queued || MH_ApplyQueued() != MH_OK)
     { RemoveHooks(); V_strncpy(g.compatibility, "High-resolution lightmaps: atomic entry-hook activation failed", sizeof(g.compatibility)); return false; }
+    return true;
+}
+extern "C" __declspec(dllexport) bool HlightBridge_EarlyInstall(char *error, size_t bytes)
+{
+    g.installed = InstallHooks();
+    if (error && bytes) strncpy_s(error, bytes, g.installed ? "" : g.compatibility, _TRUNCATE);
+    return g.installed;
+}
+// LauncherMain can fail or return before a renderer is activated.
+extern "C" __declspec(dllexport) bool HlightBridge_RetirePreload()
+{
+    if (g.supported.load()) return false;
+    return !g.ownsMinHook || RemoveHooks();
+}
+bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
+{
+    if (g.supported) return materials == g.materials && sink == g.sink;
+    if (!materials || !sink || !ThreadInMainThread())
+    { V_strncpy(g.compatibility, "High-resolution lightmaps: bridge requires main-thread material-system initialization", sizeof(g.compatibility)); return false; }
+    if (!g.installed)
+    {
+        char loadError[160] = {};
+        if (GetEnvironmentVariableA("HLIGHT_PRELOAD_ERROR", loadError, sizeof(loadError)))
+            V_snprintf(g.compatibility, sizeof(g.compatibility), "High-resolution lightmaps: %s", loadError);
+        return false;
+    }
+    g.materials = materials; g.sink = sink;
+    const uintptr_t currentBrush = Load<uintptr_t>(g.engine + kWorldBrush);
+    const bool lateAttach = Readable(currentBrush, 256) && Load<int>(currentBrush + 216) != 0;
     g.builtinArenaFailure = lateAttach ? "world already loaded during device initialization" : EnlargeBuiltinCallArenas();
     if (!lateAttach)
         SizeRenderDataPools();
@@ -1394,9 +1427,11 @@ void Shutdown()
         g.materials->RemoveReleaseFunc(&ReleaseCallback);
         g.callbacks = false;
     }
-    RemoveHooks();
+    g.supported.store(false, std::memory_order_release);
+    if (!RemoveHooks()) Error("High-resolution lightmaps: cannot retire native entry hooks\n");
+    g.installed = false;
     EndTransaction();
-    g.supported = false; g.sink = nullptr; g.materials = nullptr;
+    g.sink = nullptr; g.materials = nullptr;
     g.lastDomain.reset(); g.identityPresent = {}; g.observedMap[0] = 0;
     g.beforeRGB.clear(); g.finalRGB.clear(); g.scratchLuxels = 0;
     V_strncpy(g.compatibility, "High-resolution lightmaps: native bridge is shut down", sizeof(g.compatibility));

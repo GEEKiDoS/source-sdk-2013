@@ -167,6 +167,7 @@ typedef CreateInterfaceFn ( *GetPackFactoryFn )( void * );
 static GetPackFactoryFn g_GetPackFactory;
 static CreateInterfaceFn GetCubemapPackFactory( void *module )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_GetPackFactory( module );
 	const void *caller = _ReturnAddress();
 	HookCall call;
 	if ( g_CubemapBuild && caller == reinterpret_cast<void *>( g_Engine + kBuildPackFactoryReturn ) )
@@ -178,6 +179,7 @@ typedef bool ( *CubemapWritableFn )( void *, const char *, const char * );
 static CubemapWritableFn g_CubemapWritable;
 static bool CubemapWritable( void *self, const char *name, const char *pathID )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CubemapWritable( self, name, pathID );
 	const void *caller = _ReturnAddress();
 	HookCall call;
 	if ( g_CubemapBuild && caller == reinterpret_cast<void *>( g_Engine + kBuildWritableReturn ) &&
@@ -191,6 +193,7 @@ static CubemapFullPathFn g_CubemapFullPath;
 static const char *CubemapFullPath( void *self, const char *name, const char *pathID, char *dest,
 	int size, PathTypeFilter_t filter, PathTypeQuery_t *type )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CubemapFullPath( self, name, pathID, dest, size, filter, type );
 	const void *caller = _ReturnAddress();
 	HookCall call;
 	if ( caller != reinterpret_cast<void *>( g_Engine + kBuildWritePathReturn ) )
@@ -259,6 +262,7 @@ typedef void ( *BuildCubemapsFn )( int );
 static BuildCubemapsFn g_BuildCubemaps;
 static void BuildCubemaps( int bounces )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_BuildCubemaps( bounces );
 	HookCall call;
 	const char *bsp = &Engine<char>( kBuildMapName );
 	if ( g_CubemapBuild || !ThreadInMainThread() ) return;

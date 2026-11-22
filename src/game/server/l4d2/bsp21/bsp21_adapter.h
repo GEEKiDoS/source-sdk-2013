@@ -2,7 +2,9 @@
 #define L4D2_BSP21_ADAPTER_H
 #pragma once
 
-// Sole process owner: call on the engine main thread during server DLLInit,
+// Client detours are installed dormant by the launcher before LauncherMain.
+// srcds_win64.exe bypasses the launcher and installs at DLLInit instead.
+// Activate on the engine main thread during server DLLInit,
 // after interfaces exist but BEFORE addon/mission reads. The pinned engine
 // initializes the server before the client. Never call from DllMain.
 // Guards the engine/filesystem ABI, corrects VPK v1 embedded-data offsets, and

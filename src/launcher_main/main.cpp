@@ -432,6 +432,48 @@ static void HandleRelaunching()
 #endif
 }
 
+#if defined( _WIN64 ) && defined( L4D2 )
+// Keep the owners and their target images mapped until LauncherMain returns.
+// In particular, never let a failed activation unload code behind a live detour.
+static void InstallOwnerHooks( HMODULE owner, const char *entry, const char *errorVariable, const char *missingTarget )
+{
+	char reason[256] = {};
+	typedef bool (*Installer)( char *, size_t );
+	Installer install = owner ? reinterpret_cast<Installer>( GetProcAddress( owner, entry ) ) : NULL;
+	if ( missingTarget )
+		sprintf_s( reason, "failed to preload SDK %s", missingTarget );
+	else if ( !install )
+		sprintf_s( reason, "%s %s failed (Win32 %lu)", entry, owner ? "lookup" : "owner load", GetLastError() );
+	else
+	{
+		install( NULL, 0 ); // Owner stores its own failure for activation.
+	}
+	// The owner retains installation diagnostics. Also cover load/lookup failures
+	// where the owner has not had an opportunity to record anything itself.
+	SetEnvironmentVariableA( errorVariable, reason[0] ? reason : NULL );
+}
+// Release in dependency order, including the launcher.dll load-failure exit.
+struct PreloadedModules
+{
+	HMODULE filesystem = NULL, material = NULL, server = NULL, renderer = NULL;
+	static bool Retire( HMODULE owner, const char *entry )
+	{
+		if ( !owner ) return true;
+		auto retire = reinterpret_cast<bool (*)()>( GetProcAddress( owner, entry ) );
+		if ( retire && !retire() ) return false;
+		FreeLibrary( owner );
+		return true;
+	}
+	~PreloadedModules()
+	{
+		const bool rendererDone = Retire( renderer, "HlightBridge_RetirePreload" );
+		const bool serverDone = Retire( server, "L4D2_BSP21_RetirePreload" );
+		if ( rendererDone && material ) FreeLibrary( material );
+		if ( serverDone && filesystem ) FreeLibrary( filesystem );
+	}
+};
+#endif
+
 int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow )
 {
 	// Per-monitor DPI awareness V2 before any window exists, so Windows never bitmap-scales the game window.
@@ -564,6 +606,21 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 		MessageBoxA( 0, "Unsupported SDK audio cache implementation. Not launching with writable Steam content.", "Launcher Error", MB_OK );
 		return 1;
 	}
+	PreloadedModules preloads;
+	const std::string sdkBin = std::string( szGameInstallDir ) + "\\bin\\x64\\";
+	preloads.filesystem = Launcher_LoadModule( (sdkBin + "filesystem_stdio.dll").c_str() );
+	preloads.material = Launcher_LoadModule( (sdkBin + "materialsystem.dll").c_str() );
+	const std::string serverPath = std::string( pRootDir ) + "\\mod_l4d2\\bin\\x64\\server.dll";
+	preloads.server = Launcher_LoadModule( serverPath.c_str() );
+	InstallOwnerHooks( preloads.server, "L4D2_BSP21_EarlyInstall", "BSP21_PRELOAD_ERROR",
+		preloads.filesystem ? NULL : "filesystem_stdio.dll" );
+	if ( bDx12Requested )
+	{
+		preloads.renderer = LoadLibraryExW( sRendererDll.c_str(), NULL, LOAD_WITH_ALTERED_SEARCH_PATH );
+		InstallOwnerHooks( preloads.renderer, "HlightBridge_EarlyInstall", "HLIGHT_PRELOAD_ERROR",
+			preloads.material ? NULL : "materialsystem.dll" );
+	}
+
 #endif
 
 	// Assemble the full path to our "launcher.dll"

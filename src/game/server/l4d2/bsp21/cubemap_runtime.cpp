@@ -65,6 +65,7 @@ typedef void (*CubemapWorldFn)( void *, void * );
 static CubemapWorldFn g_CubemapLoad;
 static void CubemapRuntimeLoad( void *loader, void *world )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CubemapLoad( loader, world );
 	HookCall call;
 	// The native brush-model dispatcher already gave the BSP pak PATH_ADD_TO_HEAD.
 	// Publish before LoadWorldGuts can download any VTFs (not just its sample loop).
@@ -91,6 +92,7 @@ typedef bool ( *CubemapUnmountFn )( void *, const char *, const char * );
 static CubemapUnmountFn g_CubemapUnmount;
 static bool CubemapRuntimeUnmount( void *self, const char *name, const char *pathID )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CubemapUnmount( self, name, pathID );
 	const void *caller = _ReturnAddress();
 	HookCall call;
 	// The DX12 bridge already hooks UnloadModel. Scope this to its native
@@ -140,6 +142,7 @@ static CubemapOpenFn g_CubemapOpen;
 static FileHandle_t CubemapRuntimeOpen( void *self, const char *name, const char *mode, unsigned flags,
 	const char *pathID, char **resolved )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CubemapOpen( self, name, mode, flags, pathID, resolved );
 	HookCall call;
 	// Native CTexture uses a plain binary read, with NULL or GAME path ID.
 	// Do not change writes, explicit paths, purity-tracked opens or other IDs.

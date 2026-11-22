@@ -218,11 +218,17 @@ supports live changes. Done / Escape / controller B returns to Video, saving
 through `mat_savechanges` and `host_writeconfig`. DX12-only rows are omitted
 under `-dx9`; other SDK games retain the four-tab GameUI dialog.
 
+On Win64 the L4D2 launcher installs the module redirects and audio-cache hook,
+then preloads the SDK hook targets and the mod's server and selected DX12
+renderer before entering `launcher.dll`. This leaves room for ordinary rel32
+trampolines. The BSP/VPK and high-resolution lightmap detours forward unchanged
+until server DLLInit and renderer initialization activate them, respectively.
+
 Dedicated hosting uses `srcds_win64.exe -console -game <absolute mod_l4d2 path>
 +sv_pure 0 +mp_gamemode coop +map c5m1_waterfront`. Preserve its native console
-input handle when redirecting output. The BSP/VPK readers select `dedicated.dll`
-for filesystem hooks; static-prop tint rendering hooks and material-system
-quiescence are client-host-only and are not installed on a dedicated server.
+input handle when redirecting output. This executable bypasses the mod launcher,
+so server DLLInit still installs the BSP/VPK hooks under quiescence, targeting
+`dedicated.dll` for filesystem hooks. Client rendering hooks are omitted.
 
 Configure the local mod once at deployment time, not once per harness run:
 

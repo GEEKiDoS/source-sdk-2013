@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #define WIN32_LEAN_AND_MEAN
+#include <atomic>
 #include <windows.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -31,7 +32,10 @@ static uintptr_t g_PakReturn;
 static const unsigned kSourceHeaderSize = sizeof( Bsp21Header );
 static Bsp21Layout g_Source;
 static char g_SourceName[MAX_PATH];
-static bool g_Installed, g_SourceMap;
+static std::atomic<bool> g_Active{false};
+static bool g_SourceMap;
+static char g_EarlyError[1024];
+static bool g_CapturingError;
 struct PropTint { uint32_t rgba; float rgb[3]; };
 static CUtlVector< PropTint > g_PropTint;
 static int g_PropCount;
@@ -61,6 +65,7 @@ static void BspLog( const char *format, ... )
 {
 	char message[1024];
 	va_list args; va_start(args,format); vsnprintf_s(message,sizeof(message),_TRUNCATE,format,args); va_end(args);
+	if ( g_CapturingError ) { if ( !g_EarlyError[0] ) strcpy_s( g_EarlyError, message ); return; }
 	Msg("[BSP21] %s\n",message);
 }
 static void BspTrace( const char *format, ... )
@@ -80,6 +85,7 @@ static void ResetCubemapBuild();
 static void CubemapRuntimeClear();
 static __declspec(noreturn) void AbortServer()
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) { g_AbortServer(); __assume(0); }
 	HookCall call;
 	if(!ThreadInMainThread()) Fail("native host abort outside serialized owner thread");
 	CubemapRuntimeClear();
@@ -130,6 +136,7 @@ static Bsp21Reader MountedReader( void *file )
 static ValidFn g_Valid;
 static bool MapValid( void *self, const char *name, bool quiet )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Valid( self, name, quiet );
 	HookCall call;
 	// Preserve the SDK validator's filename policy and framing.
 	if ( !name || !*name ) return g_Valid( self, name, quiet );
@@ -218,6 +225,7 @@ typedef uintptr_t (*InitFn)(void *,const char *);
 static InitFn g_Init;
 static uintptr_t DiskInit( void *model, const char *loadName )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Init( model, loadName );
 	HookCall call;
 	if ( Engine<int>( 0x69FDA8 ) ) return g_Init( model, loadName );
 	const char *name = model ? Function<const char *(*)(void *)>( 0x28D9C0 )( static_cast< unsigned char * >( model ) + 8 ) : loadName;
@@ -270,6 +278,7 @@ static bool ReadMemoryAt( void *context, uint32_t offset, void *out, uint32_t by
 }
 static void MemoryInit( void *model, void *context, void *data, int size, int error )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Memory( model, context, data, size, error );
 	HookCall call;
 	if ( error || size < static_cast< int >( kSourceHeaderSize ) || !IsBsp21( data ) || Engine<int>( 0x69FDA8 ) )
 	{
@@ -336,8 +345,14 @@ static __declspec(noinline) bool Digest( void *out, const char *name, bool md5 )
 	BspTrace("source %s computed from original bytes numeric lump order",md5?"MD5":"CRC32");
 	return true;
 }
-static bool CRC( void *out,const char *name ) { HookCall call; return Digest( out, name, false ); }
-static bool MD5( void *out,const char *name ) { HookCall call; return Digest( out, name, true ); }
+static bool CRC( void *out,const char *name ) {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_CRC( out, name );
+	HookCall call; return Digest( out, name, false );
+}
+static bool MD5( void *out,const char *name ) {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_MD5( out, name );
+	HookCall call; return Digest( out, name, true );
+}
 
 static bool ReadRawAt( void *file, uint32_t offset, void *out, uint32_t bytes )
 {
@@ -348,6 +363,7 @@ typedef intptr_t (*FreadFn)(void *,void *,intptr_t,intptr_t,void *);
 static FreadFn g_Fread;
 static intptr_t PakRead( void *self, void *out, intptr_t capacity, intptr_t size, void *file )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Fread( self, out, capacity, size, file );
 	void *caller = _ReturnAddress();
 	HookCall call;
 	intptr_t result = g_Fread( self, out, capacity, size, file );
@@ -415,6 +431,7 @@ static int PackedStoreVersion( void *store )
 }
 static int PackedRead( void *store, PackedFileHandle *handle, void *out, int bytes )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_PackedRead( store, handle, out, bytes );
 	HookCall call;
 	if ( handle->archive != 0x7FFF ) return g_PackedRead( store, handle, out, bytes );
 	int version = PackedStoreVersion( store );
@@ -431,6 +448,7 @@ static int PackedRead( void *store, PackedFileHandle *handle, void *out, int byt
 }
 static void PackedDestroy( void *store )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_PackedDestroy( store );
 	HookCall call;
 	{
 		AUTO_LOCK( g_PackedVersionsMutex );
@@ -518,6 +536,7 @@ static FopenFn g_Fopen;
 static thread_local bool g_OpeningMountedBsp;
 static void *MountedOpen( void *self, const char *name, const char *mode, int flags, int64_t *size )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Fopen( self, name, mode, flags, size );
 	HookCall call;
 	// Limit the bridge to the verified embedded-pak consumer's BSP file kind.
 	// Public Open already resolves VPK members; this is only its raw-file seam.
@@ -562,6 +581,7 @@ static __declspec(noinline) uintptr_t Worldlights( void *helper, bool hdr )
 }
 static uintptr_t WorldlightsEntry( void *helper, bool hdr )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Worldlights( helper, hdr );
 	HookCall call;
 	return Worldlights(helper,hdr);
 }
@@ -669,6 +689,7 @@ static bool LoadV20PropTints( const char *name, const void *sprp, int sprpBytes 
 }
 static int GameVersion( int id )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_GameVersion( id );
 	void *caller=_ReturnAddress();
 	HookCall call;
 	int version=g_GameVersion(id);
@@ -681,6 +702,7 @@ static int GameVersion( int id )
 }
 static bool GameLoad( int id, void *data, int bytes )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_GameLoad( id, data, bytes );
 	void *caller = _ReturnAddress();
 	HookCall call;
 	if ( !g_SourceMap )
@@ -733,6 +755,7 @@ static bool GameLoad( int id, void *data, int bytes )
 }
 static void PropsShutdown( void *self )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_PropsShutdown( self );
 	HookCall call;
 	g_PropsShutdown(self); g_PropCount=0;
 	BspTrace("static prop shutdown tint state released");
@@ -749,6 +772,7 @@ static int TintIndex( void *renderable )
 }
 static int Draw( void *renderable,unsigned flags )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_Draw( renderable, flags );
 	HookCall call;
 	int index=g_PropCount?TintIndex(renderable):-1;
 	if ( index<0 ) return g_Draw(renderable,flags);
@@ -760,6 +784,7 @@ static int Draw( void *renderable,unsigned flags )
 }
 static void DrawArray( void *self,void **props,int count,bool depth,bool collision )
 {
+	if ( !g_Active.load( std::memory_order_acquire ) ) return g_DrawArray( self, props, count, depth, collision );
 	HookCall call;
 	if ( !g_PropCount || collision || !*reinterpret_cast<int *>(Engine<uintptr_t>(0x77BF08)+88) ) { g_DrawArray(self,props,count,depth,collision); return; }
 	int start=0;
@@ -903,12 +928,10 @@ static bool ModulePath( const wchar_t *name, HMODULE module, wchar_t (&path)[MAX
 	}
 	return true;
 }
-bool L4D2_BSP21Install()
+static bool InstallHooks( bool dedicated )
 {
-	if(!ThreadInMainThread()) { BspLog("REJECT installation outside engine main thread"); return false; }
-	if(g_Installed || g_HooksOwned || g_OwnerModule) { BspLog("REJECT duplicate or retained installer ownership"); return false; }
+	if(g_HooksOwned || g_OwnerModule) { BspLog("REJECT duplicate or retained installer ownership"); return false; }
 	HMODULE engine=GetModuleHandleW(L"engine.dll"), filesystem=GetModuleHandleW(L"filesystem_stdio.dll");
-	bool dedicated=filesystem==NULL;
 	if(dedicated) filesystem=GetModuleHandleW(L"dedicated.dll");
 	wchar_t enginePath[MAX_PATH],filesystemPath[MAX_PATH];
 	if(!ModulePath(L"engine.dll",engine,enginePath) ||
@@ -948,16 +971,8 @@ bool L4D2_BSP21Install()
 		const void *address=reinterpret_cast<void *>((hook.filesystem?g_Filesystem:g_Engine)+hook.rva);
 		if(memcmp(address,hook.instructions,16)) { BspLog("REJECT live instruction mismatch module=%s rva=%zx",hook.filesystem?"filesystem-owner":"engine",hook.rva); return false; }
 	}
-	g_LifecycleMaterials=NULL;
-	if(!dedicated)
-	{
-		HMODULE module=GetModuleHandleW(L"materialsystem.dll");
-		CreateInterfaceFn factory=module?reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module,"CreateInterface")):NULL;
-		if(factory) g_LifecycleMaterials=static_cast<IMaterialSystem *>(factory(MATERIAL_SYSTEM_INTERFACE_VERSION,NULL));
-		if(!g_LifecycleMaterials) { BspLog("REJECT client material-system quiescence interface"); return false; }
-	}
 	EnginePause pause;
-	if(!pause.Begin()) { ReleaseSource(); return false; }
+	if(dedicated && !pause.Begin()) return false;
 	if(!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
 		reinterpret_cast<LPCWSTR>(&L4D2_BSP21Install),&g_OwnerModule))
 	{
@@ -991,11 +1006,54 @@ bool L4D2_BSP21Install()
 	if(status!=MH_OK)
 	{
 		HookFailure("installation",status);
-		if(!ReleaseHooks()) Fail("installation rollback failed; cannot return ordinary initialization failure");
+		if(!ReleaseHooks()) return false; // Retain storage for any outstanding pass-through calls.
 		ReleaseSource(); FreeLibrary(g_OwnerModule); g_OwnerModule=NULL; return false;
 	}
-	g_Installed=true;
 	BspTrace("INSTALL module-pinned BSP21/VPK readers hooks=%zu thread=%lu",hookCount,g_OwnerThread);
+	return true;
+}
+extern "C" __declspec(dllexport) bool L4D2_BSP21_EarlyInstall( char *error, size_t bytes )
+{
+	g_CapturingError = true;
+	bool ok = InstallHooks( false );
+	g_CapturingError = false;
+	if ( error && bytes ) strncpy_s( error, bytes, g_EarlyError, _TRUNCATE );
+	return ok;
+}
+
+// A rejected or never-activated owner has no engine interfaces to quiesce.
+extern "C" __declspec(dllexport) bool L4D2_BSP21_RetirePreload()
+{
+	if ( !g_HooksOwned ) return true;
+	if ( g_Active.load() || !ReleaseHooks() ) return false;
+	FreeLibrary( g_OwnerModule );
+	g_OwnerModule = NULL;
+	return true;
+}
+
+bool L4D2_BSP21Install()
+{
+	if ( !ThreadInMainThread() || g_Active.load() ) return false;
+	// srcds_win64.exe loads dedicated.dll directly; it never runs our launcher.
+	bool dedicated = !GetModuleHandleW(L"filesystem_stdio.dll") && GetModuleHandleW(L"dedicated.dll");
+	if ( dedicated && !InstallHooks( true ) ) return false;
+	if ( !g_HooksOwned || g_EarlyError[0] )
+	{
+		char loadError[256] = {};
+		GetEnvironmentVariableA("BSP21_PRELOAD_ERROR",loadError,sizeof(loadError));
+		BspLog("%s", g_EarlyError[0] ? g_EarlyError : loadError[0] ? loadError : "REJECT launcher did not install reader hooks");
+		return false;
+	}
+	g_LifecycleMaterials=NULL;
+	if(!dedicated)
+	{
+		HMODULE module=GetModuleHandleW(L"materialsystem.dll");
+		CreateInterfaceFn factory=module?reinterpret_cast<CreateInterfaceFn>(GetProcAddress(module,"CreateInterface")):NULL;
+		if(factory) g_LifecycleMaterials=static_cast<IMaterialSystem *>(factory(MATERIAL_SYSTEM_INTERFACE_VERSION,NULL));
+		if(!g_LifecycleMaterials) { BspLog("REJECT client material-system quiescence interface"); return false; }
+	}
+	g_OwnerThread = GetCurrentThreadId();
+	g_Active.store(true, std::memory_order_release);
 	return true;
 }
 bool L4D2_BSP21Remove()
@@ -1011,7 +1069,7 @@ bool L4D2_BSP21Remove()
 	}
 	EnginePause pause;
 	if(!pause.Begin() || !ReleaseHooks()) return false;
-	g_Installed=false; g_SourceMap=false;
+	g_Active.store(false, std::memory_order_release); g_SourceMap=false;
 	ReleaseSource();
 	HMODULE owner=g_OwnerModule; g_OwnerModule=NULL; g_OwnerThread=0;
 	FreeLibrary(owner);
