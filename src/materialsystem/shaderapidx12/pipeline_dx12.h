@@ -17,6 +17,7 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+class IFileSystem;
 
 namespace shaderapidx12
 {
@@ -76,7 +77,7 @@ struct PipelineKeyDX12
 class CPipelineCacheDX12
 {
 public:
-	bool Initialize( ID3D12Device *pDevice, bool lowTier );
+	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 

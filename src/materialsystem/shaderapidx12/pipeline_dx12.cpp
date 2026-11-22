@@ -20,11 +20,11 @@ namespace shaderapidx12
 // Purpose: Creates descriptor heaps, the null SRV, the linear-clamp sampler, the
 //          zero constant buffer and ordinary/lighting root signatures
 //-----------------------------------------------------------------------------
-bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier )
+bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem )
 {
 	Shutdown();
 	m_pDevice = pDevice;
-	m_Library.Open( pDevice );
+	m_Library.Open( pDevice, filesystem );
 	m_bVramFit = lowTier && !( CommandLine() && CommandLine()->CheckParm( "-dx12novramfit" ) );
 	m_nResourceStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_nSamplerStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );

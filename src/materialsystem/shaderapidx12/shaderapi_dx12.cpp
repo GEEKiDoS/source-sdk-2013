@@ -5091,7 +5091,7 @@ bool CShaderAPIDX12::InitializeDeviceResources( CShaderDeviceDX12 *pDevice )
 	ConVarRef pixelFog( "r_pixelfog", true );
 	m_pPixelFogConVar = pixelFog.IsValid() ? static_cast<ConVar *>( pixelFog.GetLinkedConVar() ) : nullptr;
 	m_bFogDirty = true;
-	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice(), pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW ) )
+	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice(), pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW, g_pShaderDeviceMgrDX12 ? g_pShaderDeviceMgrDX12->HostFileSystem() : nullptr ) )
 	{
 		Warning( "ShaderAPIDX12: pipeline initialization failed\n" );
 		ShutdownDeviceResources();
