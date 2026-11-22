@@ -16,7 +16,7 @@ Texture2D<float> gCurrentDepth : register( t1, space0 );
 Texture2D<float> gHistoryAo : register( t2, space0 );
 Texture2D<float> gHistoryDepth : register( t3, space0 );
 Texture2D<float4> gMotion : register( t4, space0 );
-RWTexture2D<float> gHistoryAoOut : register( u0, space0 );
+RWTexture2D<unorm float> gHistoryAoOut : register( u0, space0 );
 RWTexture2D<float> gHistoryDepthOut : register( u1, space0 );
 SamplerState gLinearClamp : register( s0, space0 );
 
