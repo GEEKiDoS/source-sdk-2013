@@ -314,6 +314,16 @@ uint2 ShadowMap_TileRange( ShadowMapReceiver r )
 	if ( r.tile.x < cShadowView1.x && r.tile.y < cShadowView1.y ) result = g_ShadowTileRanges[r.tile.y * cShadowView1.x + r.tile.x];
 	return result;
 }
+// Suppress negligible charted contributions without replacing their shadow
+// with full light. Fade between one and two cutoffs so crossing the cutoff
+// cannot draw an isophote on an otherwise smoothly lit surface.
+float ShadowMap_LocalContributionFade( float3 contribution )
+{
+	const float cutoff = cSunBasisY.w;
+	const float peak = max( contribution.r, max( contribution.g, contribution.b ) );
+	return cutoff > 0.0 ? smoothstep( cutoff, 2.0 * cutoff, peak ) : 1.0;
+}
+
 float2 ShadowMap_ClipUV( float4 clip )
 {
 	return clip.xy / clip.w * float2( 0.5, -0.5 ) + 0.5;
@@ -1347,16 +1357,13 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		if ( s.specular ) specularAngular = ShadowMap_Angular( 3, L, s.N, 0.0, 0.0, 0.0, s.E, s.exponent );
 		if ( ( angular > 0.0 || specularAngular > 0.0 ) && any( radiance != 0.0 ) )
 		{
-			float visibility = 1.0;
-			float diffuseVisibility = bakedDelta ? 0.0 : 1.0;
-			// Bound diffuse + specular visibility error, scaled by w for baked deltas.
-			// A skipped delta is zero (both endpoints use V=1); specular keeps that
-			// same unshadowed stand-in times w.
+			const bool charted = light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
 			float3 contribution = radiance * ( max( angular, 0.0 ) + max( specularAngular, 0.0 ) );
 			if ( bakedDelta ) contribution *= light.realtimeWeight;
-			bool sampleShadow = cSunBasisY.w <= 0.0 ||
-				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w;
-			[branch] if ( sampleShadow )
+			const float fade = charted ? ShadowMap_LocalContributionFade( contribution ) : 1.0;
+			if ( fade == 0.0 ) continue;
+			float visibility;
+			float diffuseVisibility;
 			{
 				float bakedVisibility = 1.0;
 				// A baked light's realtime visibility never exceeds its stored visibility: the bake traced the static
@@ -1367,7 +1374,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
 				float realtimeVisibility = bakedVisibility;
 				// Local lights use only their shadow-map visibility; Bend contact shadows are sun-only.
-				[branch] if ( light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
+				[branch] if ( charted && bakedVisibility > 0.0 )
 				{
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
@@ -1384,7 +1391,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					diffuseVisibility = visibility;
 				}
 			}
-			else if ( bakedDelta ) visibility = light.realtimeWeight;
+			radiance *= fade;
 			if ( angular > 0.0 ) d.diffuse += radiance * angular * diffuseVisibility;
 			if ( specularAngular > 0.0 ) d.specular += radiance * specularAngular * visibility;
 		}

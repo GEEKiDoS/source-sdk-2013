@@ -1444,6 +1444,12 @@ some sittings than in others, while this pass moved 3-6% and the full-screen pas
 sitting that was checked a remote-desktop viewer was encoding the screen (13% of the GPU, with the compositor
 another 7%); the low sittings were not checked. Compare those passes only within one sitting.
 
+`r_shadowmap_skip_radiance` fades negligible charted local direct contributions
+between twice the cutoff and the cutoff, where sampling stops. It does not
+substitute unshadowed light below the cutoff: that made bright contours around
+the edges of dim light on shadowed receivers. The baked diffuse baseline is
+unchanged, and a zero cutoff disables the approximation.
+
 `mat_pbr_showgbuffer 1|2|3|4` (cheat) shows normals, F0, roughness or bounce albedo of the opaque scene.
 
 ### PBR G-buffer contract

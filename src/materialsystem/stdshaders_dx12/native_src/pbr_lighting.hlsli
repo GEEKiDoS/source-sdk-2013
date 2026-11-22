@@ -519,21 +519,13 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		float3 specular = PBR_Specular( s, L );
 		if ( PBR_Max3( abs( basis ) ) > 0.0 || PBR_Max3( extra ) > 0.0 || PBR_Max3( specular ) > 0.0 )
 		{
-			float visibility = 1.0;
-			float diffuseVisibility = bakedDelta ? 0.0 : 1.0;
-			float specularVisibility = 1.0;
-			// Bound diffuse + specular visibility error: diffuse deltas scale with w, specular does not. A skipped delta
-			// is zero (both endpoints use V=1); skipped specular keeps the unshadowed stand-in.
-			float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
-			bool sampleShadow = cSunBasisY.w <= 0.0 ||
-				max( contribution.r, max( contribution.g, contribution.b ) ) > cSunBasisY.w;
-#if defined( PBR_MODEL_LOCAL_SELECTION )
-			// The sparse walk already loaded the R8 entry. The radiance cutoff only skips PCF,
-			// never its baked static occlusion.
-			[branch] if ( sampleShadow || fromProp )
-#else
-			[branch] if ( sampleShadow )
-#endif
+			const bool charted = realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
+			const float3 contribution = radiance * ( ( PBR_Max3( basis ) + PBR_Max3( extra ) ) * ( bakedDelta ? realtimeWeight : 1.0 ) + PBR_Max3( specular ) );
+			const float fade = charted ? ShadowMap_LocalContributionFade( contribution ) : 1.0;
+			if ( fade == 0.0 ) continue; // Keep the underlying baked diffuse term, if any.
+			float visibility;
+			float diffuseVisibility;
+			float specularVisibility;
 			{
 				float bakedVisibility = 1.0;
 #if defined( PBR_MODEL_LOCAL_SELECTION )
@@ -555,9 +547,8 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 #endif
 				}
 				float realtimeVisibility = bakedVisibility;
-				// Local lights always use the 4-tap receiver-plane PCF; contact-hardening PCSS is sun-only. A valid chart's
-				// visibility is then multiplied by the contact ray toward the light (stopping 0.25 short of it).
-				[branch] if ( sampleShadow && realtimeWeight > 0.0 && ( visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0 && bakedVisibility > 0.0 )
+				// The bake caps realtime visibility; skip tracing a light already fully occluded in the bake.
+				[branch] if ( charted && bakedVisibility > 0.0 )
 				{
 					RuntimeShadowLightGpu light = g_ShadowLights[index];
 					light.origin = lightRange.origin;
@@ -580,7 +571,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					diffuseVisibility = visibility;
 				}
 			}
-			else if ( bakedDelta ) visibility = realtimeWeight;
+			radiance *= fade;
 			d.diffuse += radiance * ( basis * diffuseVisibility + extra * visibility );
 			[branch] if ( PBR_TileSpecularMember( specList, specCap, index ) )
 			{
