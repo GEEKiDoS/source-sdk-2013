@@ -271,15 +271,47 @@ void CShaderDeviceDX12::FailDevice( const char *pszOperation, HRESULT hr )
 	const HRESULT reason = m_pDevice ? m_pDevice->GetDeviceRemovedReason() : S_OK;
 	Warning( "ShaderAPIDX12: %s failed (0x%08x), device removal reason 0x%08x\n", pszOperation, static_cast<unsigned>( hr ), static_cast<unsigned>( reason ) );
 	DumpBreadcrumbs();
-	Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+	Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
 	if ( m_pDevice && SUCCEEDED( m_pDevice.As( &dred ) ) )
 	{
-		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT breadcrumbs{};
-		D3D12_DRED_PAGE_FAULT_OUTPUT fault{};
-		if ( SUCCEEDED( dred->GetAutoBreadcrumbsOutput( &breadcrumbs ) ) && breadcrumbs.pHeadAutoBreadcrumbNode )
-			Warning( "ShaderAPIDX12: DRED breadcrumbs available at %p\n", breadcrumbs.pHeadAutoBreadcrumbNode );
-		if ( SUCCEEDED( dred->GetPageFaultAllocationOutput( &fault ) ) && fault.PageFaultVA )
+		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
+		if ( SUCCEEDED( dred->GetAutoBreadcrumbsOutput1( &breadcrumbs ) ) )
+		{
+			for ( auto *node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext )
+			{
+				if ( !node->pLastBreadcrumbValue || !node->pCommandHistory )
+					continue;
+				const UINT done = *node->pLastBreadcrumbValue;
+				if ( done >= node->BreadcrumbCount )
+					continue;
+				// The runtime retains only the newest 64K operation codes in a ring.
+				const UINT retained = 65536;
+				const bool hasOp = node->BreadcrumbCount - done <= retained;
+				Warning( "ShaderAPIDX12: DRED list %p (%s) queue %p: %u/%u complete, first outstanding D3D12_AUTO_BREADCRUMB_OP %d (-1 overwritten)\n",
+				    node->pCommandList, node->pCommandListDebugNameA ? node->pCommandListDebugNameA : "unnamed", node->pCommandQueue,
+				    done, node->BreadcrumbCount, hasOp ? int( node->pCommandHistory[done % retained] ) : -1 );
+				const D3D12_DRED_BREADCRUMB_CONTEXT *last = nullptr;
+				for ( UINT i = 0; i < node->BreadcrumbContextsCount; ++i )
+				{
+					const auto &ctx = node->pBreadcrumbContexts[i];
+					if ( ctx.BreadcrumbIndex <= done && ( !last || ctx.BreadcrumbIndex >= last->BreadcrumbIndex ) )
+						last = &ctx;
+				}
+				if ( last && last->pContextString )
+					Warning( "ShaderAPIDX12: DRED nearest context [%u]: %ls\n", last->BreadcrumbIndex, last->pContextString );
+			}
+		}
+		D3D12_DRED_PAGE_FAULT_OUTPUT1 fault{};
+		if ( SUCCEEDED( dred->GetPageFaultAllocationOutput1( &fault ) ) && fault.PageFaultVA )
+		{
 			Warning( "ShaderAPIDX12: DRED page fault GPU VA 0x%llx\n", static_cast<unsigned long long>( fault.PageFaultVA ) );
+			for ( int freed = 0; freed < 2; ++freed )
+			{
+				for ( auto *node = freed ? fault.pHeadRecentFreedAllocationNode : fault.pHeadExistingAllocationNode; node; node = node->pNext )
+					Warning( "ShaderAPIDX12: DRED %s allocation type %u (%s)\n", freed ? "freed" : "live",
+					    unsigned( node->AllocationType ), node->ObjectNameA ? node->ObjectNameA : "unnamed" );
+			}
+		}
 	}
 	Error( "ShaderAPIDX12: native D3D12 rendering stopped at %s (0x%08x), removal 0x%08x\n", pszOperation, static_cast<unsigned>( hr ), static_cast<unsigned>( reason ) );
 }
@@ -336,6 +368,19 @@ bool CShaderDeviceDX12::Initialize( void *hWnd, int nAdapter, const ShaderDevice
 	{
 		Warning( "ShaderAPIDX12: valid HWND and adapter required\n" );
 		return false;
+	}
+	if ( CommandLine() && CommandLine()->CheckParm( "-dx12dred" ) )
+	{
+		Microsoft::WRL::ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> settings;
+		if ( SUCCEEDED( D3D12GetDebugInterface( IID_PPV_ARGS( &settings ) ) ) )
+		{
+			settings->SetAutoBreadcrumbsEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+			settings->SetPageFaultEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+			settings->SetBreadcrumbContextEnablement( D3D12_DRED_ENABLEMENT_FORCED_ON );
+			Msg( "ShaderAPIDX12: DRED breadcrumbs, context and page-fault tracking enabled\n" );
+		}
+		else
+			Warning( "ShaderAPIDX12: requested DRED settings unavailable\n" );
 	}
 	const bool bDebug = CommandLine() && CommandLine()->CheckParm( "-dx12debug" );
 	const bool bGpuValidation = CommandLine() && CommandLine()->CheckParm( "-dx12gpuvalidation" );
@@ -1902,6 +1947,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 	s_bMemoryReportRequested.store( false, std::memory_order_release );
 	s_bMapMemoryReportRequested.store( false, std::memory_order_release );
 	m_bStatsMemoryReportPrinted = false;
+	m_nMapMemoryFramesLeft = 0;
 	// The final Submit may reset a list, but must not record new queries referencing soon-to-be-released heaps.
 	m_bGpuTimingStopping = true;
 	if ( g_pShaderAPIDX12 )
@@ -3000,6 +3046,17 @@ void CShaderDeviceDX12::Present()
 	const bool detailedReport = s_bMemoryReportRequested.exchange( false, std::memory_order_acq_rel );
 	if ( mapReport || detailedReport )
 		PrintMemoryReport( detailedReport );
+	const unsigned traceFrames = 300;
+	if ( mapReport && CommandLine() && CommandLine()->CheckParm( "-dx12dred" ) )
+		m_nMapMemoryFramesLeft = traceFrames;
+	if ( m_nMapMemoryFramesLeft )
+	{
+		uint64_t usage, budget;
+		if ( QueryLocalVideoMemory( usage, budget ) )
+			Msg( "ShaderAPIDX12: map Present %u local %llu / %llu bytes\n", traceFrames - m_nMapMemoryFramesLeft,
+			    static_cast<unsigned long long>( usage ), static_cast<unsigned long long>( budget ) );
+		--m_nMapMemoryFramesLeft;
+	}
 	m_Lighting.Reclaim();
 	if ( m_Lighting.PresentationBlocked() )
 	{

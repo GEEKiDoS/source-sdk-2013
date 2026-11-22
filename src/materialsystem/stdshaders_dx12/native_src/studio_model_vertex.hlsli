@@ -9,6 +9,9 @@
 // Include the shared material block before the tree helper so its register aliases are visible.
 #include "common_vs_fxc.h"
 #include "pbr_material.h"
+#if LEAFPROBE
+#include "pbr_probe.hlsli"
+#endif
 #if TREESWAY
 #define g_flTime g_TreeSwayParams0.x
 #define g_vWindDir g_TreeSwayParams0.yz
@@ -35,6 +38,9 @@ static DX12Sampler2D morphSampler = { morphSampler_Texture, morphSampler_Sampler
 
 struct DX12_VS_INPUT
 {
+#if LEAFPROBE
+	uint leafVertex : SV_VertexID;
+#endif
 #if PBR_HAS_TANGENT
 #if COMPRESSED_VERTS
 	uint4 vTangentS : TANGENT;
@@ -82,6 +88,8 @@ struct VS_OUTPUT
 	float3 worldNormal : TEXCOORD5;
 #if PBR_HAS_TANGENT
 	float4 worldTangent : TEXCOORD6;  // xyz S, w binormal sign
+#elif LEAFPROBE
+	float4 staticLight : TEXCOORD6;
 #else
 	float3 staticLight : TEXCOORD6; // decoded linear static vertex irradiance, zero without STATIC_LIGHT_VERTEX
 #endif
@@ -160,7 +168,17 @@ VS_OUTPUT main( const DX12_VS_INPUT v )
 #endif
 #if !PBR_HAS_TANGENT && STATIC_LIGHT_VERTEX
 	// DoLighting's static term: the carrier arrives in gamma space, scaled by 1 / cOverbright.
-	o.staticLight = GammaToLinear( v.vSpecular.rgb * cOverbright );
+	o.staticLight.rgb = GammaToLinear( v.vSpecular.rgb * cOverbright );
+#endif
+#if LEAFPROBE
+	ProbeSH probe;
+	bool resident;
+	bool covered = Probe_Decode( worldPos, o.worldNormal, probe, resident );
+	if ( resident )
+		o.staticLight.rgb = covered ? Probe_Irradiance( probe, o.worldNormal ) : 0.0;
+	// Only missing bricks use the engine cube. Interpolate its weight across a brick boundary.
+	o.staticLight.rgb += ShadowMap_LeafLocals( worldPos, o.worldNormal, projPos, v.leafVertex, g_TreeSwayParams4.z != 0.0 );
+	o.staticLight.a = resident ? 0.0 : 1.0;
 #endif
 #if INFECTED
 	// infected_vs20.fxc WOUNDED: the ellipsoids are in model space (their CPU producer owns the bone transforms), so the

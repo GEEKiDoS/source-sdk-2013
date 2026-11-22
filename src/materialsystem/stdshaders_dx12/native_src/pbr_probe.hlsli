@@ -38,9 +38,14 @@ float3 Probe_L1( ProbeSH sh, float3 n )
 }
 float3 Probe_L2( ProbeSH sh, float3 n )
 {
+#if defined( PBR_LEAN )
+	// Eliminates the three high-band texture reads in both quad decode paths.
+	return 0.0;
+#else
 	return sh.band[3] * ( 1.092548 * n.x * n.y ) + sh.band[4] * ( 1.092548 * n.y * n.z ) +
 		sh.band[5] * ( 0.315392 * ( 3.0 * n.z * n.z - 1.0 ) ) + sh.band[6] * ( 1.092548 * n.x * n.z ) +
 		sh.band[7] * ( 0.546274 * ( n.x * n.x - n.y * n.y ) );
+#endif
 }
 float3 Probe_Irradiance( ProbeSH sh, float3 n )
 {
@@ -70,9 +75,10 @@ bool Probe_FreeVisible( uint packed, float3 delta )
 
 // Both corner walks are loops, not unrolled: unrolled, the fallback's 8 x 9 loads were hoisted together and set the
 // model shader's register peak (GTX 1050, c1m2 foliage: about 2 ms of the opaque renderables, same result).
-bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
+bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh, out bool brickResident )
 {
 	sh = (ProbeSH)0;
+	brickResident = false;
 	bool covered = false;
 	float3 grid = ( positionWS + normalWS * cProbeAtlas.w - cProbeOrigin.xyz ) * cProbeOrigin.w;
 	float3 brick = floor( grid * 0.25 );
@@ -81,6 +87,7 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 		uint slot = ProbeIndirection.Load( int4( int3( brick ), 0 ) );
 		[branch] if ( slot != 0xffffffffu )
 		{
+			brickResident = true;
 			uint3 atlasBricks = cProbeAtlasBricks.xyz;
 			uint3 atlasBrick = uint3( slot % atlasBricks.x, ( slot / atlasBricks.x ) % atlasBricks.y, slot / ( atlasBricks.x * atlasBricks.y ) );
 			float3 local = clamp( grid - brick * 4.0, 0.0, 4.0 );
@@ -171,6 +178,12 @@ bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
 		}
 	}
 	return covered;
+}
+
+bool Probe_Decode( float3 positionWS, float3 normalWS, out ProbeSH sh )
+{
+	bool brickResident;
+	return Probe_Decode( positionWS, normalWS, sh, brickResident );
 }
 
 #if defined( PBR_PROBE_QUAD )

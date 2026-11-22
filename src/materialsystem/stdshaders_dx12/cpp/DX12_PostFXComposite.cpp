@@ -37,7 +37,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( FLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Flare producer active" )
 		SHADER_PARAM( GLAREENABLED, SHADER_PARAM_TYPE_INTEGER, "1", "Glare producer active" )
 		SHADER_PARAM( PARAMS0, SHADER_PARAM_TYPE_VEC4, "[1 0 0 0]", "Scene scale, bloom exposure / summed layers and lens flare scale" )
-		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Lens dirt intensity (screened into the bloom)" )
+		SHADER_PARAM( PARAMS1, SHADER_PARAM_TYPE_VEC4, "[0 0 1 0]", "Lens dirt, veiling and native bloom sample mip" )
 		SHADER_PARAM( LENS, SHADER_PARAM_TYPE_VEC4, "[0 0 0 1]", "Brown-Conrady k1, k2, lateral CA, zoom-to-fill" )
 		SHADER_PARAM( CAMERA, SHADER_PARAM_TYPE_VEC4, "[1 1 0 1]", "Tan half FOV x/y, vignette strength, radius" )
 		SHADER_PARAM( SENSOR, SHADER_PARAM_TYPE_VEC4, "[0 8 0.001 0]", "Sensor strength, full well, black level and noise" )
@@ -45,6 +45,16 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 		SHADER_PARAM( VIEWRECT, SHADER_PARAM_TYPE_VEC4, "[0 0 1 1]", "Source view rectangle in scene texels" )
 		SHADER_PARAM( BODYCAM, SHADER_PARAM_TYPE_VEC4, "[1 1 1 0.045]", "Fixed Bradford gains and image-circle penumbra" )
 		SHADER_PARAM( OUTPUT, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "x: 1 when writing HDR output" )
+		SHADER_PARAM( CONTRAST, SHADER_PARAM_TYPE_VEC4, "[0 0 0 1]", "Legacy center and edge contrast, radial interval" )
+		SHADER_PARAM( FINISH, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Legacy noise, time, vignette and grade enable" )
+		SHADER_PARAM( CONTROLLER, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Blurred vignette and particle mask enable" )
+		SHADER_PARAM( VOMIT, SHADER_PARAM_TYPE_TEXTURE, "", "Particle refraction and coverage mask" )
+		SHADER_PARAM( VOMITCOLOR1, SHADER_PARAM_TYPE_VEC4, "[1 1 0 0.15]", "First particle tint and refraction" )
+		SHADER_PARAM( VOMITCOLOR2, SHADER_PARAM_TYPE_VEC4, "[0 1 0 0]", "Second particle tint" )
+		SHADER_PARAM( NOISE, SHADER_PARAM_TYPE_TEXTURE, "", "Authored grain" )
+		SHADER_PARAM( VIGNETTE, SHADER_PARAM_TYPE_TEXTURE, "", "Authored vignette" )
+		SHADER_PARAM( VELOCITY, SHADER_PARAM_TYPE_TEXTURE, "", "Resolved temporal velocity" )
+		SHADER_PARAM( MOTION, SHADER_PARAM_TYPE_VEC4, "[0 0 0 0]", "Velocity region, exposure time scale and maximum length" )
 		SHADER_PARAM( OUTSCALE, SHADER_PARAM_TYPE_FLOAT, "1", "Output scale (world nits / UI nits in HDR)" )
 		SHADER_PARAM( PEAK, SHADER_PARAM_TYPE_FLOAT, "1", "AgX peak relative to paper white" )
 		SHADER_PARAM( DEBUGVIEW, SHADER_PARAM_TYPE_INTEGER, "0", "0 off, 1 bloom, 2 flare, 3 glare, 4 dirt" )
@@ -74,7 +84,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			pShaderShadow->EnableDepthTest( false );
 			pShaderShadow->EnableDepthWrites( false );
 			pShaderShadow->EnableSRGBWrite( false );
-			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER10; ++nSampler )
+			for ( int nSampler = SHADER_SAMPLER0; nSampler <= SHADER_SAMPLER14; ++nSampler )
 				pShaderShadow->EnableTexture( static_cast<Sampler_t>( nSampler ), true );
 			pShaderShadow->VertexShaderVertexFormat( VERTEX_POSITION, 1, nullptr, 0 );
 			DECLARE_STATIC_VERTEX_SHADER( screenspaceeffect_vs51 );
@@ -106,12 +116,38 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 
 			ShaderColorCorrectionInfo_t info;
 			pShaderAPI->GetCurrentColorCorrection( &info );
-			const int nLookups = info.m_bIsEnabled ? MIN( info.m_nLookupCount, kMaxColorCorrectionLookups ) : 0;
+			const bool bGrade = params[FINISH]->GetVecValue()[3] != 0.f;
+			const int nLookups = info.m_bIsEnabled ? MIN( info.m_nLookupCount, bGrade ? 3 : kMaxColorCorrectionLookups ) : 0;
 			for ( int i = 0; i < nLookups; ++i )
 				pShaderAPI->BindStandardTexture( static_cast<Sampler_t>( SHADER_SAMPLER5 + i ), static_cast<StandardTextureId_t>( TEXTURE_COLOR_CORRECTION_VOLUME_0 + i ) );
 			const float *pPost = params[PARAMS1]->GetVecValue();
 			const float dirtPeak[4] = { pPost[0], params[PEAK]->GetFloatValue(), pPost[1], pPost[2] };
 			int nFlags = static_cast<int>( params[OUTPUT]->GetVecValue()[0] );
+			if ( params[MOTION]->GetVecValue()[2] != 0.f )
+			{
+				nFlags |= 32;
+				BindTexture( SHADER_SAMPLER13, VELOCITY, -1 );
+				DX12SetPixelShaderConstant( 13, params[MOTION]->GetVecValue() );
+			}
+			const float *pFinish = params[FINISH]->GetVecValue();
+			if ( pFinish[3] != 0.f )
+			{
+				nFlags |= 16;
+				if ( pFinish[0] > 0.f )
+					BindTexture( SHADER_SAMPLER11, NOISE, -1 );
+				if ( pFinish[2] != 0.f )
+					BindTexture( SHADER_SAMPLER12, VIGNETTE, -1 );
+				DX12SetPixelShaderConstant( 11, params[CONTRAST]->GetVecValue() );
+				DX12SetPixelShaderConstant( 12, pFinish );
+				DX12SetPixelShaderConstant( 14, params[CONTROLLER]->GetVecValue() );
+				if ( params[CONTROLLER]->GetVecValue()[3] != 0.f )
+				{
+					nFlags |= 64;
+					BindTexture( SHADER_SAMPLER14, VOMIT, -1 );
+					DX12SetPixelShaderConstant( 16, params[VOMITCOLOR1]->GetVecValue() );
+					DX12SetPixelShaderConstant( 17, params[VOMITCOLOR2]->GetVecValue() );
+				}
+			}
 			if ( params[DIRTENABLED]->GetIntValue() )
 				nFlags |= kFlagDirt;
 			if ( nLookups )
@@ -120,7 +156,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				nFlags |= kFlagSkipBloom;
 			const float output[4] = { params[OUTSCALE]->GetFloatValue(), static_cast<float>( nFlags ), static_cast<float>( params[DEBUGVIEW]->GetIntValue() ), static_cast<float>( nLookups ) };
 			const float lutWeights[4] = { info.m_flDefaultWeight, info.m_pLookupWeights[0], info.m_pLookupWeights[1], info.m_pLookupWeights[2] };
-			const float lutWeight4[4] = { info.m_pLookupWeights[3], 0.0f, 0.0f, 0.0f };
+			const float lutWeight4[4] = { info.m_pLookupWeights[3], params[OUTPUT]->GetVecValue()[1], pPost[3], 0.0f };
 			DX12SetPixelShaderConstant( 0, params[PARAMS0]->GetVecValue() );
 			DX12SetPixelShaderConstant( 1, dirtPeak );
 			DX12SetPixelShaderConstant( 2, output );

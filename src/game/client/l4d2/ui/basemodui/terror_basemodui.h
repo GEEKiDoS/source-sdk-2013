@@ -9,5 +9,7 @@
 bool InitTerrorBaseModUI();
 void ShutdownTerrorBaseModUI();
 void OpenTerrorGraphicsOptions( int section = 0 );
+// Returns false while the native dialog cannot be presented; caller may retry.
+bool ShowGpuIdentificationWarning();
 
 #endif // TERROR_BASEMODUI_H

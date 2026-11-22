@@ -17,6 +17,7 @@
 #include "l4d2/clientmode_terror.h"
 #include "l4d2/ui/terror_client_panels.h"
 #include "cdll_client_int.h"
+#include "gpu_optimized_settings.h"
 #include "filesystem.h"
 #include "eiface.h"
 #include "ienginevgui.h"
@@ -30,6 +31,7 @@
 #include "materialsystem/materialsystem_config.h"
 #include "tier1/fmtstr.h"
 #include "vgui/ILocalize.h"
+#include "vgui/IInput.h"
 #include "vgui/IPanel.h"
 #include "vgui/IScheme.h"
 #include "vgui/ISurface.h"
@@ -389,6 +391,7 @@ public:
 		SetVisible( true );
 	}
 	void OpenGraphicsOptions( int section );
+	bool ShowGpuIdentificationWarning();
 protected:
 	virtual void OnTick() OVERRIDE
 	{
@@ -419,6 +422,9 @@ protected:
 				if ( InGameMainMenu *menu = dynamic_cast<InGameMainMenu *>( m_hWindow.Get() ) )
 					menu->OnOpen();
 			}
+			// First-setup GPU identification warning waits for a settled, visible menu.
+			if ( IsVisible() && !engine->IsDrawingLoadingImage() && IsReady() )
+				GpuOptimizedSettings::OnMenuReady();
 		}
 		else if ( !visible && m_bGameUIWasVisible )
 			m_Background.OnGameUIHidden();
@@ -686,6 +692,53 @@ void CL4DBasePanel::OpenGraphicsOptions( int section )
 	graphics->OnOpen();
 }
 
+static void OpenGraphicsAfterGpuWarning()
+{
+	// GenericConfirmation has already restored its caller; open Graphics
+	// without activating or navigating back through the stock GameUI.
+	if ( s_pBasePanel )
+		s_pBasePanel->OpenGraphicsOptions( GraphicsOptions::TAB_DISPLAY );
+}
+
+bool CL4DBasePanel::ShowGpuIdentificationWarning()
+{
+	if ( m_bLevelLoading || engine->IsDrawingLoadingImage() || engine->Con_IsVisible() ||
+		 !enginevgui->IsGameUIVisible() || !vgui::ipanel()->IsFullyVisible( GetVPanel() ) ||
+		 vgui::input()->GetAppModalSurface() || FlyoutMenu::GetActiveMenu() )
+		return false;
+
+	RefreshCurrentWindow();
+	CL4DFrame *caller = m_hWindow.Get();
+	if ( !IsReady() || !caller->IsVisible() || dynamic_cast<GenericConfirmation *>( caller ) )
+		return false;
+
+	LoadGraphicsGpuLocalization();
+	GenericConfirmation::UsageData_t usage;
+	usage.pWindowTitle = "#GraphicsOptions_GpuWarningTitle";
+	usage.pMessageText = "#GraphicsOptions_GpuWarningMessage";
+	usage.pOkButtonText = "#GraphicsOptions_OpenGraphics";
+	usage.pCancelButtonText = "#GraphicsOptions_GpuWarningLater";
+	if ( !g_pVGuiLocalize->Find( usage.pWindowTitle ) || !g_pVGuiLocalize->Find( usage.pMessageText ) ||
+		 !g_pVGuiLocalize->Find( usage.pOkButtonText ) || !g_pVGuiLocalize->Find( usage.pCancelButtonText ) )
+		return false;
+
+	GenericConfirmation *dialog = new GenericConfirmation( this );
+	if ( !dialog->LoadLayout( "resource/ui/l4d360ui/genericconfirmation.res" ) ||
+		 !dialog->FindChildByName( "LblMessage", true ) || !dialog->FindChildByName( "BtnOK", true ) ||
+		 !dialog->FindChildByName( "BtnCancel", true ) )
+	{
+		delete dialog;
+		return false;
+	}
+	usage.bOkButtonEnabled = usage.bCancelButtonEnabled = true;
+	usage.pfnOkCallback = OpenGraphicsAfterGpuWarning;
+	dialog->SetUsageData( usage );
+	dialog->SetNavBack( caller );
+	m_hWindow = dialog;
+	dialog->OnOpen();
+	return true;
+}
+
 static void AcceptQuitGame() { engine->ClientCmd_Unrestricted( "quit\n" ); }
 
 void MainMenu::OnCommand( const char *command )
@@ -836,6 +889,11 @@ void OpenTerrorGraphicsOptions( int section )
 	}
 	engine->ClientCmd_Unrestricted( "gameui_activate\n" );
 	L4D360UI::s_pBasePanel->OpenGraphicsOptions( section );
+}
+
+bool ShowGpuIdentificationWarning()
+{
+	return L4D360UI::s_pBasePanel && L4D360UI::s_pBasePanel->ShowGpuIdentificationWarning();
 }
 
 bool InitTerrorBaseModUI()

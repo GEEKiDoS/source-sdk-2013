@@ -1076,21 +1076,15 @@ bool ReceiverElement( const SunReceiverDrawDX12 &draw, const VertexInputDX12 &el
 	return true;
 }
 bool StaticPropTriangleBuffer( CShaderDeviceDX12 *device, CPipelineCacheDX12 &pipeline, const void *data, size_t bytes,
-	Microsoft::WRL::ComPtr<ID3D12Resource> &resource )
+	CPipelineCacheDX12::StaticBufferPage *page, Microsoft::WRL::ComPtr<ID3D12Resource> &resource, D3D12_GPU_VIRTUAL_ADDRESS &address )
 {
-	D3D12_HEAP_PROPERTIES heap{}; heap.Type = D3D12_HEAP_TYPE_DEFAULT;
-	D3D12_RESOURCE_DESC desc{}; desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	desc.Width = bytes; desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
-	desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	if ( FAILED( CreateCommittedResourceDX12( device->NativeDevice(), &heap, D3D12_HEAP_FLAG_NONE, &desc,
-		D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &resource ), "other", "static prop triangle buffer" ) ) ) return false;
 	ID3D12Resource *upload = nullptr; uint64 offset = 0;
 	const uint64 fence = device->NextFenceValue();
 	if ( !pipeline.UploadStructured( data, bytes, sizeof(DX12StaticPropTriangleGpu), fence, &upload, &offset ) )
-	{ resource.Reset(); return false; }
-	device->CommandList()->CopyBufferRegion( resource.Get(), 0, upload, offset, bytes );
-	D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COPY_DEST;
-	Transition( device->CommandList(), resource.Get(), state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
+		return false;
+	if ( !pipeline.CopyStaticBuffer( device->CommandList(), page, upload, offset, bytes, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+		"static prop triangle buffer", resource, address ) )
+		return false;
 	pipeline.RetainExternalResource( resource.Get(), fence );
 	return true;
 }
@@ -1135,6 +1129,15 @@ bool LightingNullTable( ID3D12Device *device, Microsoft::WRL::ComPtr<ID3D12Descr
 		if ( i == DX12_LIGHTING_T_VISIBILITY_PAYLOAD ) { buffer.Format = DXGI_FORMAT_R32_TYPELESS; buffer.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW; }
 		else buffer.Buffer.StructureByteStride = 16;
 		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), i, stride ) );
+	}
+	// t1034 is bound as a root SRV, but its table slot is part of the contiguous copy.
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC buffer{};
+		buffer.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+		buffer.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+		buffer.Buffer.NumElements = 1;
+		buffer.Buffer.StructureByteStride = sizeof( DX12StaticPropTriangleGpu );
+		device->CreateShaderResourceView( nullptr, &buffer, Offset( table->GetCPUDescriptorHandleForHeapStart(), DX12_LIGHTING_T_PROP_TRIANGLES, stride ) );
 	}
 	return true;
 }
@@ -1292,7 +1295,7 @@ struct LightingViewStateDX12
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
 	ID3D12Resource *structured[4]{};
 	uint64_t structuredOffsets[4]{};
-	bool highresScope = false, cheapAuxiliary = false;
+	bool highresScope = false, cheapAuxiliary = false, receiverVisibility = false;
 };
 
 struct CLightingDX12::Impl
@@ -1410,6 +1413,7 @@ struct CLightingDX12::Impl
 	struct PropDraw
 	{
 		Microsoft::WRL::ComPtr<ID3D12Resource> triangles;
+		D3D12_GPU_VIRTUAL_ADDRESS triangleAddress = 0;
 		uint32 count = 0;
 		StaticPropDirectMetadataDX12 direct;
 		uint64 retainedFence = 0, constantsFence = 0;
@@ -1417,7 +1421,9 @@ struct CLightingDX12::Impl
 		D3D12_GPU_VIRTUAL_ADDRESS constantsAddress = 0;
 	};
 	std::map<PropDrawKey, PropDraw> propDraws;
+	CPipelineCacheDX12::StaticBufferPage propTrianglePage;
 	Microsoft::WRL::ComPtr<ID3D12Resource> neutralPropTriangles;
+	D3D12_GPU_VIRTUAL_ADDRESS neutralPropAddress = 0;
 	uint64 neutralPropFence = 0;
 	D3D12_GPU_VIRTUAL_ADDRESS neutralPropConstants = 0;
 	using ViewState = LightingViewStateDX12;
@@ -1690,6 +1696,7 @@ void CLightingDX12::Shutdown()
 	Impl &s = *m_Impl;
 	for ( auto *scope : s.propScopes ) scope->Release();
 	s.propScopes.RemoveAll(); s.propDraws.clear(); s.neutralPropTriangles.Reset();
+	s.propTrianglePage = {};
 	s.neutralPropFence = 0; s.neutralPropConstants = 0;
 	s.ReleaseVolumetricView();
 	s.volume.scope = false;
@@ -2801,6 +2808,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 			if ( s.activeMap == map )
 			{
 				s.propDraws.clear();
+				s.propTrianglePage = {};
 				s.registeredProps.clear(); s.propInstances.clear(); s.propMeshRegistrationCounts.clear();
 				s.ClearPropDiagnostics();
 				for ( auto *scope : s.propScopes ) scope->Release();
@@ -3477,7 +3485,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
-	if ( !input.lightingAbi || !s.highresMap || !s.views.Count() )
+	if ( !input.lightingAbi || !s.views.Count() || !s.views.Tail()->receiverVisibility )
 		return true; // PrepareReceiverDraw installed disabled constants and a legal SRV.
 	const VertexInputDX12 *position = nullptr;
 	if ( draw.layout )
@@ -3596,7 +3604,8 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 		Impl::PropDraw proof;
 		if ( !s.device->Highres().GetStaticPropDirect(meshIndex,proof.direct) )
 			return finish(DX12_PROP_VISIBILITY_DIRECT_METADATA,false);
-		if ( !StaticPropTriangleBuffer( s.device, s.api->m_Pipeline, triangles.data(), triangles.size()*sizeof(triangles[0]), proof.triangles ) )
+		if ( !StaticPropTriangleBuffer( s.device, s.api->m_Pipeline, triangles.data(), triangles.size()*sizeof(triangles[0]),
+			&s.propTrianglePage, proof.triangles, proof.triangleAddress ) )
 		{ s.Fail(SHADOWMAP_ERR_RESIDENCY); return finish(DX12_PROP_VISIBILITY_RESIDENCY_FAILURE,false); }
 		proof.count = uint32(triangles.size());
 		cached = s.propDraws.emplace( key, std::move(proof) ).first;
@@ -3623,7 +3632,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 		s.api->m_Pipeline.RetainExternalResource( proof.triangles.Get(), fence ); proof.retainedFence = fence;
 	}
 	input.propDrawConstants = proof.constantsAddress;
-	input.propTriangles = proof.triangles->GetGPUVirtualAddress();
+	input.propTriangles = proof.triangleAddress;
 	++s.propMapped;
 	return finish(DX12_PROP_VISIBILITY_MAPPED);
 }
@@ -3642,7 +3651,7 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	if ( !s.neutralPropTriangles )
 	{
 		const DX12StaticPropTriangleGpu zero{};
-		if ( !StaticPropTriangleBuffer( s.device, pipeline, &zero, sizeof(zero), s.neutralPropTriangles ) )
+		if ( !StaticPropTriangleBuffer( s.device, pipeline, &zero, sizeof(zero), nullptr, s.neutralPropTriangles, s.neutralPropAddress ) )
 		{ s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 	}
 	if ( s.neutralPropFence != fence )
@@ -3655,11 +3664,12 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		s.neutralPropFence = fence;
 	}
 	input.propDrawConstants = s.neutralPropConstants;
-	input.propTriangles = s.neutralPropTriangles->GetGPUVirtualAddress();
+	input.propTriangles = s.neutralPropAddress;
 	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
 	const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
-	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary )
+	const bool bindVisibility = receiverVisibility && s.highresMap;
+	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary || scope.receiverVisibility != bindVisibility )
 	{
 		scope.cheapAuxiliary = cheapAuxiliary;
 		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
@@ -3680,6 +3690,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 		}
 		const Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> &nullTable = scope.nullTable;
 		if ( !nullTable ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		device->CopyDescriptorsSimple( DX12_LIGHTING_RESOURCE_TABLE_COUNT, scope.table.cpu,
+			nullTable->GetCPUDescriptorHandleForHeapStart(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 		if ( !cheapAuxiliary )
 		{
 			for ( int i = 0; i < scope.packet->leases.Count(); ++i )
@@ -3701,7 +3713,8 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv{}; srv.Format = DXGI_FORMAT_UNKNOWN; srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER; srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; srv.Buffer.FirstElement = scope.structuredOffsets[3] / sizes[3]; srv.Buffer.NumElements = counts[3]; srv.Buffer.StructureByteStride = sizes[3];
 			device->CreateShaderResourceView( scope.structured[3], &srv, Offset( scope.table.cpu, DX12_LIGHTING_T_TILE_SPECULAR, stride ) );
 		}
-		if ( receiverVisibility && s.highresMap && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		if ( bindVisibility && !s.device->Highres().PrepareVisibilityDraw( scope.table.cpu ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
+		scope.receiverVisibility = bindVisibility;
 		scope.fence = fence; scope.heap = heapGeneration;
 	}
 	// Returning to a parent whose depth was used in an intervening pass requires transitions, but not descriptor copies.

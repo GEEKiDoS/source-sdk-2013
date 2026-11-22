@@ -110,8 +110,9 @@ static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const
 {
 	highresAbi = false;
 	unsigned seen = 0;
-	const char *names[8] = { "HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
-		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384" };
+	const char *names[] = { "HlightOwnerIds", "HlightFaces", "HlightTiles", "HlightDynamic",
+		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384",
+		"HlightSun0", "HlightSun1", "HlightSun2", "HlightSun3" };
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -137,21 +138,21 @@ static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const
 					t.Type != ( j ? D3D_SVT_FLOAT : D3D_SVT_UINT ) || t.Rows != 1 || t.Columns != 4 || t.Elements != elements[j] )
 					return false;
 			}
-			seen |= 1u << 8;
+			seen |= 1u << 12;
 		}
 		else if ( b.Type == D3D_SIT_SAMPLER )
 		{
 			if ( b.BindPoint || V_strcmp( b.Name, "HlightLinear" ) || ( b.uFlags & D3D_SIF_COMPARISON_SAMPLER ) ) return false;
-			seen |= 1u << 9;
+			seen |= 1u << 13;
 		}
 		else if ( b.Type == D3D_SIT_UAV_RWBYTEADDRESS )
 		{
 			if ( b.BindPoint || V_strcmp( b.Name, "HlightFailure" ) || b.Dimension != D3D_SRV_DIMENSION_BUFFER ) return false;
-			seen |= 1u << 10;
+			seen |= 1u << 14;
 		}
 		else
 		{
-			if ( b.BindPoint >= 8 || V_strcmp( b.Name, names[b.BindPoint] ) ) return false;
+			if ( b.BindPoint >= ARRAYSIZE( names ) || V_strcmp( b.Name, names[b.BindPoint] ) ) return false;
 			const UINT slot = b.BindPoint;
 			const bool structured = slot == 1 || slot == 2;
 			if ( b.Type != ( structured ? D3D_SIT_STRUCTURED : D3D_SIT_TEXTURE ) ||
@@ -195,9 +196,10 @@ static bool ValidateHighresShaderDX12( ID3D12ShaderReflection *reflection, const
 		}
 	}
 	highresAbi = seen != 0;
-	// HlightDynamic (slot 3) holds the captured native dynamic lightmap additions; a receiver that reads no lightmap RGB
-	// (the additive realtime pass of the two-pass PBR split) never samples it. Every other binding is required.
-	return seen == 0 || ( seen | ( 1u << 3 ) ) == 0x7ffu;
+	// RGB-only variants can drop the four sun views; sun-only variants can drop t3.
+	// The required owner-ID binding name distinguishes this ABI from stale eight-SRV packs.
+	const unsigned mask = seen | ( 1u << 3 );
+	return !seen || mask == 0x7fffu || mask == 0x70ffu;
 }
 
 bool shaderapidx12::ValidateHighresShaderResourcesDX12( ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &shader, bool pixelStage, bool *highresAbi, CUtlString &error )
@@ -241,6 +243,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 	record->nativeCBuffers.RemoveAll();
 	record->nativeAbiHash = dx12native::kFnvOffset;
 	record->nativeSamplerMask = 0;
+	record->nativeCBufferMask = 0;
 	for ( UINT i = 0; i < shader.BoundResources; ++i )
 	{
 		D3D12_SHADER_INPUT_BIND_DESC binding{};
@@ -257,6 +260,14 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 		if ( reflected.name == ( record->stagePixel ? "DX12GameRegistersPS" : "DX12GameRegistersVS" ) )
 			record->gameRegisters = true;
 		reflected.shaderRegister = binding.BindPoint;
+		if ( binding.Space == 1 && binding.BindPoint < 8 )
+		{
+			// Include all array elements, not just the first register. A zero
+			// count denotes an unbounded range through the end of the table.
+			const UINT remaining = 8 - binding.BindPoint;
+			const UINT count = binding.BindCount ? MIN( binding.BindCount, remaining ) : remaining;
+			record->nativeCBufferMask |= ( ( 1u << count ) - 1u ) << binding.BindPoint;
+		}
 		reflected.registerSpace = binding.Space;
 		ID3D12ShaderReflectionConstantBuffer *pBuffer = reflection->GetConstantBufferByName( binding.Name );
 		D3D12_SHADER_BUFFER_DESC bufferDesc{};
@@ -283,6 +294,26 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 			member.name = variableDesc.Name;
 			member.offset = variableDesc.StartOffset;
 			member.byteSize = variableDesc.Size;
+		}
+		if ( reflected.registerSpace == 1 )
+		{
+			// Engine block layouts are immutable for this bytecode. Keep the
+			// per-draw check for the actual stage, material slots and fold payload.
+			for ( const dx12native::EngineCBufferLayoutDX12 &engine : dx12native::kEngineCBufferLayouts )
+			{
+				if ( reflected.name != engine.name )
+					continue;
+				reflected.engineBlock = true;
+				reflected.foldPayload = reflected.name == "DX12ComboFoldPS" || reflected.name == "DX12ComboFoldVS";
+				bool matches = engine.stage == ( record->stagePixel ? dx12native::kStagePixel : dx12native::kStageVertex ) &&
+					engine.shaderRegister == reflected.shaderRegister && engine.byteSize == reflected.byteSize &&
+					engine.memberCount == static_cast<uint32_t>( reflected.members.Count() );
+				for ( uint32_t m = 0; matches && m < engine.memberCount; ++m )
+					matches = reflected.members[m].name == engine.members[m].name &&
+						reflected.members[m].offset == engine.members[m].offset && reflected.members[m].byteSize == engine.members[m].size;
+				reflected.engineLayoutMatches = matches;
+				break;
+			}
 		}
 		reflected.layoutHash = dx12native::HashString( canonical.Get() );
 		record->nativeAbiHash = dx12native::HashBytes( reflected.name.Get(), reflected.name.Length(), record->nativeAbiHash );
@@ -478,6 +509,8 @@ struct CShaderAPIDX12::OcclusionQueryDX12
 	struct Segment
 	{
 		Microsoft::WRL::ComPtr<ID3D12Resource> readback;
+		int pooledSlot = -1;
+		UINT64 offset = 0;
 		uint64_t fence = 0;
 		bool inResult = false;
 	};
@@ -497,6 +530,49 @@ struct CShaderAPIDX12::OcclusionQueryDX12
 bool CShaderAPIDX12::AddOcclusionQuerySegment( OcclusionQueryDX12 *query )
 {
 	OcclusionQueryDX12::Segment *segment = new OcclusionQueryDX12::Segment;
+	// Eight-byte results do not need an entire committed 64 KiB allocation each.
+	// Queries own their slots until the last recorded query fence has retired.
+	if ( m_pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+		!CommandLine()->CheckParm( "-dx12novramfit" ) )
+	{
+		const int slot = m_OcclusionReadbackFreeSlots.Count() ? m_OcclusionReadbackFreeSlots.Tail() : m_nOcclusionReadbackSlots;
+		const int nPage = slot / OCCLUSION_PAGE_SLOTS;
+		if ( nPage >= OCCLUSION_MAX_PAGES )
+		{
+			delete segment;
+			return false;
+		}
+		if ( !m_OcclusionReadbackPages[nPage] )
+		{
+			D3D12_HEAP_PROPERTIES properties{};
+			properties.Type = D3D12_HEAP_TYPE_READBACK;
+			D3D12_RESOURCE_DESC desc{};
+			desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+			desc.Width = OCCLUSION_PAGE_BYTES;
+			desc.Height = 1;
+			desc.DepthOrArraySize = 1;
+			desc.MipLevels = 1;
+			desc.SampleDesc.Count = 1;
+			desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+			Microsoft::WRL::ComPtr<ID3D12Resource> page;
+			if ( FAILED( CreateCommittedResourceDX12( m_pDevice->NativeDevice(), &properties, D3D12_HEAP_FLAG_NONE, &desc,
+				D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS( &page ), "readback", "DX12 occlusion query readback page" ) ) )
+			{
+				delete segment;
+				return false;
+			}
+			m_OcclusionReadbackPages[nPage] = std::move( page );
+		}
+		if ( slot == m_nOcclusionReadbackSlots )
+			++m_nOcclusionReadbackSlots;
+		else
+			m_OcclusionReadbackFreeSlots.RemoveMultipleFromTail( 1 );
+		segment->readback = m_OcclusionReadbackPages[nPage];
+		segment->pooledSlot = slot;
+		segment->offset = ( slot % OCCLUSION_PAGE_SLOTS ) * sizeof( uint64_t );
+		query->segments.AddToTail( segment );
+		return true;
+	}
 	D3D12_HEAP_PROPERTIES properties{};
 	properties.Type = D3D12_HEAP_TYPE_READBACK;
 	D3D12_RESOURCE_DESC desc{};
@@ -514,6 +590,16 @@ bool CShaderAPIDX12::AddOcclusionQuerySegment( OcclusionQueryDX12 *query )
 	}
 	query->segments.AddToTail( segment );
 	return true;
+}
+
+void CShaderAPIDX12::RecycleOcclusionQuery( OcclusionQueryDX12 *query )
+{
+	for ( const OcclusionQueryDX12::Segment *segment : query->segments )
+	{
+		if ( segment->pooledSlot >= 0 )
+			m_OcclusionReadbackFreeSlots.AddToTail( segment->pooledSlot );
+	}
+	delete query;
 }
 
 //-----------------------------------------------------------------------------
@@ -1699,7 +1785,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				{
 					target.rtvs[i] = m_GBufferNullRtv;
 					target.colors[i] = nullptr;
-					target.colorFormats[i] = DXGI_FORMAT_R8G8B8A8_UNORM;
+					// The descriptor is typed, but no resource backs this output slot.
+					target.colorFormats[i] = DXGI_FORMAT_UNKNOWN;
 				}
 				target.rtvs[7] = m_GBufferRtv[kGBufferAlbedoTarget];
 				target.colors[7] = m_pGBufferAlbedo.Get();
@@ -2111,16 +2198,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				// Space 0 is the existing native-source contract (Source register banks at root b0-b5); space 1 is the named-block ABI.
 				if ( binding.registerSpace != 1 )
 					continue;
-				const dx12native::EngineCBufferLayoutDX12 *engine = nullptr;
-				for ( const dx12native::EngineCBufferLayoutDX12 &candidate : dx12native::kEngineCBufferLayouts )
-					if ( binding.name == candidate.name )
-					{
-						engine = &candidate;
-						break;
-					}
-				if ( engine )
+				if ( binding.engineBlock )
 				{
-					if ( binding.name == "DX12ComboFoldPS" || binding.name == "DX12ComboFoldVS" )
+					if ( binding.foldPayload )
 					{
 						const NamedShaderComboDX12 *combo = m_BoundNamedCombos[pixel ? 1 : 0];
 						if ( !combo || !combo->folded || !( pixel ? m_bBoundPixelShaderIsNamed : m_bBoundVertexShaderIsNamed ) )
@@ -2129,10 +2209,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 							return false;
 						}
 					}
-					bool matches = engine->stage == ( pixel ? dx12native::kStagePixel : dx12native::kStageVertex ) && engine->shaderRegister == binding.shaderRegister && engine->byteSize == binding.byteSize && engine->memberCount == static_cast<uint32_t>( binding.members.Count() );
-					for ( uint32_t m = 0; matches && m < engine->memberCount; ++m )
-						matches = binding.members[m].name == engine->members[m].name && binding.members[m].offset == engine->members[m].offset && binding.members[m].byteSize == engine->members[m].size;
-					if ( !matches )
+					if ( pixel != record->stagePixel || !binding.engineLayoutMatches )
 					{
 						Warning( "ShaderAPIDX12: native %s shader %s (static %d dynamic %d abi %016llx) engine cbuffer %s b%u size %u does not match the backend layout\n", stageName, logical, staticIndex, dynamicIndex, static_cast<unsigned long long>( record->nativeAbiHash ), binding.name.Get(), binding.shaderRegister, binding.byteSize );
 						return false;
@@ -2475,6 +2552,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const bool nativeVS = vsRecord && vsRecord->legacyBytecode.IsEmpty(), nativePS = psRecord && psRecord->legacyBytecode.IsEmpty();
 	bindingInput.nativeStage[0] = nativeVS;
 	bindingInput.nativeStage[1] = nativePS;
+	// Keep the descriptor tables complete, but point unused slots to the
+	// persistent zero CBV instead of uploading the last material's stale data.
+	if ( !geometryStage )
+	{
+		if ( nativeVS && vsRecord->nativeReflectionReady )
+			bindingInput.nativeCBufferMask[0] = vsRecord->nativeCBufferMask;
+		if ( nativePS && psRecord->nativeReflectionReady )
+			bindingInput.nativeCBufferMask[1] = psRecord->nativeCBufferMask;
+	}
 	memset( bindingInput.nativeData, 0, sizeof( bindingInput.nativeData ) );
 	memset( bindingInput.nativeSizes, 0, sizeof( bindingInput.nativeSizes ) );
 	memset( bindingInput.nativeVersions, 0, sizeof( bindingInput.nativeVersions ) );
@@ -2640,7 +2726,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	if ( !m_pDevice->Lighting().PrepareReceiverDraw( !shadowPass && ( ( psRecord && psRecord->lightingAbi ) || ( vsRecord && vsRecord->lightingAbi ) ), bindingInput, cheapAuxiliary ) )
 		return;
-	if ( bindingInput.lightingAbi && psRecord && psRecord->propVisibilityAbi &&
+	if ( bindingInput.lightingAbi && ( ( psRecord && psRecord->propVisibilityAbi ) || ( vsRecord && vsRecord->propVisibilityAbi ) ) &&
 		!m_pDevice->Lighting().PrepareStaticPropDraw( meshToken, sunDraw, m_VsFloat[VERTEX_SHADER_MODEL], bindingInput ) )
 		return;
 	bindingInput.highresAbi = !shadowPass && psRecord && psRecord->highresAbi && psRecord->lightmapSamplerMask != 0;
@@ -4882,6 +4968,10 @@ void CShaderAPIDX12::ShutdownDeviceResources()
 	for ( OcclusionQueryDX12 *query : m_OcclusionQueries )
 		delete query;
 	m_OcclusionQueries.RemoveAll();
+	for ( auto &page : m_OcclusionReadbackPages )
+		page.Reset();
+	m_OcclusionReadbackFreeSlots.Purge();
+	m_nOcclusionReadbackSlots = 0;
 	m_pComputeRoot.Reset();
 	m_ComputePipelines.RemoveAll();
 	for ( ShaderRecordDX12 *pRecord : m_ComputeShaderRecords )
@@ -4916,7 +5006,7 @@ bool CShaderAPIDX12::InitializeDeviceResources( CShaderDeviceDX12 *pDevice )
 	ConVarRef pixelFog( "r_pixelfog", true );
 	m_pPixelFogConVar = pixelFog.IsValid() ? static_cast<ConVar *>( pixelFog.GetLinkedConVar() ) : nullptr;
 	m_bFogDirty = true;
-	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice() ) )
+	if ( !pDevice->NativeDevice() || !m_Pipeline.Initialize( pDevice->NativeDevice(), pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW ) )
 	{
 		Warning( "ShaderAPIDX12: pipeline initialization failed\n" );
 		ShutdownDeviceResources();
@@ -5910,12 +6000,13 @@ void CShaderAPIDX12::CollectOcclusionQuerySegments( OcclusionQueryDX12 *query, u
 		{
 			uint64_t value = 0;
 			void *mapped = nullptr;
-			const D3D12_RANGE readRange{ 0, sizeof( value ) };
+			const SIZE_T offset = static_cast<SIZE_T>( segment->offset );
+			const D3D12_RANGE readRange{ offset, offset + sizeof( value ) };
 			if ( FAILED( segment->readback->Map( 0, &readRange, &mapped ) ) || !mapped )
 				query->error = true;
 			else
 			{
-				memcpy( &value, mapped, sizeof( value ) );
+				memcpy( &value, static_cast<const unsigned char *>( mapped ) + offset, sizeof( value ) );
 				const D3D12_RANGE writtenRange{ 0, 0 };
 				segment->readback->Unmap( 0, &writtenRange );
 				// Saturate the public result without overflowing, regardless of the number of splits.
@@ -5968,7 +6059,8 @@ void CShaderAPIDX12::EndOcclusionQuerySegment( OcclusionQueryDX12 *query )
 	CCommandRecorderDX12 *list = m_pDevice->CommandList();
 	Assert( list );
 	list->EndQuery( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0 );
-	list->ResolveQueryData( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0, 1, query->nativeActive->readback.Get(), 0 );
+	list->ResolveQueryData( query->heap.Get(), D3D12_QUERY_TYPE_OCCLUSION, 0, 1,
+		query->nativeActive->readback.Get(), query->nativeActive->offset );
 	query->resultFence = query->nativeActive->fence;
 	query->nativeActive = nullptr;
 }
@@ -6020,7 +6112,7 @@ ShaderAPIOcclusionQuery_t CShaderAPIDX12::CreateOcclusionQueryObject()
 		OcclusionQueryDX12 *query = m_OcclusionQueries[i];
 		if ( query->destroyed && !query->active && completed >= query->lastUseFence )
 		{
-			delete query;
+			RecycleOcclusionQuery( query );
 			m_OcclusionQueries.Remove( i );
 		}
 		else

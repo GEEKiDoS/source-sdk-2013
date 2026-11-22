@@ -5,6 +5,12 @@
 // color and position) and interpolated like the legacy lightAtten.
 #define DX12_LEGACY_VS30 1
 #define DECAL 0
+#if LEAFPROBE
+#define DX12_SHADOWMAPS 1
+#define PBR_LEAF_VERTEX 1
+#define PBR_LEAN 1
+#define SHADOWQUALITY 4
+#endif
 #include "dx12_preamble.h"
 // STATIC: "TANGENT" "0..1"
 // STATIC: "VERTEXCOLOR" "0..1"
@@ -18,6 +24,9 @@
 // LOCAL_LIGHTS 0: no engine model light reaches the draw (none, or every slot is an enhanced-path duplicate of a runtime
 // light); the attenuation, its interpolant and the pixel loop are compiled out.
 // DYNAMIC: "LOCAL_LIGHTS" "0..1"
+// Leaf probes use the unbumped static-light interpolant; no other model needs a new varying.
+// DYNAMIC: "LEAFPROBE" "0..1"
+// SKIP: $LEAFPROBE && ( $TANGENT || $INFECTED )
 // Static per-vertex prop lighting (COLOR1) exists only in the unbumped legacy VS; the bumped legacy VS and its
 // shadowmap twin never read it, so the bumped PBR variant has no such combo.
 // SKIP: $STATIC_LIGHT_VERTEX && $TANGENT

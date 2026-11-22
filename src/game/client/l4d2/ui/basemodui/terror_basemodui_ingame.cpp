@@ -125,7 +125,8 @@ void LeaveGame()
 
 GenericConfirmation::UsageData_t::UsageData_t() :
 	pWindowTitle( NULL ), pWindowTitleW( NULL ), pMessageText( NULL ), pMessageTextW( NULL ),
-	bOkButtonEnabled( false ), pfnOkCallback( NULL ), bCancelButtonEnabled( false ), pfnCancelCallback( NULL ),
+	bOkButtonEnabled( false ), pOkButtonText( NULL ), pfnOkCallback( NULL ),
+	bCancelButtonEnabled( false ), pCancelButtonText( NULL ), pfnCancelCallback( NULL ),
 	bCheckBoxEnabled( false ), pCheckBoxText( NULL ), pCheckBoxCvarName( NULL )
 {
 }
@@ -157,6 +158,8 @@ void GenericConfirmation::SetUsageData( const UsageData_t &data )
 	m_Message = data.pMessageText ? data.pMessageText : "";
 	m_CheckText = data.pCheckBoxText ? data.pCheckBoxText : "";
 	m_CheckCvar = data.pCheckBoxCvarName ? data.pCheckBoxCvarName : "";
+	m_OkButtonText = data.pOkButtonText ? data.pOkButtonText : "";
+	m_CancelButtonText = data.pCancelButtonText ? data.pCancelButtonText : "";
 	m_WideTitle.RemoveAll(); m_WideMessage.RemoveAll();
 	if ( data.pWindowTitleW )
 	{
@@ -172,6 +175,8 @@ void GenericConfirmation::SetUsageData( const UsageData_t &data )
 	m_Usage.pWindowTitleW = m_WideTitle.Count() ? m_WideTitle.Base() : NULL;
 	m_Usage.pMessageTextW = m_WideMessage.Count() ? m_WideMessage.Base() : NULL;
 	m_Usage.pCheckBoxText = m_CheckText.String(); m_Usage.pCheckBoxCvarName = m_CheckCvar.String();
+	m_Usage.pOkButtonText = m_OkButtonText.IsEmpty() ? NULL : m_OkButtonText.String();
+	m_Usage.pCancelButtonText = m_CancelButtonText.IsEmpty() ? NULL : m_CancelButtonText.String();
 	SetOkButtonEnabled( data.bOkButtonEnabled ); SetCancelButtonEnabled( data.bCancelButtonEnabled );
 	UpdateControls();
 }
@@ -195,7 +200,7 @@ void GenericConfirmation::OnOpen()
 	if ( check && m_Usage.bCheckBoxEnabled && value.IsValid() ) check->SetSelected( value.GetBool() );
 	UpdateControls();
 	vgui::Panel *focus = FindChildByName( m_Usage.bOkButtonEnabled ? "BtnOK" : "BtnCancel", true );
-	if ( focus ) focus->NavigateTo();
+	if ( focus && focus->IsVisible() ) focus->NavigateTo();
 }
 void GenericConfirmation::PerformLayout()
 {
@@ -209,6 +214,8 @@ void GenericConfirmation::UpdateControls()
 	SetControlVisible( "BtnOK", m_Usage.bOkButtonEnabled && !controller, true );
 	SetControlVisible( "IconBackArrow", m_Usage.bCancelButtonEnabled && !controller, true );
 	SetControlVisible( "BtnCancel", m_Usage.bCancelButtonEnabled && !controller, true );
+	if ( m_Usage.pOkButtonText ) SetControlString( "BtnOK", m_Usage.pOkButtonText );
+	if ( m_Usage.pCancelButtonText ) SetControlString( "BtnCancel", m_Usage.pCancelButtonText );
 	vgui::Label *message = dynamic_cast<vgui::Label *>( FindChildByName( "LblMessage", true ) );
 	if ( message )
 	{
@@ -219,7 +226,9 @@ void GenericConfirmation::UpdateControls()
 	if ( check ) check->SetVisible( m_Usage.bCheckBoxEnabled );
 	SetControlVisible( "LblCheckButton", m_Usage.bCheckBoxEnabled, true );
 	SetControlString( "LblCheckButton", m_CheckText.String() );
-	SetFooter( this, ( m_Usage.bOkButtonEnabled ? FB_BUTTON_A : 0 ) | ( m_Usage.bCancelButtonEnabled ? FB_BUTTON_B : 0 ), false, "#L4D360UI_OK", "#L4D360UI_Cancel" );
+	SetFooter( this, ( m_Usage.bOkButtonEnabled ? FB_BUTTON_A : 0 ) | ( m_Usage.bCancelButtonEnabled ? FB_BUTTON_B : 0 ), false,
+		m_Usage.pOkButtonText ? m_Usage.pOkButtonText : "#L4D360UI_OK",
+		m_Usage.pCancelButtonText ? m_Usage.pCancelButtonText : "#L4D360UI_Cancel" );
 }
 void GenericConfirmation::PaintBackground()
 {

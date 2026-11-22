@@ -13,6 +13,7 @@
 #include "highres_lightmaps_dx12.h"
 #include "shaderapi/ishaderutil.h"
 #include "tier0/dbg.h"
+#include "tier0/icommandline.h"
 #include "tier1/keyvalues.h"
 #include "tier1/strtools.h"
 #include "vtf/vtf.h"
@@ -221,6 +222,20 @@ size_t MipBytes( int nWidth, int nHeight, int nDepth, ImageFormat format )
 		return static_cast<size_t>( nBlocksWide ) * nBlocksHigh * nBlockBytes * MAX( 1, nDepth );
 	}
 	return static_cast<size_t>( MAX( 1, nWidth ) ) * MAX( 1, nHeight ) * MAX( 1, nDepth ) * BytesPerPixel( format );
+}
+
+// Only scale textures whose authored mip chain can be uploaded unchanged. Keep
+// the close-up weapon, HUD, effects, render-target and lightmap paths untouched.
+static bool ShouldTrimTextureTopMip( int width, int height, int flags, ImageFormat format, const char *pName, const char *pGroup )
+{
+	constexpr size_t kTopMipMinBytes = 256 * 1024;
+	if ( !IsBlockCompressed( format ) || !( flags & TEXTURE_CREATE_MANAGED ) ||
+		( width % 8 ) || ( height % 8 ) || MipBytes( width, height, 1, format ) < kTopMipMinBytes )
+		return false;
+	if ( !pName || !*pName || V_strnicmp( pName, "models/v_models/", 16 ) == 0 ||
+		V_strnicmp( pName, "models/weapons/", 15 ) == 0 || V_strnicmp( pName, "models/w_models/", 16 ) == 0 )
+		return false;
+	return IsUpscalerLodBiasEligible( flags, 2, pName, pGroup );
 }
 
 int Faces( const CShaderAPIDX12::TextureRecord &texture )
@@ -1130,12 +1145,33 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	                                                                                                                             GetNearestSupportedFormat( format );
 	if ( nativeFormat == IMAGE_FORMAT_UNKNOWN || ( nativeFormat != format && IsBlockCompressed( nativeFormat ) ) )
 		return 0;
+	const bool bRenderTarget = ( flags & ( TEXTURE_CREATE_RENDERTARGET | TEXTURE_CREATE_DEPTHBUFFER ) ) != 0;
+	const bool bVramFit = m_pDevice->PerformanceTier() == SHADERAPIDX12_ADAPTER_TIER_LOW &&
+		!CommandLine()->CheckParm( "-dx12novramfit" );
+	// The client rebases all accesses to these two private chains by one mip.
+	if ( bRenderTarget && debugName && ( !V_stricmp( debugName, "_rt_PostFXBloomDownHalf" ) ||
+		!V_stricmp( debugName, "_rt_PostFXBloomUpHalf" ) ) )
+	{
+		width = MAX( 1, width >> 1 );
+		height = MAX( 1, height >> 1 );
+		mipLevels = MAX( 1, mipLevels - 1 );
+	}
+	const bool bTrimMip = depth == 1 && copies <= 1 && mipLevels > 2 &&
+		bVramFit && ShouldTrimTextureTopMip( width, height, flags, nativeFormat, debugName, pTextureGroupName ) &&
+		!CommandLine()->CheckParm( "-dx12vramfullmips" );
+	if ( bTrimMip )
+	{
+		width >>= 1;
+		height >>= 1;
+		--mipLevels;
+	}
 	TextureRecord *pRecord = new TextureRecord;
 	pRecord->id = m_hNextTexture++;
 	pRecord->width = width;
 	pRecord->height = height;
 	pRecord->depth = depth;
 	pRecord->mipLevels = MAX( 1, mipLevels );
+	pRecord->firstSourceMip = bTrimMip ? 1 : 0;
 	pRecord->copies = MAX( 1, copies );
 	pRecord->format = nativeFormat;
 	pRecord->requestedFormat = format;
@@ -1163,6 +1199,8 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	pRecord->initializedSubresources.FillWithValue( 0 );
 	pRecord->gpuAuthoritativeSubresources.SetCount( nSubresources * pRecord->copies );
 	pRecord->gpuAuthoritativeSubresources.FillWithValue( 0 );
+	const bool postScene = bRenderTarget && debugName && !V_stricmp( debugName, "_rt_PostFXScene" );
+	pRecord->uavCapable = postScene && nativeFormat == IMAGE_FORMAT_RGBA16161616F;
 	if ( !AllocateNativeTexture( *pRecord ) )
 	{
 		delete pRecord;
@@ -1170,6 +1208,8 @@ ShaderAPITextureHandle_t CShaderAPIDX12::CreateTexture( int width, int height, i
 	}
 	const ShaderAPITextureHandle_t hTexture = pRecord->id;
 	m_Textures.Insert( hTexture, pRecord );
+	if ( postScene )
+		m_hPostSceneOutput = hTexture;
 	RegisterMapCubemap( *pRecord );
 	return hTexture;
 }
@@ -1456,6 +1496,7 @@ void CShaderAPIDX12::TexSubImage2D( int level, int face, int x, int y, int z, in
 	if ( pRecord == nullptr || !data )
 		return;
 	TextureRecord &t = *pRecord;
+	level -= t.firstSourceMip;
 	if ( level < 0 || level >= t.mipLevels || face < 0 || face >= Faces( t ) || x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > MAX( 1, t.width >> level ) || y + height > MAX( 1, t.height >> level ) || z < 0 || z >= MAX( 1, t.depth >> level ) )
 		return;
 	AdvanceTextureCopy( t );
@@ -1589,7 +1630,8 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 	TextureRecord &texture = *pRecord;
 	// Legacy VTF cubemaps include a seventh fallback spheremap; native cubes upload only the six directional faces.
 	const int nFaces = Faces( texture );
-	if ( ( vtf->FaceCount() != nFaces && !( nFaces == 6 && vtf->FaceCount() == CUBEMAP_FACE_COUNT ) ) || vtf->MipCount() < texture.mipLevels || vtf->Format() == IMAGE_FORMAT_UNKNOWN )
+	if ( ( vtf->FaceCount() != nFaces && !( nFaces == 6 && vtf->FaceCount() == CUBEMAP_FACE_COUNT ) ) ||
+		vtf->MipCount() < texture.mipLevels + texture.firstSourceMip || vtf->Format() == IMAGE_FORMAT_UNKNOWN )
 		return;
 	AdvanceTextureCopy( texture );
 	if ( texture.depth > 1 )
@@ -1601,21 +1643,22 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 	{
 		for ( int nMip = 0; nMip < texture.mipLevels; ++nMip )
 		{
+			const int nSourceMip = nMip + texture.firstSourceMip;
 			int nWidth = 0, nHeight = 0, nDepth = 0;
-			vtf->ComputeMipLevelDimensions( nMip, &nWidth, &nHeight, &nDepth );
+			vtf->ComputeMipLevelDimensions( nSourceMip, &nWidth, &nHeight, &nDepth );
 			if ( nWidth != MAX( 1, texture.width >> nMip ) || nHeight != MAX( 1, texture.height >> nMip ) || nDepth != ( Faces( texture ) == 1 ? MAX( 1, texture.depth >> nMip ) : 1 ) )
 				return;
 			const int nSubresource = nFace * texture.mipLevels + nMip, nIndex = texture.currentCopy * nCount + nSubresource;
 			const size_t nDestBytes = MipBytes( nWidth, nHeight, nDepth, texture.format );
-			const int nSourceBytes = m_pShaderUtil ? m_pShaderUtil->GetMemRequired( nWidth, nHeight, nDepth, vtf->Format(), false ) : vtf->ComputeMipSize( nMip );
-			if ( nSourceBytes <= 0 || vtf->ComputeMipSize( nMip ) < nSourceBytes || ( m_pShaderUtil && !m_pShaderUtil->ImageFormatInfo( vtf->Format() ).m_pName ) )
+			const int nSourceBytes = m_pShaderUtil ? m_pShaderUtil->GetMemRequired( nWidth, nHeight, nDepth, vtf->Format(), false ) : vtf->ComputeMipSize( nSourceMip );
+			if ( nSourceBytes <= 0 || vtf->ComputeMipSize( nSourceMip ) < nSourceBytes || ( m_pShaderUtil && !m_pShaderUtil->ImageFormatInfo( vtf->Format() ).m_pName ) )
 				return;
 			unsigned char *pDest = texture.pixels.Base() + SubresourceOffset( texture, nFace, nMip );
 			if ( vtf->Format() == texture.format )
 			{
 				if ( static_cast<size_t>( nSourceBytes ) < nDestBytes )
 					return;
-				unsigned char *pSource = vtf->ImageData( frame, nFace, nMip );
+				unsigned char *pSource = vtf->ImageData( frame, nFace, nSourceMip );
 				if ( !pSource )
 					return;
 				memcpy( pDest, pSource, nDestBytes );
@@ -1627,8 +1670,8 @@ void CShaderAPIDX12::TexImageFromVTF( IVTFTexture *vtf, int frame )
 				const int nDestStride = nWidth * static_cast<int>( BytesPerPixel( texture.format ) );
 				for ( int nSlice = 0; nSlice < nDepth; ++nSlice )
 				{
-					unsigned char *pSource = vtf->ImageData( frame, nFace, nMip, 0, 0, nSlice );
-					if ( !pSource || !m_pShaderUtil->ConvertImageFormat( pSource, vtf->Format(), pDest + static_cast<size_t>( nSlice ) * nHeight * nDestStride, texture.format, nWidth, nHeight, vtf->RowSizeInBytes( nMip ), nDestStride ) )
+					unsigned char *pSource = vtf->ImageData( frame, nFace, nSourceMip, 0, 0, nSlice );
+					if ( !pSource || !m_pShaderUtil->ConvertImageFormat( pSource, vtf->Format(), pDest + static_cast<size_t>( nSlice ) * nHeight * nDestStride, texture.format, nWidth, nHeight, vtf->RowSizeInBytes( nSourceMip ), nDestStride ) )
 						return;
 				}
 			}

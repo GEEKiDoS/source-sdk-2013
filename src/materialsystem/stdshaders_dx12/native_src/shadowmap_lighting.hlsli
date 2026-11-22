@@ -139,6 +139,16 @@ bool ShadowMap_BeginBakedLookup( ShadowMapReceiver r, inout ShadowMapBakedLookup
 		lookup = (ShadowMapBakedLookup)0;
 		[branch] if ( r.bakedPropPrimitive != 0xFFFFFFFF )
 		{
+#if defined( PBR_LEAF_VERTEX )
+			// BuildStaticPropTrianglesDX12 proved each index against this mesh; the backend draws with
+			// base vertex zero. At a vertex, the exact baked sample needs no triangle or barycentrics.
+			lookup.cursor = cPropDraw.x;
+			lookup.end = cPropDraw.x + cPropDraw.y;
+			lookup.samples = r.bakedPropPrimitive.xxxx;
+			lookup.barycentrics = float3( 1, 0, 0 );
+			lookup.propFlags = cPropDirect.x != 0xFFFFFFFF ? 1u : 0u;
+			lookup.valid = 1;
+#else
 			DX12StaticPropTriangleGpu propTriangle = g_ShadowPropTriangles[cPropDraw.z + r.bakedPropPrimitive];
 			uint4 mesh = g_ShadowVisibilityPropMeshes[propTriangle.vertexIndices.w];
 			// Preserve the validated directory join and bound every dense R8 tap.
@@ -164,6 +174,7 @@ bool ShadowMap_BeginBakedLookup( ShadowMapReceiver r, inout ShadowMapBakedLookup
 					lookup.valid = 1;
 				}
 			}
+#endif
 		}
 		else if ( r.bakedFaceId != 0xFFFFFFFF )
 		{
@@ -637,6 +648,11 @@ float SampleSunPCSS( ShadowMapSunChart c, out float2 diagnostics )
 {
 	float result = 1.0;
 	diagnostics = 0.0;
+#if defined( PBR_LEAN )
+	// Preserve receiver-plane bias on broad/grazing surfaces. The center-only comparison remains the compact path;
+	// falling back to the affine depth compare avoids cascade-texel acne without restoring the PCSS kernel.
+	result = ShadowMap_SunCompare( c, 0.0, ShadowMap_SunPreflight( c, 0.5 ) );
+#else
 	// Fail before reading: never spend a blocker budget and then recurse to PCF.
 	bool pcss = cShadowView0.z == DX12_SHADOW_FILTER_PCSS && cSunRadiance.w > 0.0;
 	if ( pcss ) pcss = ShadowMap_SunPreflight( c, DX12_SHADOW_GUARD_TEXELS );
@@ -667,6 +683,7 @@ float SampleSunPCSS( ShadowMapSunChart c, out float2 diagnostics )
 		}
 	}
 	else result = ShadowMap_SunPCFChart( c );
+#endif
 	return result;
 }
 
@@ -950,6 +967,13 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 	float result = 1.0;
 	if ( c.valid )
 	{
+#if defined( PBR_LEAN )
+		// The normal-biased center is on homeFace by construction. No seam reprojection or tap preflight.
+		uint pageWidth, pageHeight;
+		g_ShadowLocalAtlas[NonUniformResourceIndex( c.homeRect.x )].GetDimensions( pageWidth, pageHeight );
+		float2 uv = ( float2( c.homeRect.yz ) + c.centerPixel + 0.5 ) / float2( pageWidth, pageHeight );
+		result = g_ShadowLocalAtlas[NonUniformResourceIndex( c.homeRect.x )].SampleCmpLevelZero( g_ShadowCmpSampler, uv, c.centerDepth );
+#else
 		// The cubic kernel (r_shadowmap_local_filter 1) needs the receiver plane to hold over its whole footprint (the
 		// preflight also rejects a plane through the light); otherwise the bilinear taps with their own preflight.
 		[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_LOCAL_SMOOTH ) != 0 && ShadowMap_LocalPreflight( light, c, 2.0 + LOCAL_CUBIC_JITTER ) )
@@ -962,6 +986,7 @@ float ShadowMap_LocalPCFChart( RuntimeShadowLightGpu light, ShadowMapLocalChart 
 			[loop] for ( uint i = 0; i < 4; ++i ) visibility += ShadowMap_LocalCompare( light, c, ShadowDither_Rotate( g_ShadowPCFOffsets[i] ), usePlane );
 			result = visibility * 0.25;
 		}
+#endif
 	}
 	return result;
 }
@@ -1246,6 +1271,7 @@ ShadowMapDirect ShadowMap_NoDirect()
 ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s )
 {
 	ShadowMapDirect d = ShadowMap_NoDirect();
+#if !defined( PBR_LEAF_VERTEX )
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_HAS_SUN ) != 0 )
 	{
 		// Geometric surface backfaces skip the map (silhouette taps can read "lit").
@@ -1280,6 +1306,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 			if ( specularAngular > 0.0 ) d.specular += cSunRadiance.rgb * specularAngular * d.sunVisibility;
 		}
 	}
+#endif
 	ShadowMapBakedLookup bakedLookup = (ShadowMapBakedLookup)0;
 	bakedLookup.end = 0xFFFFFFFF; // Validated entry ranges cannot reach this sentinel.
 	bool bakedLocalDirect = r.bakedLocalDirect != 0;
@@ -1423,6 +1450,23 @@ float3 ShadowMap_DetailDirect( float3 lightingOriginWS, float3 orientationNormal
 	ShadowMapDirect d = ShadowMap_GatherDirect( r, s );
 	return d.diffuse;
 }
+#if defined( PBR_LEAF_VERTEX )
+float3 ShadowMap_LeafLocals( float3 P, float3 N, float4 clipPosition, uint vertexIndex, bool halfLambert )
+{
+	float2 ndc = clipPosition.xy / max( clipPosition.w, 0.001 );
+	float2 pixel = cShadowViewport.xy + saturate( ndc * float2( 0.5, -0.5 ) + 0.5 ) / cShadowViewport.zw;
+	pixel = min( pixel, cShadowViewport.xy + 1.0 / cShadowViewport.zw - 1.0 );
+	ShadowMapReceiver r = (ShadowMapReceiver)0;
+	r.positionWS = P;
+	r.vertexNormalWS = r.planeNormalWS = N;
+	r.screenPos = pixel;
+	r.tile = uint2( ( pixel - cShadowViewport.xy ) / DX12_SHADOW_TILE_PIXELS );
+	r.bakedFaceId = 0xFFFFFFFF;
+	r.bakedPropPrimitive = cPropDraw.w != 0 ? vertexIndex : 0xFFFFFFFF;
+	ShadowDither_Begin( pixel, cViewForward.w );
+	return ShadowMap_GatherDirect( r, ShadowMap_ShadeHalfLambert( N, halfLambert ) ).diffuse;
+}
+#endif
 // True for the debug modes in which ShadowMap_Debug replaces the lit color (1 cascades, 2 sun visibility, 3 local
 // chart, 5/6 PCSS diagnostics): such color is not a scene reflection and must not become SSR payload.
 bool ShadowMap_DebugReplacesColor()

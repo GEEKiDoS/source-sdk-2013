@@ -9,7 +9,7 @@ struct SmaaConstantsDX12
 {
 	float metrics[4]; // inverse width/height, width/height
 	float jitter[2], cameraNear, cameraFar;
-	uint32_t reset, subsample, depthInverted, padding[3];
+	uint32_t reset, subsample, depthInverted, renderWidth, renderHeight, padding;
 };
 static_assert( sizeof( SmaaConstantsDX12 ) == 14 * 4, "SMAA and the shared compute root agree" );
 
@@ -20,7 +20,7 @@ cbuffer SmaaParams : register(b0)
     float2 gJitter;
     float gCameraNear, gCameraFar;
     uint gReset, gSubsample, gDepthInverted;
-    uint gPadding0, gPadding1, gPadding2;
+    uint gRenderWidth, gRenderHeight, gPadding2;
 };
 SamplerState LinearSampler : register(s0);
 #define SMAA_RT_METRICS gMetrics
@@ -177,6 +177,93 @@ void CSTemporal(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
     // T2x history is the raw previous phase, never a recursive moving average.
     HistoryOutput[id.xy] = current;
     Output[id.xy] = float4(max(result, 0), 1);
+}
+// One output pixel gathers four jittered input samples. Use those same samples
+// for variance clipping; a second input-neighbourhood fetch is not required.
+float3 ToYCoCg(float3 c)
+{
+    return float3(dot(c, float3(0.25, 0.5, 0.25)), (c.r - c.b) * 0.5, (2*c.g - c.r - c.b) * 0.25);
+}
+float3 FromYCoCg(float3 c)
+{
+    return float3(c.x + c.y - c.z, c.x + c.z, c.x - c.y - c.z);
+}
+groupshared float4 TaauTile[100];
+[numthreads(8, 8, 1)]
+void CSTaau(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID,
+            uint3 local : SV_GroupThreadID, uint lane : SV_GroupIndex)
+{
+    if (gRenderWidth == gMetrics.z && gRenderHeight == gMetrics.w)
+    {
+        // Native AA does not need an upsampling kernel. Load a 3x3 neighborhood once
+        // per group so history clipping costs one shared-memory neighborhood instead
+        // of four source samples per pixel.
+        for (uint i = lane; i < 100; i += 64)
+        {
+            int2 p = int2(group.xy * 8) + int2(i % 10, i / 10) - 1;
+            TaauTile[i] = Input0.Load(int3(ClampedPixel(p), 0));
+        }
+        GroupMemoryBarrierWithGroupSync();
+        if (any(id.xy >= uint2(gMetrics.zw))) return;
+        uint tile = (local.y + 1) * 10 + local.x + 1;
+        float3 current = TaauTile[tile].rgb;
+        float2 uv = (id.xy + 0.5) * gMetrics.xy;
+        float z = Input3.Load(int3(id.xy, 0)).r;
+        float invDepth = lerp(gCameraNear / gCameraFar, 1, gDepthInverted ? z : 1-z);
+        float2 velocity = Input2.Load(int3(id.xy, 0)).xy;
+        float2 previousUV = uv - velocity;
+        float3 result = current;
+        if (!gReset && all(previousUV >= 0) && all(previousUV <= 1))
+        {
+            float speed = length(velocity * gMetrics.zw);
+            float4 history = speed < 0.001 ? Input1.Load(int3(id.xy, 0)) : SampleHistoryCatmullRom(Input1, previousUV);
+            float3 low = current, high = current;
+            [unroll] for (int y = -1; y <= 1; ++y)
+            [unroll] for (int x = -1; x <= 1; ++x)
+            {
+                float3 neighbor = TaauTile[tile + y * 10 + x].rgb;
+                low = min(low, neighbor);
+                high = max(high, neighbor);
+            }
+            float match = saturate(2 - abs(invDepth - history.a) / max(0.04 * invDepth, 1e-6));
+            result = lerp(current, clamp(history.rgb, low, high), match * lerp(0.9, 0.64, saturate(speed * 0.08)));
+        }
+        result = max(result, 0);
+        Output[id.xy] = float4(result, 1);
+        HistoryOutput[id.xy] = float4(result, invDepth);
+        return;
+    }
+    if (any(id.xy >= uint2(gMetrics.zw))) return;
+    float2 uv = (id.xy + 0.5) * gMetrics.xy;
+    int2 limit = int2(gRenderWidth, gRenderHeight) - 1;
+    float2 pos = clamp(uv * float2(gRenderWidth, gRenderHeight) + gJitter - 0.5, 0, limit);
+    int2 p = int2(pos);
+    float2 f = frac(pos);
+    float3 a = ToYCoCg(Input0.Load(int3(p, 0)).rgb);
+    float3 b = ToYCoCg(Input0.Load(int3(min(p + int2(1,0), limit), 0)).rgb);
+    float3 c = ToYCoCg(Input0.Load(int3(min(p + int2(0,1), limit), 0)).rgb);
+    float3 d = ToYCoCg(Input0.Load(int3(min(p + 1, limit), 0)).rgb);
+    f = smoothstep(0, 1, f);
+    float3 result = lerp(lerp(a,b,f.x), lerp(c,d,f.x), f.y);
+    int2 nearest = int2(pos + 0.5);
+    float z = Input3.Load(int3(nearest,0)).r;
+    float invDepth = lerp(gCameraNear / gCameraFar, 1, gDepthInverted ? z : 1-z);
+    float2 velocity = Input2.Load(int3(nearest,0)).xy;
+    float2 prev = uv - velocity;
+    if (!gReset && all(prev >= 0) && all(prev <= 1))
+    {
+        float2 motionPixels = velocity * gMetrics.zw;
+        float speed = length(motionPixels);
+        float4 history = speed < 0.001 ? Input1.Load(int3(id.xy, 0)) : SampleHistoryCatmullRom(Input1, prev);
+        float3 mean = 0.25 * (a+b+c+d);
+        float3 sigma = sqrt(max(0.25 * (a*a+b*b+c*c+d*d) - mean*mean, 0));
+        float3 hist = clamp(ToYCoCg(history.rgb), mean - 1.5*sigma, mean + 1.5*sigma);
+        float match = saturate(2 - abs(invDepth - history.a) / max(0.04*invDepth, 1e-6));
+        result = lerp(result, hist, match * lerp(0.90, 0.64, saturate(speed * 0.08)));
+    }
+    float3 rgb = max(FromYCoCg(result), 0);
+    Output[id.xy] = float4(rgb, 1);
+    HistoryOutput[id.xy] = float4(rgb, invDepth);
 }
 )HLSL";
 } // namespace shaderapidx12

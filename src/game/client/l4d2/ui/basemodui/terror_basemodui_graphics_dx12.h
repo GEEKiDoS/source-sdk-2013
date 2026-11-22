@@ -13,6 +13,8 @@ namespace vgui { class Label; class ScrollBar; }
 namespace L4D360UI
 {
 class GraphicsScrollViewport;
+void LoadGraphicsGpuLocalization();
+
 class GraphicsDX12 : public NativeOptionsFrame, public FlyoutMenuListener
 {
 	DECLARE_CLASS_SIMPLE( GraphicsDX12, NativeOptionsFrame );
@@ -44,6 +46,10 @@ private:
 		int y;
 	};
 	void ReadSettings( bool rebuildChoices = false );
+	void ReadRecommendation();
+	int LayoutRecommendation( vgui::IScheme *uiScheme );
+	void UpdateLiveHelp();
+	void RevealControl( int y, int tall );
 	void LayoutRows();
 	void PositionRows();
 	void FocusSection();
@@ -58,6 +64,10 @@ private:
 	vgui::ScrollBar *m_pScroll;
 	vgui::Label *m_pHeaders[GraphicsOptions::TAB_COUNT];
 	vgui::Label *m_pNrRequirement;
+	vgui::Label *m_pDetectedGpu, *m_pRecommendationStatus, *m_pPerformanceSummary, *m_pLiveHelp;
+	L4D360HybridButton *m_pApplyOptimized;
+	CUtlString m_LiveHelpToken;
+	int m_nApplyY;
 	int m_nSection, m_nCapabilities, m_nContentHeight, m_nScrollTarget;
 	int m_nHeaderY[GraphicsOptions::TAB_COUNT];
 	float m_flScroll;

@@ -180,7 +180,7 @@ static const Choice_t kRealtimeLights[] =
 static const Choice_t kGtao[] =
 {
 	{ "#GraphicsOptions_Off", { 0, 1, 3, 3, 2 } },
-	{ "#GraphicsOptions_Low", { 1, 0.5f, 1, 2, 1 } },
+	{ "#GraphicsOptions_Low", { 1, 0.25f, 1, 2, 1 } },
 	{ "#GraphicsOptions_Medium", { 1, 0.5f, 2, 3, 1 } },
 	{ "#GraphicsOptions_High", { 1, 1, 3, 3, 2 } },
 	{ "#GraphicsOptions_Ultra", { 1, 1, 6, 4, 2 } },
@@ -191,6 +191,15 @@ static const Choice_t kQuality3[] =
 	{ "#GraphicsOptions_Low", { 0, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_Medium", { 1, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_High", { 2, 0, 0, 0, 0 } },
+};
+
+// Native stack enable, compact composition, exposure sampling interval. Normal is the fused compact composite
+// (the default); Extra runs the separate native passes and the original L4D2 engine post.
+static const Choice_t kPostQuality[] =
+{
+	{ "#GraphicsOptions_Off", { 0, 0, 1, 0, 0 } },
+	{ "#GraphicsOptions_Normal", { 1, 1, 4, 0, 0 } },
+	{ "#GraphicsOptions_Extra", { 1, 0, 1, 0, 0 } },
 };
 
 static const Choice_t kMotionQuality[] =
@@ -226,12 +235,14 @@ static const Choice_t kUpscaler[] =
 	{ "#GraphicsOptions_FSRAA", { 3, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_XeSSAA", { 4, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_SMAAT2x", { 5, 0, 0, 0, 0 } },
+	{ "Lightweight TAAU", { 6, 0, 0, 0, 0 } },
 };
 
 // Temporal upscaler render scale per axis (r_upscaler_scale); below native the upscaler reconstructs the full resolution.
 static const Choice_t kRenderScale[] =
 {
 	{ "#GraphicsOptions_ScaleNative", { 1, 0, 0, 0, 0 } },
+	{ "#GraphicsOptions_ScaleOptimized", { 0.8334f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleUltraQuality", { 0.77f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleQuality", { 0.667f, 0, 0, 0, 0 } },
 	{ "#GraphicsOptions_ScaleBalanced", { 0.58f, 0, 0, 0, 0 } },
@@ -320,6 +331,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Bicubic", TAB_DISPLAY, ROW_CHECK, { "r_lightmap_bicubic", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Detail", TAB_DISPLAY, ROW_SLIDER, { "cl_detaildist", NULL, NULL, NULL, NULL }, NULL, 0, 0, 4000, 50, NULL, ROWF_NONE },
 
+	{ "Compact PBR lighting", TAB_LIGHTING, ROW_CHECK, { "r_pbr_lean_lighting", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
@@ -333,7 +345,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_FlashlightBounce", TAB_LIGHTING, ROW_CHECK, { "r_flashlight_bounce", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Volumetric", TAB_LIGHTING, ROW_COMBO, { "r_volumetric", "r_volumetric_quality", NULL, NULL, NULL }, kScreenSpaceEffect, ARRAYSIZE( kScreenSpaceEffect ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 
-	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_CHECK, { "mat_postfx_dx12", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_PostFx", TAB_POST, ROW_COMBO, { "mat_postfx_dx12", "mat_postfx_compact", "mat_postfx_meter_stride", NULL, NULL }, kPostQuality, ARRAYSIZE( kPostQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_BloomQuality", TAB_POST, ROW_COMBO, { "mat_postfx_bloom_quality", NULL, NULL, NULL, NULL }, kQuality3, ARRAYSIZE( kQuality3 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Bloom", TAB_POST, ROW_SLIDER, { "mat_postfx_bloom_intensity", NULL, NULL, NULL, NULL }, NULL, 0, 0, 400, 5, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_Dirt", TAB_POST, ROW_CHECK, { "mat_postfx_lensdirt_enable", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
@@ -380,6 +392,52 @@ const RowDef_t *GetRows( int &count )
 {
 	count = ARRAYSIZE( g_Rows );
 	return g_Rows;
+}
+
+const char *PerformanceTip( const RowDef_t &row )
+{
+	static const struct
+	{
+		const char *cvar;
+		const char *token;
+	} tips[] =
+	{
+		{ "r_rootlod", "#GraphicsOptions_PerfModel" },
+		{ "mat_picmip", "#GraphicsOptions_PerfTexture" },
+		{ "mat_trilinear", "#GraphicsOptions_PerfFilter" },
+		{ "r_waterforceexpensive", "#GraphicsOptions_PerfWater" },
+		{ "cl_detaildist", "#GraphicsOptions_PerfDetail" },
+		{ "mat_pbr_override", "#GraphicsOptions_PerfPBR" },
+		{ "r_lightmap_bicubic", "#GraphicsOptions_PerfBicubic" },
+		{ "r_upscaler_scale", "#GraphicsOptions_PerfScale" },
+		{ "r_upscaler", "#GraphicsOptions_PerfAA" },
+		{ "r_pbr_lean_lighting", "#GraphicsOptions_PerfCompact" },
+		{ "r_shadowmap_enable", "#GraphicsOptions_PerfShadows" },
+		{ "r_shadowmap_resolution", "#GraphicsOptions_PerfShadowRes" },
+		{ "r_shadowmap_filter", "#GraphicsOptions_PerfShadowFilter" },
+		{ "r_csm_distance", "#GraphicsOptions_PerfShadowDistance" },
+		{ "r_shadowmap_max_realtime_lights", "#GraphicsOptions_PerfLights" },
+		{ "r_editor_lights_max_shadowed", "#GraphicsOptions_PerfEditorLights" },
+		{ "r_gtao", "#GraphicsOptions_PerfGTAO" },
+		{ "r_contactshadows", "#GraphicsOptions_PerfContact" },
+		{ "r_ssr", "#GraphicsOptions_PerfSSR" },
+		{ "r_ssr_resolution", "#GraphicsOptions_PerfSSRResolution" },
+		{ "r_flashlight_bounce", "#GraphicsOptions_PerfBounce" },
+		{ "r_volumetric", "#GraphicsOptions_PerfVolumetric" },
+		{ "mat_postfx_dx12", "#GraphicsOptions_PerfPost" },
+		{ "mat_postfx_bloom_quality", "#GraphicsOptions_PerfBloom" },
+		{ "mat_motion_blur_enabled", "#GraphicsOptions_PerfMotionToggle" },
+		{ "mat_motion_blur_quality", "#GraphicsOptions_PerfMotion" },
+		{ "r_framegen", "#GraphicsOptions_PerfFramegen" },
+		{ "r_framegen_multiplier", "#GraphicsOptions_PerfFramegenRate" },
+		{ "r_dlss_nr_layers", "#GraphicsOptions_PerfNeural" },
+	};
+	for ( int i = 0; i < ARRAYSIZE( tips ); ++i )
+	{
+		if ( !V_strcmp( row.cvars[0], tips[i].cvar ) )
+			return tips[i].token;
+	}
+	return row.note;
 }
 
 bool IsDX12Renderer()

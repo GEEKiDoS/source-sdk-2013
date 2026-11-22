@@ -10,8 +10,9 @@ logical=volumetric_temporal_ps51 stage=ps source=volumetric_temporal_ps51.fxc le
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=DX12Volumetric space=6 register=b1 size=64 layoutHash=0x1cac700feae11476 engine
+  cbuffer=DX12Volumetric space=6 register=b1 size=80 layoutHash=0xc4185eacc972f8da engine
     member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
-    member=cVolumeControl type=19 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
-    member=cVolumeOutputScale type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeBeamMedium type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeControl type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
+    member=cVolumeOutputScale type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=

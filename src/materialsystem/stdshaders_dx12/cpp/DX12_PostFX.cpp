@@ -18,6 +18,7 @@
 #include "postfx_kawase_up_cs51.inc"
 #include "postfx_glare_cs51.inc"
 #include "postfx_jpeg_cs51.inc"
+#include "postfx_dof_input_cs51.inc"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -90,7 +91,7 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 			constants.p1 = pParams0[3];
 			const float *pParams1 = params[PARAMS1]->GetVecValue();
 			constants.p2 = pParams1[0];
-			if ( nPass == 9 || nPass == 10 )
+			if ( nPass == 7 || nPass == 9 || nPass == 10 || nPass == 11 )
 			{
 				constants.pad0 = pParams1[1];
 				constants.pad1 = pParams1[2];
@@ -130,11 +131,24 @@ BEGIN_VS_SHADER( DX12_PostFX, "DX12 post-processing compute passes" )
 				SelectShader< postfx_flare_cs51_Static_Index, postfx_flare_cs51_Dynamic_Index >( dispatch, "postfx_flare_cs51" );
 				break;
 			case 4:
+				if ( constants.p1 > 0.f )
+					dispatch.m_Srv[1] = DX12MaterialTexture( GetShaderAPITextureBindHandle( SRCTEXTURE2, -1 ), params[SRCMIP2]->GetIntValue(), 1 );
 				SelectShader< postfx_kawase_down_cs51_Static_Index, postfx_kawase_down_cs51_Dynamic_Index >( dispatch, "postfx_kawase_down_cs51" );
 				break;
 			case 5:
 				SelectShader< postfx_kawase_up_cs51_Static_Index, postfx_kawase_up_cs51_Dynamic_Index >( dispatch, "postfx_kawase_up_cs51" );
 				break;
+			case 11:
+			{
+				postfx_dof_input_cs51_Static_Index staticIndex;
+				staticIndex.SetMSAA( DX12ComputeAPI()->SceneSampleCount() > 1 );
+				postfx_dof_input_cs51_Dynamic_Index dynamicIndex;
+				dispatch.m_pShaderName = "postfx_dof_input_cs51";
+				dispatch.m_nStaticIndex = staticIndex.GetIndex();
+				dispatch.m_nDynamicIndex = dynamicIndex.GetIndex();
+				dispatch.m_Srv[1].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH;
+				break;
+			}
 			case 10:
 				SelectShader< postfx_jpeg_cs51_Static_Index, postfx_jpeg_cs51_Dynamic_Index >( dispatch, "postfx_jpeg_cs51" );
 				dispatch.m_nGroupsX = ( constants.dstWidth + 15 ) / 16;

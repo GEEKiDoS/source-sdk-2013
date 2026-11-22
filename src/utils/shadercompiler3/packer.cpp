@@ -561,9 +561,11 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
     if (space2 && !marker) throw std::runtime_error("Space-2 resources require DX12LightingViewConstantsV1");
     constexpr unsigned sharedVisibility = (1u << 9) | (1u << 10);
     constexpr unsigned propVisibility = (1u << 11) | (1u << 12) | (1u << 14);
+    const bool vertexProp = logical == "pbr_model_vs51" && (seen & propVisibility) == (1u << 14) &&
+        (seen & sharedVisibility) == sharedVisibility;
     if (((seen & sharedVisibility) && (seen & sharedVisibility) != sharedVisibility) ||
         ((seen & (1u << 8)) && (seen & sharedVisibility) != sharedVisibility) ||
-        ((seen & propVisibility) && ((seen & propVisibility) != propVisibility || (seen & sharedVisibility) != sharedVisibility)))
+        ((seen & propVisibility) && ((seen & propVisibility) != propVisibility || (seen & sharedVisibility) != sharedVisibility) && !vertexProp))
         throw std::runtime_error("Lighting ABI 6 incomplete visibility resource group: " + logical);
     static const char *const propReceivers[] = {
         "vertexlit_and_unlit_generic_shadowmap_ps51", "vertexlit_and_unlit_generic_bump_shadowmap_ps51",
@@ -580,10 +582,10 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
             D3D12_SIGNATURE_PARAMETER_DESC input{};
             if (FAILED(reflection->GetInputParameterDesc(i, &input)))
                 throw std::runtime_error("Cannot reflect static-prop primitive identity: " + logical);
-            if (input.SystemValueType == D3D_NAME_PRIMITIVE_ID && input.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
+            if (input.SystemValueType == (vertexProp ? D3D_NAME_VERTEX_ID : D3D_NAME_PRIMITIVE_ID) && input.ComponentType == D3D_REGISTER_COMPONENT_UINT32 &&
                 input.Mask == 1) primitiveId = true;
         }
-        if (!primitiveId) throw std::runtime_error("Static-prop visibility requires uint SV_PrimitiveID: " + logical);
+        if (!primitiveId) throw std::runtime_error("Static-prop visibility requires checked vertex or primitive ID: " + logical);
     }
     const bool carrier = logical == "lightmappedgeneric_shadowmap_ps51" || logical == "worldtwotextureblend_shadowmap_ps51" ||
                          logical == "lightmappedreflective_shadowmap_ps51" || logical == "lightmappedgeneric_decal_shadowmap_ps51";
@@ -591,8 +593,9 @@ void validateLightingResources(ID3D12ShaderReflection *reflection, const D3D12_S
         throw std::runtime_error("Lighting ABI 6 receiver requires packed uint t1029: " + logical);
 }
 void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SHADER_DESC &desc, VcsStage stage, const Shader &shader) {
-	static const char *const names[] = {"HlightFaceIds", "HlightFaces", "HlightTiles", "HlightDynamic",
-		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384"};
+	static const char *const names[] = {"HlightOwnerIds", "HlightFaces", "HlightTiles", "HlightDynamic",
+		"HlightPages2048", "HlightPages4096", "HlightPages8192", "HlightPages16384",
+		"HlightSun0", "HlightSun1", "HlightSun2", "HlightSun3"};
 	unsigned seen = 0;
 	for (unsigned i = 0; i < desc.BoundResources; ++i) {
 		D3D12_SHADER_INPUT_BIND_DESC b{};
@@ -601,17 +604,17 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		bool valid = stage == VcsStage::Pixel && shader.highresAbi && b.BindCount == 1;
 		unsigned slot = 0;
 		if (b.Type == D3D_SIT_CBUFFER) {
-			slot = 8;
+			slot = 12;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "DX12HighresDrawConstants");
 		} else if (b.Type == D3D_SIT_SAMPLER) {
-			slot = 9;
+			slot = 13;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightLinear") && !(b.uFlags & D3D_SIF_COMPARISON_SAMPLER);
 		} else if (b.Type == D3D_SIT_UAV_RWBYTEADDRESS) {
-			slot = 10;
+			slot = 14;
 			valid = valid && b.BindPoint == 0 && !strcmp(b.Name, "HlightFailure");
 		} else {
 			slot = b.BindPoint;
-			valid = valid && slot < 8 && !strcmp(b.Name, names[slot]);
+			valid = valid && slot < 12 && !strcmp(b.Name, names[slot]);
 			if (valid && slot == 1)
 				valid = b.Type == D3D_SIT_STRUCTURED && b.Dimension == D3D_SRV_DIMENSION_BUFFER &&
 					b.NumSamples == 132u;
@@ -626,9 +629,9 @@ void validateHighresResources(ID3D12ShaderReflection *reflection, const D3D12_SH
 		if (!valid || (seen & (1u << slot))) throw std::runtime_error("Highres resource contract mismatch: " + std::string(b.Name));
 		seen |= 1u << slot;
 	}
-	// HlightDynamic (slot 3) holds the captured native dynamic lightmap additions; a receiver that reads no lightmap RGB
-	// (the additive realtime pass of the two-pass PBR split) never samples it.
-	if (seen && (seen | (1u << 3)) != 0x7ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
+	// RGB-only variants can drop the four sun views; sun-only variants can drop t3.
+	const unsigned mask = seen | (1u << 3);
+	if (seen && mask != 0x7fffu && mask != 0x70ffu) throw std::runtime_error("Incomplete highres resource contract: " + shader.logical);
 }
 bool pbrSpotGpuType(ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding) {
 	D3D12_SHADER_TYPE_DESC type{};
