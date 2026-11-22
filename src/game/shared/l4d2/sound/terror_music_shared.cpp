@@ -11,6 +11,11 @@
 #include "soundchars.h"
 #include "SoundEmitterSystem/isoundemittersystembase.h"
 #include "filesystem.h"
+#ifdef CLIENT_DLL
+#include "c_world.h"
+#include "mapentities_shared.h"
+#include "l4d2/gamerules/terror_gamerules.h"
+#endif
 #include "tier0/memdbgon.h"
 
 extern ISoundEmitterSystemBase *soundemitterbase;
@@ -39,6 +44,33 @@ static ConVar music_intensity_threshold( "music_intensity_threshold", "0.3",
  );
 static CUtlDict<bool, int> s_musicWaveLoops;
 
+#ifdef CLIENT_DLL
+static bool IsHordeMusicEvent( const char *name, const char *style, bool legacy )
+{
+	if ( !V_stricmp( name, "Event.Mobbed" ) || !V_stricmp( name, "Event.AmbientMob" ) ||
+		!V_stricmp( name, legacy ? "Event.ZombieChoir_L4D1" : "Event.ZombieChoir" ) )
+		return true;
+	if ( V_strnicmp( name, "Event.Zombat", 12 ) && V_strnicmp( name, "Event.MobSignal", 15 ) &&
+		V_strnicmp( name, "Event.DangerAtmosphere", 22 ) )
+		return false;
+	const char *suffix = V_strrchr( name, '_' );
+	if ( !suffix )
+		return false;
+	++suffix;
+	if ( !V_stricmp( suffix, style ) || ( legacy && !V_stricmp( suffix, "L4D1" ) ) )
+		return true;
+	// Numbered zombat tracks and their A/B continuations are shared by L4D2 campaigns.
+	return !legacy && !V_strnicmp( name, "Event.Zombat_", 13 ) &&
+		*suffix && strspn( suffix, "0123456789" ) == strlen( suffix );
+}
+
+static bool IsHordeEffectEvent( const char *name )
+{
+	return !V_strnicmp( name, "Zombie.", 7 ) || !V_stricmp( name, "MegaMobIncoming" ) ||
+		!V_strnicmp( name, "Melee.Hit", 9 ) || !V_stricmp( name, "Blood.Spurt" );
+}
+#endif
+
 // GameData has one native sound-registry lifecycle owner. Music owns only
 // transport hashes and parsed wave-loop flags, never borrowed GameData trees.
 class CMusicSoundHashes : public CAutoGameSystem
@@ -50,30 +82,61 @@ public:
 #ifdef CLIENT_DLL
 	void LevelInitPostEntity() override
 	{
-		// Per-map trace manifest. Prefetch only observed waves through the
-		// sound system; don't retain a second copy of their PCM here.
-		char map[MAX_PATH], path[MAX_PATH];
-		V_FileBase( engine->GetLevelName(), map, sizeof( map ) );
-		V_snprintf( path, sizeof( path ), "scripts/horde_precache/%s.txt", map );
-		FileHandle_t file = filesystem->Open( path, "rb", "GAME" );
-		if ( !file )
-			return;
-		Find( 0 );
-		char wave[MAX_PATH];
-		int count = 0;
-		while ( count < 1024 && filesystem->ReadLine( wave, sizeof( wave ), file ) )
+		// Sign-on may not have delivered the world entity yet. The authored
+		// worldspawn provides the same musicpostfix without guessing a campaign.
+		char authored[MAPKEY_MAXLENGTH] = {}, token[MAPKEY_MAXLENGTH];
+		const C_World *world = GetClientWorldEntity();
+		const char *style = world ? world->GetMusicPostfix() : "";
+		if ( !*style && engine->GetMapEntitiesString() )
 		{
-			V_StripTrailingWhitespace( wave );
-			const char *ext = V_GetFileExtension( wave );
-			if ( !ext || V_stricmp( ext, "wav" ) || V_IsAbsolutePath( wave ) || V_strstr( wave, ".." ) || V_strchr( wave, ':' ) )
-				continue;
-			CBaseEntity::PrefetchSound( wave );
-			if ( !V_strnicmp( wave, "music/", 6 ) )
-				IsMusicSoundLooping( wave );
-			++count;
+			const char *entity = MapEntity_ParseToken( engine->GetMapEntitiesString(), token );
+			if ( entity && MapEntity_ExtractValue( entity, "musicpostfix", authored ) )
+				style = authored;
 		}
-		filesystem->Close( file );
-		DevMsg( "Horde sound prefetch: %d waves for %s\n", count, map );
+		if ( TerrorGameRules() && TerrorGameRules()->IsSurvivalMode() )
+			style = "Survival";
+		const bool legacy = TerrorGameRules() && TerrorGameRules()->GetSurvivorSet() == 1;
+		// Separate caps keep long music tracks from starving short infected
+		// effects. Charge mounted WAV bytes, not a guess at engine residency.
+		const unsigned budget[] = { 32u << 20, 32u << 20 };
+		unsigned bytes[2] = {};
+		int waves[2] = {};
+		CUtlDict<bool, int> seen;
+		for ( int i = soundemitterbase->First(); i != soundemitterbase->InvalidIndex(); i = soundemitterbase->Next( i ) )
+		{
+			const char *name = soundemitterbase->GetSoundName( i );
+			const bool music = IsHordeMusicEvent( name, style, legacy );
+			const bool effect = IsHordeEffectEvent( name );
+			// Surface-script footstep names vary; their wave family is stable.
+			if ( !music && !effect && !V_stristr( name, "step" ) && !V_stristr( name, "run" ) && !V_stristr( name, "walk" ) )
+				continue;
+			CSoundParametersInternal *params = soundemitterbase->InternalGetParametersForSound( i );
+			if ( !params )
+				continue;
+			for ( int j = 0; j < params->NumSoundNames(); ++j )
+			{
+				const char *sample = soundemitterbase->GetWaveName( params->GetSoundNames()[j].symbol );
+				char wave[MAX_PATH], path[MAX_PATH];
+				V_strncpy( wave, PSkipSoundChars( sample ), sizeof( wave ) );
+				V_FixSlashes( wave, '/' );
+				if ( !music && !effect && V_strnicmp( wave, "player/footsteps/infected/", 26 ) )
+					continue;
+				if ( seen.Find( wave ) != seen.InvalidIndex() )
+					continue;
+				seen.Insert( wave, true );
+				V_snprintf( path, sizeof( path ), "sound/%s", wave );
+				const unsigned size = filesystem->Size( path, "GAME" );
+				if ( !size || size > budget[music] - bytes[music] )
+					continue;
+				CBaseEntity::PrefetchSound( sample );
+				if ( music )
+					IsMusicSoundLooping( wave );
+				bytes[music] += size;
+				++waves[music];
+			}
+		}
+		DevMsg( "Horde audio warmup: style %s, %d effect waves (%u bytes), %d music waves (%u bytes)\n",
+			*style ? style : "<shared>", waves[0], bytes[0], waves[1], bytes[1] );
 	}
 #endif
 	const char *Find( unsigned int hash )
