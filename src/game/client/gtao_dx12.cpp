@@ -214,7 +214,8 @@ ConVar r_gtao_slices( "r_gtao_slices", "2", FCVAR_ARCHIVE, "GTAO slices per pixe
 ConVar r_gtao_steps( "r_gtao_steps", "3", FCVAR_ARCHIVE, "GTAO horizon steps per slice side", true, 1, true, 8 );
 ConVar r_gtao_resolution( "r_gtao_resolution", "0.5", FCVAR_ARCHIVE, "GTAO internal resolution scale per axis; below 1 the term is upsampled depth-aware", true, 0.25f, true, 1.f );
 ConVar r_gtao_radius( "r_gtao_radius", "24", FCVAR_ARCHIVE, "GTAO effect radius in world units", true, 1.f, true, 1024.f );
-ConVar r_gtao_power( "r_gtao_power", "2.2", FCVAR_ARCHIVE, "GTAO final value power (occlusion contrast)", true, 0.1f, true, 8.f );
+// Calibrated to the old Medium appearance after fixing depth rejection in the half-resolution resolve.
+ConVar r_gtao_power( "r_gtao_power", "0.65", FCVAR_ARCHIVE, "GTAO final value power (occlusion contrast)", true, 0.1f, true, 8.f );
 ConVar r_gtao_denoise( "r_gtao_denoise", "1", FCVAR_ARCHIVE, "GTAO spatial denoise passes (with temporal AA the noise pattern also animates so the upscaler accumulates it)", true, 0, true, 3 );
 ConVar r_gtao_debug( "r_gtao_debug", "0", 0, "GTAO: 1 shows the AO term instead of applying it", true, 0, true, 1 );
 ConVar r_gtao_temporal( "r_gtao_temporal", "1", FCVAR_ARCHIVE, "DX12: accumulate GTAO across frames with motion/depth rejection", true, 0, true, 1 );

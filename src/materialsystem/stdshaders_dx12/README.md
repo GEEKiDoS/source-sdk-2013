@@ -1494,6 +1494,14 @@ This avoids dark fringes on undersampled cutout foliage without a material exclu
 or reducing the GTAO radius. Detail sprites drawn after GTAO still appear over its
 debug view; their visible blade colour is not the AO term.
 
+The half-resolution upsample compares tap depths against the receiver's local
+plane in reciprocal view depth, using the actual scene pixels read by the
+depth prefilter. Its material initializes the relative depth tolerance
+explicitly: a zero tolerance exposed the half-resolution grid as alternating
+rows and columns. All qualities use Medium's 2.6-scene-pixel minimum march
+offset before rounding to their working grid. The shared default
+`r_gtao_power 0.65` retains the softer Medium look with the corrected resolve.
+
 ### Screen-space reflections
 
 `shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the

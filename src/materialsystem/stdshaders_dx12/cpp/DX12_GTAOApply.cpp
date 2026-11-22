@@ -36,6 +36,15 @@ BEGIN_VS_SHADER( DX12_GTAOApply, "DX12 GTAO apply" )
 		return 0;
 	}
 
+	SHADER_INIT_PARAMS()
+	{
+		// The host initializes undefined float params to zero, not the
+		// declaration's default string. Zero makes the half-res filter accept
+		// practically only exact depth matches, exposing the AO pixel grid.
+		if ( !params[DEPTHTOLERANCE]->IsDefined() )
+			params[DEPTHTOLERANCE]->SetFloatValue( 0.05f );
+	}
+
 	SHADER_INIT
 	{
 	}

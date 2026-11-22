@@ -52,6 +52,23 @@ float GtaoSceneFog( int2 full, float viewDepth, out float3 fogColor )
 	return SceneFog( clipZ, world.xyz / world.w, gEyePos, vertexFog, gPixelFogType, cRasterFogParams, cPixelFogParams );
 }
 
+// Reciprocal view depth is affine across a projected plane. Use a one-sided
+// derivative at silhouettes, selecting the closer neighbour to avoid fitting
+// the gap between unrelated surfaces.
+float GtaoDepthSlope( int2 full, int2 axis, float invDepth )
+{
+	int2 minus = clamp( full - axis, int2( 0, 0 ), gFullSize - 1 );
+	int2 plus = clamp( full + axis, int2( 0, 0 ), gFullSize - 1 );
+	float dMinus = gViewDepth.Load( int3( minus, 0 ) );
+	float dPlus = gViewDepth.Load( int3( plus, 0 ) );
+	float a = invDepth - rcp( max( dMinus, 1e-4 ) );
+	float b = rcp( max( dPlus, 1e-4 ) ) - invDepth;
+	const bool hasMinus = dMinus < 65503.0 && any( minus != full );
+	const bool hasPlus = dPlus < 65503.0 && any( plus != full );
+	if ( hasMinus && hasPlus ) return abs( a ) < abs( b ) ? a : b;
+	return hasMinus ? a : hasPlus ? b : 0.0;
+}
+
 float4 main( PS_INPUT input ) : SV_Target0
 {
 	int2 full = clamp( int2( input.projPos.xy ) - gSceneOrigin, int2( 0, 0 ), gFullSize - 1 );
@@ -72,6 +89,11 @@ float4 main( PS_INPUT input ) : SV_Target0
 		float2 loc = ( float2( full ) + 0.5 ) * ( float2( gAoSize ) / float2( gFullSize ) ) - 0.5;
 		int2 base = int2( floor( loc ) );
 		float2 f = frac( loc );
+		const float invDepth = rcp( max( sceneDepth, 1e-4 ) );
+		const float2 depthSlope = float2( GtaoDepthSlope( full, int2( 1, 0 ), invDepth ),
+			GtaoDepthSlope( full, int2( 0, 1 ), invDepth ) );
+		const float depthTolerance = max( invDepth * gDepthTolerance, 1e-7 );
+		const float2 tapToFull = float2( gFullSize ) / float2( gAoSize );
 		float sum = 0.0;
 		float weightSum = 0.0;
 		[unroll]
@@ -81,8 +103,13 @@ float4 main( PS_INPUT input ) : SV_Target0
 			{
 				int2 tap = clamp( base + int2( x, y ), int2( 0, 0 ), gAoSize - 1 );
 				float bilerp = ( x == 0 ? 1.0 - f.x : f.x ) * ( y == 0 ? 1.0 - f.y : f.y );
+				int2 tapFull = clamp( int2( floor( ( float2( tap ) + 0.5 ) * tapToFull ) ), int2( 0, 0 ), gFullSize - 1 );
+				// The depth is the exact prefilter sample, not the conceptual
+				// AO-cell centre, which can fall between two scene pixels.
 				float tapDepth = gAoDepth.Load( int3( tap, 0 ) );
-				float depthWeight = saturate( 1.0 - abs( tapDepth - sceneDepth ) / max( sceneDepth * gDepthTolerance, 1e-4 ) );
+				float expected = invDepth + dot( float2( tapFull - full ), depthSlope );
+				float depthWeight = tapDepth >= 65503.0 || expected <= 0.0 ? 0.0 :
+					saturate( 1.0 - abs( rcp( max( tapDepth, 1e-4 ) ) - expected ) / depthTolerance );
 				float weight = bilerp * depthWeight;
 				sum += gAo.Load( int3( tap, 0 ) ) * weight;
 				weightSum += weight;
