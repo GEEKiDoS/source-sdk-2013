@@ -31,8 +31,10 @@ public:
 class postfx_composite_ps51_Dynamic_Index
 {
 	unsigned int m_nCAMERA_MODEL : 2;
+	unsigned int m_nCOMPACT_IDLE : 2;
 #ifdef _DEBUG
 	bool m_bCAMERA_MODEL : 1;
+	bool m_bCOMPACT_IDLE : 1;
 #endif	// _DEBUG
 public:
 	void SetCAMERA_MODEL( int i )
@@ -44,21 +46,32 @@ public:
 #endif	// _DEBUG
 	}
 
+	void SetCOMPACT_IDLE( int i )
+	{
+		Assert( i >= 0 && i <= 1 );
+		m_nCOMPACT_IDLE = i;
+#ifdef _DEBUG
+		m_bCOMPACT_IDLE = true;
+#endif	// _DEBUG
+	}
+
 	postfx_composite_ps51_Dynamic_Index(  )
 	{
 		DX12SelectNativeBlock< postfx_composite_ps51_Block >( dx12native::kStagePixel );
 		m_nCAMERA_MODEL = 0;
+		m_nCOMPACT_IDLE = 0;
 #ifdef _DEBUG
 		m_bCAMERA_MODEL = false;
+		m_bCOMPACT_IDLE = false;
 #endif	// _DEBUG
 	}
 
 	int GetIndex() const
 	{
-		Assert( m_bCAMERA_MODEL );
-		return ( 1 * m_nCAMERA_MODEL ) + 0;
+		Assert( m_bCAMERA_MODEL && m_bCOMPACT_IDLE );
+		return ( 1 * m_nCAMERA_MODEL ) + ( 3 * m_nCOMPACT_IDLE ) + 0;
 	}
 };
 
-#define shaderDynamicTest_postfx_composite_ps51 psh_forgot_to_set_dynamic_CAMERA_MODEL
+#define shaderDynamicTest_postfx_composite_ps51 psh_forgot_to_set_dynamic_CAMERA_MODEL + psh_forgot_to_set_dynamic_COMPACT_IDLE
 

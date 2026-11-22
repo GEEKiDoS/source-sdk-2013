@@ -130,6 +130,11 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 				DX12SetPixelShaderConstant( 13, params[MOTION]->GetVecValue() );
 			}
 			const float *pFinish = params[FINISH]->GetVecValue();
+			const float *pController = params[CONTROLLER]->GetVecValue();
+			const bool bCompactIdle = bGrade && !bCamera &&
+				pController[0] == 0.f && pController[3] == 0.f && params[OUTPUT]->GetVecValue()[0] == 0.f &&
+				params[PARAMS0]->GetVecValue()[2] == 0.f && params[DEBUGVIEW]->GetIntValue() == 0 &&
+				params[PEAK]->GetFloatValue() == 1.f && params[OUTSCALE]->GetFloatValue() == 1.f;
 			if ( pFinish[3] != 0.f )
 			{
 				nFlags |= 16;
@@ -139,7 +144,8 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 					BindTexture( SHADER_SAMPLER12, VIGNETTE, -1 );
 				DX12SetPixelShaderConstant( 11, params[CONTRAST]->GetVecValue() );
 				DX12SetPixelShaderConstant( 12, pFinish );
-				DX12SetPixelShaderConstant( 14, params[CONTROLLER]->GetVecValue() );
+				if ( !bCompactIdle )
+					DX12SetPixelShaderConstant( 14, params[CONTROLLER]->GetVecValue() );
 				if ( params[CONTROLLER]->GetVecValue()[3] != 0.f )
 				{
 					nFlags |= 64;
@@ -177,6 +183,7 @@ BEGIN_VS_SHADER( DX12_PostFXComposite, "DX12 post-processing composite" )
 			SET_DYNAMIC_VERTEX_SHADER( screenspaceeffect_vs51 );
 			DECLARE_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
 			SET_DYNAMIC_PIXEL_SHADER_COMBO( CAMERA_MODEL, bBodycam ? 2 : bCamera ? 1 : 0 );
+			SET_DYNAMIC_PIXEL_SHADER_COMBO( COMPACT_IDLE, bCompactIdle );
 			SET_DYNAMIC_PIXEL_SHADER( postfx_composite_ps51 );
 		}
 		Draw();

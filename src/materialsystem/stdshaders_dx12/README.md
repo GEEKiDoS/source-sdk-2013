@@ -1677,8 +1677,11 @@ to reach mip 1. On an ordinary full-size SDR view the bloom extraction's second 
 display luma for local contrast. AgX, layer composition, local contrast, the authored LUT, vignette and grain
 then run in one pixel pass. Scene-detail sharpening before the curve replaces display-space RCAS on eligible
 views. Exposure still uses the original camera region and adaptation; the sparse query changes sampling
-density, not exposure bounds. Fades, vomit refraction, blurred vignettes and incompatible camera/target modes
-keep the legacy pass. Stencil-based metering keeps full density.
+density, not exposure bounds. An idle compact SDR view uses a specialized composite permutation:
+it keeps motion blur, sharpen, local contrast, LUT, vignette and grain, without the instructions for
+particle refraction or blurred vignette. A nonzero blurred-vignette strength or a valid vomit mask
+selects the general permutation on the same draw, with the same packed-field inputs. Fades and
+incompatible views keep the legacy grade; stencil-based metering keeps full density.
 
 `mat_postfx_taau_reduction` lets compact SDR post use native TAAU's sampleable output directly.
 An 8x8 compute group produces the first bloom/contrast level and an unthresholded quarter-size meter
