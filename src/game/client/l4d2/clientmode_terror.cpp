@@ -394,13 +394,14 @@ static void ReceiveAllPlayersConnectedGameStarting( bf_read & )
 }
 static void ReceiveDisconnectToLobby( bf_read & )
 {
-	// C26EE50: native byte10735EB0 selects disconnect only for -pressdemo.
-	// Keep the ordinary gameover payload. Main's standing missing-module rule
-	// omits only MatchFramework BroadcastEvent; no new disconnect or fake lobby.
-	// Native C26EE97-C26EEAC has no framework/session-null fallback branch.
+	// C26EE50: native byte10735EB0 selects disconnect only for -pressdemo; otherwise it broadcasts
+	// OnEngineEndGame("gameover") and the MatchFramework session leaves the game. This port has no
+	// MatchFramework session, so take the absent-session leave arm of the in-game menu instead
+	// (terror_basemodui_ingame.cpp LeaveGame); dropping the event left the outro stats crawl on screen forever.
 	if ( CommandLine()->FindParm( "-pressdemo" ) ) { engine->ClientCmd( "disconnect" ); return; }
-	KeyValues *event = new KeyValues( "OnEngineEndGame", "reason", "gameover" );
-	event->deleteThis(); // Release payload ownership when the absent broadcast is omitted.
+	engine->ClientCmd_Unrestricted( "gameui_hide" );
+	engine->ClientCmd_Unrestricted( "disconnect" );
+	engine->ClientCmd_Unrestricted( "gameui_activate" );
 }
 
 void ClientModeTerrorNormal::Init()
