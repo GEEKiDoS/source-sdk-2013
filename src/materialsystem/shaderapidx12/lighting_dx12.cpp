@@ -2284,6 +2284,18 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		scores[slot] = energy;
 		rows[0][slot] = float( i );
 	}
+	// A dynamic receiver has no baked per-pixel visibility. Supply its BSP
+	// endpoint for the uncharted share of partially resident lights.
+	uint32 blockedSlots = 0;
+	for ( int slot = 0; slot < limit && rows[0][slot] >= 0.0f; ++slot )
+	{
+		const auto &light = lights[int( rows[0][slot] )];
+		if ( light.realtimeWeight <= 0.0f || light.realtimeWeight >= 1.0f ) continue;
+		Vector direction( light.origin[0] - origin.x, light.origin[1] - origin.y, light.origin[2] - origin.z );
+		direction.NormalizeInPlace();
+		if ( blocked( light, direction ) ) blockedSlots |= 1u << slot;
+	}
+	rows[2][3] = float( blockedSlots );
 	for ( int i = 0; i < lights.Count(); ++i )
 	{
 		bool selected = false;

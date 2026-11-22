@@ -1314,8 +1314,10 @@ Enhanced PBR models without a validated static-prop receiver use the archived `r
 owner using `CShaderAPIDX12::m_LightingOrigin`, the current retained view packet and a map-owned copy of the
 validated structural BSP. It ranks lights by linear irradiance after the authored radius, falloff, cap, fade and
 spot cone; charted lights take precedence. Static-only candidates behind solid world leaves are rejected.
-Material registers c40–c46 carry four packet indices and six ambient-cube RGB rows. The selected
-lights still use the normal BRDF, baked visibility and realtime shadows. The sun, projected lights
+Material registers c40–c46 carry four packet indices and six ambient-cube RGB rows.
+During a residency transition c42.w carries a four-bit mask of selected slots whose model-origin ray is
+blocked. Their uncharted share is zero; the charted share still uses per-pixel visibility.
+Selected lights still use the normal BRDF, baked visibility and realtime shadows. The sun, projected lights
 and world lightmapped receivers are unchanged. Other direct lights are tested against the same structural solids
 before projection onto the six cube axes at the draw origin. Squared-normal weights add this cube to the model's
 probe/engine ambient. This test is not a substitute for a per-pixel shadow chart or a trace against props.

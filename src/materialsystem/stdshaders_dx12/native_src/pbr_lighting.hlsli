@@ -441,6 +441,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 #if defined( PBR_MODEL_LOCAL_SELECTION )
 		float propVisibility = 1.0;
 		bool fromProp = false;
+		bool modelFallbackBlocked = false;
 		if ( exactPropLocals && propChunk < entryCount )
 		{
 			if ( propLive == 0 )
@@ -461,6 +462,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 		else
 		if ( modelSelection )
 		{
+			modelFallbackBlocked = ( uint( g_ModelLocalAmbient[1].w ) & ( 1u << i ) ) != 0;
 			int selected = int( g_ModelLocalIndices[i++] );
 			if ( selected < 0 ) continue;
 			index = uint( selected );
@@ -566,6 +568,11 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
+#if defined( PBR_MODEL_LOCAL_SELECTION )
+				// Only the fallback endpoint uses the model-origin trace. The
+				// chart can still light pixels across a doorway or penumbra.
+				if ( modelFallbackBlocked ) bakedVisibility = 0.0;
+#endif
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, realtimeWeight );
 				if ( bakedDelta )
 				{
