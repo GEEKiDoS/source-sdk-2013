@@ -1,8 +1,8 @@
 // Native SM5.1 XeGTAO main horizon integration pass.
 #include "gtao_common.hlsli"
 Texture2D<float> gDepthMips : register( t0, space0 );
-RWTexture2D<unorm float> gAoOut : register( u0, space0 );
-RWTexture2D<unorm float> gEdgesOut : register( u1, space0 );
+RWTexture2D<float> gAoOut : register( u0, space0 );
+RWTexture2D<float> gEdgesOut : register( u1, space0 );
 SamplerState gPointClamp : register( s0, space0 );
 
 float LoadDepth0( int2 p )
