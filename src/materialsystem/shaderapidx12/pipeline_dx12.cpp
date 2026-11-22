@@ -24,6 +24,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier )
 {
 	Shutdown();
 	m_pDevice = pDevice;
+	m_Library.Open( pDevice );
 	m_bVramFit = lowTier && !( CommandLine() && CommandLine()->CheckParm( "-dx12novramfit" ) );
 	m_nResourceStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_nSamplerStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
@@ -317,6 +318,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier )
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::Shutdown()
 {
+	m_Library.Close();
 	m_Entries.Purge();
 	++m_nPipelineEpoch;
 	m_nLastPipelineIndex = -1;
@@ -403,9 +405,9 @@ void CPipelineCacheDX12::ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE 
 // Purpose: Sub-allocates from fence-retired upload pages, optionally
 //          swapping red/blue of vertex colors while copying
 //-----------------------------------------------------------------------------
-bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride )
+bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped )
 {
-	if ( !pData || !nBytes || nAllocationBytes < nBytes || !nAlignment )
+	if ( ( !pData && !ppMapped ) || !nBytes || nAllocationBytes < nBytes || !nAlignment )
 		return false;
 	if ( nSwapCount && ( !pSwapOffsets || !nVertexStride || nBytes % nVertexStride ) )
 		return false;
@@ -478,7 +480,10 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 		m_Stats.uploadPoolCapacityBytes += page.capacity;
 		m_Stats.uploadPoolBufferBytes += desc.Width;
 	}
-	memcpy( chosen->mapped + offset, pData, nBytes );
+	if ( ppMapped )
+		*ppMapped = chosen->mapped + offset;
+	else
+		memcpy( chosen->mapped + offset, pData, nBytes );
 	if ( nSwapCount )
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 UploadColorSwap", DX12_DRAW_ZONES_ACTIVE );
@@ -511,6 +516,12 @@ bool CPipelineCacheDX12::AllocateUploadLocked( const void *pData, size_t nBytes,
 	if ( pSourceOffset )
 		*pSourceOffset = offset;
 	return true;
+}
+
+bool CPipelineCacheDX12::ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped )
+{
+	D3D12_GPU_VIRTUAL_ADDRESS unused;
+	return AllocateUploadLocked( nullptr, bytes, bytes, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT, fence, unused, resource, &offset, nullptr, 0, 0, mapped );
 }
 
 //-----------------------------------------------------------------------------
@@ -1530,9 +1541,18 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.DepthStencilState.FrontFace.StencilFunc = StencilFunctionDX12( key.stencilFunction );
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
-	HRESULT hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
-	++m_Stats.pipelinesCreated;
-	++g_FirstUse.creates;
+	const uint64_t diskKey = m_Library.Enabled() ? m_Library.Key( desc, key.highresAbi ? 2 : key.lightingAbi ? 1 : 0 ) : 0;
+	HRESULT hr = S_OK;
+	if ( m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
+		++g_FirstUse.libraryHits;
+	else
+	{
+		hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
+		++m_Stats.pipelinesCreated;
+		++g_FirstUse.creates;
+		if ( SUCCEEDED( hr ) )
+			m_Library.Store( diskKey, pso.Get() );
+	}
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
 	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.

@@ -1262,6 +1262,7 @@ void CHighresLightmapsDX12::OnNativeLevelInit(IMaterialSystem *materials)
     {
         std::lock_guard<std::recursive_mutex> lock(s.mutex);
         if (s.device) s.device->RequestMapMemoryReport();
+        if (s.api) s.api->WarmLevelShaderCombos();
         // Same predicate the material DLL snapshots with (DX12ShadowmapSnapshot::Select). The engine cached this load's
         // materials before the domain existed (ordinary); materials kept from a receiver map carry receiver snapshots.
         const bool receiver = s.status.state==DX12_HIGHRES_PENDING || s.status.state==DX12_HIGHRES_READY ||

@@ -744,26 +744,8 @@ CShaderAPIDX12::~CShaderAPIDX12()
 		m_pDebugTextureEntries->deleteThis();
 }
 
-//-----------------------------------------------------------------------------
-// Purpose: Loads (once per file) and creates the record of one named VCS shader combo
-//-----------------------------------------------------------------------------
-ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex )
+ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel )
 {
-	ZoneNamedN( ___tracy_scoped_zone, "DX12 ResolveNamedShader", DX12_DRAW_ZONES_ACTIVE );
-	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() || !*pszName )
-		return nullptr;
-	const NamedShaderKeyView referenceKey{ pszName, nStaticIndex, -1, bPixel };
-	UtlHashHandle_t &hReference = m_NamedReferenceHints[bPixel ? 1 : 0];
-	if ( !m_NamedShaderReferences.IsValidHandle( hReference ) || !NamedShaderEqual()( m_NamedShaderReferences.Key( hReference ), referenceKey ) )
-		hReference = m_NamedShaderReferences.Insert( referenceKey, true );
-	m_NamedShaderReferences[hReference] = true;
-	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamicIndex, bPixel };
-	UtlHashHandle_t &hFound = m_NamedComboHints[bPixel ? 1 : 0];
-	if ( !m_NamedShaderCombos.IsValidHandle( hFound ) || !NamedShaderEqual()( m_NamedShaderCombos.Key( hFound ), key ) )
-		hFound = m_NamedShaderCombos.Find( key );
-	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
-		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
-	hFound = m_NamedShaderCombos.Insert( key, nullptr );
 	CUtlString fileKey( bPixel ? "p:" : "v:" );
 	fileKey.Append( pszName );
 	UtlHashHandle_t hShaderFile = m_NamedShaderFiles.Find( fileKey.String() );
@@ -785,7 +767,66 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 			Msg( "ShaderAPIDX12: %s shader %s from %s\n", bPixel ? "pixel" : "vertex", pszName, pNewFile->Path() );
 		hShaderFile = m_NamedShaderFiles.Insert( fileKey.String(), pNewFile );
 	}
-	ShaderVcsFile *pFile = m_NamedShaderFiles[hShaderFile];
+	return m_NamedShaderFiles[hShaderFile];
+}
+
+// The map-load owner transaction has drained queued material work. Snapshots
+// already contain the static choices made by the shader DLL; each VCS static
+// record contains all of its dynamic payloads, including skipped indices.
+void CShaderAPIDX12::WarmLevelShaderCombos()
+{
+	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() )
+		return;
+	const uint64_t before = g_FirstUse.decodes.load();
+	const double start = Plat_FloatTime();
+	CUtlString error;
+	FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )
+	{
+		const NamedShaderKey &key = m_NamedShaderReferences.Key( entry );
+		if ( !m_NamedShaderReferences[entry] || key.staticIndex < 0 )
+			continue;
+		ShaderVcsFile *file = OpenNamedShader( key.name.String(), key.pixel );
+		if ( !file )
+			continue;
+		ComboFoldProjectionDX12 projection{};
+		if ( file->ComboFold() && !ProjectComboFoldDX12( *file->ComboFold(), key.staticIndex, 0, projection ) )
+			continue;
+		file->LoadStaticCombo( file->ComboFold() ? projection.staticIndex : uint32_t( key.staticIndex ), error );
+	}
+	// Screen effects are not world material snapshots. Their first invocation
+	// on damage opens the legacy post shaders, including their dynamic combos.
+	static const char *const post[] = { "terror_post_prepare_ps20b", "terror_engine_post_ps20b" };
+	for ( const char *name : post )
+	{
+		ShaderVcsFile *file = OpenNamedShader( name, true );
+		uint32_t index;
+		for ( size_t i = 0; file && file->StaticComboIndex( i, index ); ++i )
+			file->LoadStaticCombo( index, error );
+	}
+	Msg( "DX12 level shader warmup: %llu canonical records in %.2f ms\n", g_FirstUse.decodes.load() - before, ( Plat_FloatTime() - start ) * 1000.0 );
+}
+
+//-----------------------------------------------------------------------------
+// Purpose: Loads (once per file) and creates the record of one named VCS shader combo
+//-----------------------------------------------------------------------------
+ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool bPixel, int nStaticIndex, int nDynamicIndex )
+{
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 ResolveNamedShader", DX12_DRAW_ZONES_ACTIVE );
+	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() || !*pszName )
+		return nullptr;
+	const NamedShaderKeyView referenceKey{ pszName, nStaticIndex, -1, bPixel };
+	UtlHashHandle_t &hReference = m_NamedReferenceHints[bPixel ? 1 : 0];
+	if ( !m_NamedShaderReferences.IsValidHandle( hReference ) || !NamedShaderEqual()( m_NamedShaderReferences.Key( hReference ), referenceKey ) )
+		hReference = m_NamedShaderReferences.Insert( referenceKey, true );
+	m_NamedShaderReferences[hReference] = true;
+	const NamedShaderKeyView key{ pszName, nStaticIndex, nDynamicIndex, bPixel };
+	UtlHashHandle_t &hFound = m_NamedComboHints[bPixel ? 1 : 0];
+	if ( !m_NamedShaderCombos.IsValidHandle( hFound ) || !NamedShaderEqual()( m_NamedShaderCombos.Key( hFound ), key ) )
+		hFound = m_NamedShaderCombos.Find( key );
+	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
+		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
+	hFound = m_NamedShaderCombos.Insert( key, nullptr );
+	ShaderVcsFile *pFile = OpenNamedShader( pszName, bPixel );
 	if ( !pFile )
 		return nullptr;
 	const ComboFoldTableDX12 *foldTable = pFile->ComboFold();
