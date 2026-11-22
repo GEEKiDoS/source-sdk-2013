@@ -36,6 +36,7 @@
 #include <cstring>
 #include <climits>
 #include <cmath>
+#include <thread>
 #include <intrin.h>
 #include <emmintrin.h>
 #include <d3dcompiler.h>
@@ -770,6 +771,19 @@ ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel
 	return m_NamedShaderFiles[hShaderFile];
 }
 
+// One worker owns an entire file's CPU cache. Filesystem and GPU calls stay
+// on the loading owner, and every worker joins before rendering resumes.
+static void WarmShaderFiles( ShaderVcsFile **files, int count, std::atomic<int> &next )
+{
+	CUtlString error;
+	for ( int i = next++; i < count; i = next++ )
+	{
+		uint32_t index;
+		for ( size_t n = 0; files[i]->StaticComboIndex( n, index ); ++n )
+			files[i]->LoadStaticCombo( index, error );
+	}
+}
+
 // The map-load owner transaction has drained queued material work. Snapshots
 // already contain the static choices made by the shader DLL; each VCS static
 // record contains all of its dynamic payloads, including skipped indices.
@@ -779,37 +793,52 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		return;
 	const uint64_t before = g_FirstUse.decodes.load();
 	const double start = Plat_FloatTime();
-	CUtlMap<ShaderVcsFile *, bool> warmFiles( DefLessFunc( ShaderVcsFile * ) );
+	ReleaseLevelShaderPins();
+	CUtlString error;
 	FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )
 	{
 		const NamedShaderKey &key = m_NamedShaderReferences.Key( entry );
 		if ( !m_NamedShaderReferences[entry] || key.staticIndex < 0 )
 			continue;
 		ShaderVcsFile *file = OpenNamedShader( key.name.String(), key.pixel );
-		if ( file )
-			warmFiles.InsertOrReplace( file, true );
+		if ( !file )
+			continue;
+		// Retail FXC files may have thousands of unrelated static records.
+		// The authored static already includes every dynamic variant.
+		const bool native = V_strnicmp( file->Path(), "shaders/fxc/", 12 ) != 0;
+		m_LevelShaderFiles.InsertOrReplace( file, native );
+		if ( !native )
+			file->LoadStaticCombo( uint32_t( key.staticIndex ), error );
 	}
 	// Procedural detail and damage effects need not have a material snapshot yet.
 	static const struct { const char *name; bool pixel; } effects[] =
 	{
 		{ "terror_post_prepare_ps20b", true }, { "terror_engine_post_ps20b", true },
 		{ "screenspaceeffect_vs20", false }, { "dx12_detailshadowlit_vs51", false },
-		{ "dx12_detailshadowlit_ps51", true }
+		{ "dx12_detailshadowlit_ps51", true }, { "pbr_model_depthprepass_ps51", true }
 	};
 	for ( const auto &effect : effects )
 	{
 		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
 		if ( file )
-			warmFiles.InsertOrReplace( file, true );
+			m_LevelShaderFiles.InsertOrReplace( file, true );
 	}
-	CUtlString error;
-	FOR_EACH_MAP( warmFiles, it )
+	CUtlVector<ShaderVcsFile *> files;
+	FOR_EACH_MAP( m_LevelShaderFiles, it )
+		if ( m_LevelShaderFiles[it] )
+			files.AddToTail( m_LevelShaderFiles.Key( it ) );
+	std::atomic<int> next{ 0 };
+	std::thread workers[2];
+	try
 	{
-		ShaderVcsFile *file = warmFiles.Key( it );
-		uint32_t index;
-		for ( size_t i = 0; file->StaticComboIndex( i, index ); ++i )
-			file->LoadStaticCombo( index, error );
+		for ( int i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.Count(); ++i )
+			workers[i] = std::thread( WarmShaderFiles, files.Base(), files.Count(), std::ref( next ) );
 	}
+	catch ( const std::system_error & ) {} // Loading owner drains the remaining work.
+	WarmShaderFiles( files.Base(), files.Count(), next );
+	for ( std::thread &worker : workers )
+		if ( worker.joinable() )
+			worker.join();
 	Msg( "DX12 level shader warmup: %llu canonical records in %.2f ms\n", g_FirstUse.decodes.load() - before, ( Plat_FloatTime() - start ) * 1000.0 );
 }
 
@@ -6334,6 +6363,13 @@ void CShaderAPIDX12::PurgeUnusedVertexAndPixelShaders()
 	}
 	for ( UtlHashHandle_t it = m_NamedShaderFiles.FirstHandle(); it != m_NamedShaderFiles.InvalidHandle(); )
 	{
+		// Sign-on clears material reference marks after level warmup. Infrequent
+		// effects must not lose their decoded CPU payloads in that sweep.
+		if ( m_LevelShaderFiles.Find( m_NamedShaderFiles[it] ) != m_LevelShaderFiles.InvalidIndex() )
+		{
+			it = m_NamedShaderFiles.NextHandle( it );
+			continue;
+		}
 		bool referenced = false;
 		const char *fileKey = m_NamedShaderFiles.Key( it ).String();
 		FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )

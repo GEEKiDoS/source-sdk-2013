@@ -1582,6 +1582,7 @@ void CHighresLightmapsDX12::OnNativeRetire(uint64 generation)
 {
     Impl &s=*m_Impl; std::lock_guard<std::recursive_mutex> lock(s.mutex);
     if (!s.domain || generation!=s.domain->mapGeneration) return;
+    if (s.api) s.api->ReleaseLevelShaderPins();
     if (s.device && s.device->CommandList() && !s.CopyFailure()) s.Fail("Highres lightmaps: cannot retire GPU validation");
     s.ClearGpu(); s.ClearProbes(); s.domain.reset(); s.atlas.reset(); s.dynamics.clear(); s.mode=nullptr; s.file={}; s.status={}; s.error[0]=0; s.mapPath[0]=0;
     s.enhancedRequired=false; s.views.clear();
