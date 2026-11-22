@@ -37,6 +37,7 @@ struct ModeStorage
     CUtlVector<hlight::PageDisk> pages;
     CUtlVector<byte> pixels;
     CUtlVector<byte> directionalPixels; // packed directions for faces whose BSP lightmap was flat
+    CUtlVector<byte> hspotBytes;
     CUtlVector<ShadowMapLightDisk> lights;
     hlight::VisibilitySetDisk visibility;
     CUtlVector<hlight::FaceVisibilityDisk> visibilityFaces;
@@ -50,6 +51,7 @@ struct ModeStorage
     ReSTIRAmbientProbeGrid probes; bool probesCaptured;
     void Clear(bool preserveProbes = false)
     {
+        hspotBytes.Purge();
         active = false;
         memset(&record,0,sizeof(record)); identities.Purge(); models.Purge(); faces.Purge();
         tiles.Purge(); pages.Purge(); pixels.Purge(); lights.Purge();
@@ -608,6 +610,43 @@ bool ReSTIR_CaptureHighres(const ReSTIROptions &options, const ReSTIRScene &scen
     // The gather stage has already captured the probes. Receiver capture
     // replaces only RGB/visibility storage, not the ambient grid.
     ModeStorage &m = s_Storage; m.Clear(true); m.active = true; m.lights.AddVectorToTail(scene.shadowLights);
+    if ( options.shadowMaps )
+    {
+        CUtlVector<hspot::Light> hspotLights; CUtlVector<hspot::Beam> hspotBeams;
+        for ( int li = 0; li < scene.shadowLights.Count(); ++li )
+        {
+            hspot::Light light = { uint32(li), 0 };
+            const int source = scene.shadowLights[li].sourceEntity;
+            if ( source >= 0 && source < num_entities && !Q_stricmp(ValueForKey(&entities[source],"classname"),"light_spot") &&
+                IntForKey(&entities[source],"_volumetric") != 0 ) light.volumetric = 1;
+            hspotLights.AddToTail(light);
+        }
+        for ( int ei = 0; ei < num_entities; ++ei )
+        {
+            entity_t &entity = entities[ei];
+            const char *classname = ValueForKey(&entity,"classname");
+            const bool pointBeam = !Q_stricmp(classname,"point_spotlight");
+            const bool volumeBeam = !Q_stricmp(classname,"beam_spotlight");
+            if ( !pointBeam && !volumeBeam ) continue;
+            Vector origin; GetVectorForKey(&entity,"origin",origin);
+            int best = -1; float bestDistance = FLT_MAX;
+            for ( int li = 0; li < scene.shadowLights.Count(); ++li )
+            {
+                const ShadowMapLightDisk &candidate = scene.shadowLights[li];
+                if ( candidate.light.type != emit_spotlight || !hspotLights[li].volumetric ) continue;
+                const float distance = origin.DistToSqr(candidate.light.origin);
+                if ( distance < bestDistance ) { bestDistance = distance; best = li; }
+            }
+            if ( best < 0 || bestDistance > 128.0f*128.0f ) continue;
+            hspot::Beam beam = { pointBeam ? hspot::kPointSpotlight : hspot::kBeamSpotlight, uint32(best), uint32(atoi(ValueForKey(&entity,"hammerid"))), { origin.x, origin.y, origin.z } };
+            hspotBeams.AddToTail(beam);
+        }
+        hspot::Header header = { hspot::kMagic, hspot::kVersion, uint32(sizeof(hspot::Header)+hspotLights.Count()*sizeof(hspot::Light)+hspotBeams.Count()*sizeof(hspot::Beam)), uint32(hspotLights.Count()), uint32(hspotBeams.Count()) };
+        m.hspotBytes.SetCount(header.byteSize); memcpy(m.hspotBytes.Base(),&header,sizeof(header));
+        memcpy(m.hspotBytes.Base()+sizeof(header),hspotLights.Base(),hspotLights.Count()*sizeof(hspot::Light));
+        memcpy(m.hspotBytes.Base()+sizeof(header)+hspotLights.Count()*sizeof(hspot::Light),hspotBeams.Base(),hspotBeams.Count()*sizeof(hspot::Beam));
+        Msg("Hspot: selected lights=%d beams=%d\n",hspotLights.Count(),hspotBeams.Count());
+    }
     const int faceCount = numfaces_hdr;
     if (nummodels <= 0 || nummodels > MAX_MAP_MODELS || faceCount <= 0 || faceCount > MAX_MAP_FACES ||
         g_pFaces != dfaces_hdr || scene.dfaceToFace.Count() != faceCount || !color) return Fail("invalid model/face capture domain");
@@ -894,10 +933,9 @@ bool ReSTIR_WriteLightSidecar(const ReSTIROptions &options)
     hlight::ManifestView mv;
     if (!hlight::ValidateManifest(bytes.Base(),bytes.Count(),LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR,mv,error,sizeof(error)) ||
         !hlight::ValidateManifestAsset(verified,mv,error,sizeof(error))) return Fail(error);
-    CUtlVector<byte> probeFile; CUtlVector<byte> hspotFile; char probePath[256]; ProbePath(probePath);
+    CUtlVector<byte> probeFile; char probePath[256]; ProbePath(probePath);
     if (!BuildProbeAsset(verified,probeFile)) return false;
-    hspot::Header hspotHeader = { hspot::kMagic, hspot::kVersion, sizeof(hspot::Header), uint32(m.lights.Count()), 0 };
-    hspotFile.SetCount(sizeof(hspotHeader)); memcpy(hspotFile.Base(),&hspotHeader,sizeof(hspotHeader));
+    CUtlVector<byte> hspotFile; hspotFile.CopyArray(m.hspotBytes.Base(),m.hspotBytes.Count());
     char lightPath[MAX_PATH*2], basename[MAX_PATH]; V_FileBase(options.mapPath.String(),basename,sizeof(basename));
     if (options.lightDir.Length()) V_ComposeFileName(options.lightDir.String(),basename,lightPath,sizeof(lightPath));
     else V_strncpy(lightPath,options.mapPath.String(),sizeof(lightPath));
