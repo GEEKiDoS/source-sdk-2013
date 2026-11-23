@@ -131,15 +131,13 @@ public:
 
 	const wchar_t *RecipePath() const { return m_RecipePath; }
 	bool Enabled() const { return m_Library != nullptr; }
-	uint64_t Key( D3D12_GRAPHICS_PIPELINE_STATE_DESC desc, unsigned root ) const
+	uint64_t Key( const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc, unsigned root ) const
 	{
 		uint64_t hash = 14695981039346656037ull;
 		Mix( hash, &root, sizeof( root ) );
-		desc.pRootSignature = nullptr;
-		for ( D3D12_SHADER_BYTECODE *stage : { &desc.VS, &desc.PS, &desc.GS } )
+		for ( const D3D12_SHADER_BYTECODE *stage : { &desc.VS, &desc.PS, &desc.GS } )
 		{
 			Mix( hash, stage->pShaderBytecode, stage->BytecodeLength );
-			stage->pShaderBytecode = nullptr;
 		}
 		for ( UINT i = 0; i < desc.InputLayout.NumElements; ++i )
 		{
@@ -148,8 +146,32 @@ public:
 			// Exclude pointer and tail padding, which are not stable across launches.
 			Mix( hash, &el.SemanticIndex, 6 * sizeof( UINT ) );
 		}
-		desc.InputLayout.pInputElementDescs = nullptr;
-		Mix( hash, &desc, sizeof( desc ) );
+		// Keep v1's byte positions so an existing zero-padded library key
+		// still hits. Copy only defined bytes: in particular assigning InputLayout
+		// wholesale from a draw copies four bytes of caller stack padding on x64.
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC canonical;
+		memset( &canonical, 0, sizeof( canonical ) );
+		canonical.VS.BytecodeLength = desc.VS.BytecodeLength;
+		canonical.PS.BytecodeLength = desc.PS.BytecodeLength;
+		canonical.GS.BytecodeLength = desc.GS.BytecodeLength;
+		canonical.InputLayout.NumElements = desc.InputLayout.NumElements;
+		canonical.PrimitiveTopologyType = desc.PrimitiveTopologyType;
+		canonical.NumRenderTargets = desc.NumRenderTargets;
+		memcpy( canonical.RTVFormats, desc.RTVFormats, sizeof( desc.RTVFormats ) );
+		canonical.DSVFormat = desc.DSVFormat;
+		canonical.SampleDesc = desc.SampleDesc;
+		canonical.SampleMask = desc.SampleMask;
+		canonical.RasterizerState = desc.RasterizerState;
+		canonical.BlendState.AlphaToCoverageEnable = desc.BlendState.AlphaToCoverageEnable;
+		canonical.BlendState.IndependentBlendEnable = desc.BlendState.IndependentBlendEnable;
+		for ( UINT i = 0; i < ARRAYSIZE( desc.RTVFormats ); ++i )
+			memcpy( &canonical.BlendState.RenderTarget[i], &desc.BlendState.RenderTarget[i],
+				offsetof( D3D12_RENDER_TARGET_BLEND_DESC, RenderTargetWriteMask ) + sizeof( UINT8 ) );
+		memcpy( &canonical.DepthStencilState, &desc.DepthStencilState,
+			offsetof( D3D12_DEPTH_STENCIL_DESC, StencilWriteMask ) + sizeof( UINT8 ) );
+		canonical.DepthStencilState.FrontFace = desc.DepthStencilState.FrontFace;
+		canonical.DepthStencilState.BackFace = desc.DepthStencilState.BackFace;
+		Mix( hash, &canonical, sizeof( canonical ) );
 		return hash;
 	}
 
