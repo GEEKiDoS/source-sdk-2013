@@ -1315,6 +1315,12 @@ struct CLightingDX12::Impl
 	CUtlVector<DX12ModelLightNode> modelLightNodes;
 	struct ModelLightTest { uint32 generation = 0; Vector receiver, source; bool blocked = false; };
 	std::array<ModelLightTest, 2048> modelLightTests{};
+	// ModelLocalLighting results per view and lighting origin: a model's materials and passes repeat the same query.
+	struct ModelLightingResult { uint32 mapGeneration = 0, viewGeneration = 0; int limit = 0; Vector origin; float rows[7][4]; };
+	std::array<ModelLightingResult, 512> modelLightingResults{};
+	// Per-light contribution at the current lighting origin, filled once per ModelLocalLighting miss.
+	struct ModelLightSample { Vector rgb, direction; float energy; };
+	CUtlVector<ModelLightSample> modelLightSamples;
 	std::atomic<uint32> activeMap{ 0 };
 	bool highresMap = false;
 	uint64 nativeMapGeneration = 0;
@@ -2209,8 +2215,18 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	}
 	if ( limit <= 0 ) return live;
 	limit = MIN( limit, 4 );
-	rows[1][3] = 1.0f;
 	const Vector &origin = s.api->m_LightingOrigin;
+	// Lights are fixed for a view (copied at BeginView) and the BSP for a map, so the result depends only on the view,
+	// the limit and the exact lighting origin. Exact positions, not quantized: opposite sides of a wall must not alias.
+	auto &cached = s.modelLightingResults[( ( FloatBits( origin.x ) >> 4 ) ^ ( FloatBits( origin.y ) * 31u ) ^
+		( FloatBits( origin.z ) * 2654435761u ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
+	if ( cached.mapGeneration == packet.view.mapGeneration && cached.viewGeneration == packet.view.viewGeneration &&
+		cached.limit == limit && cached.origin == origin )
+	{
+		memcpy( rows, cached.rows, sizeof( cached.rows ) );
+		return live;
+	}
+	rows[1][3] = 1.0f;
 	float scores[4] = {};
 	auto sample = [&]( const RuntimeShadowLightGpu &light, Vector &direction ) -> Vector
 	{
@@ -2260,11 +2276,14 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 		return test.blocked;
 	};
+	s.modelLightSamples.SetCount( lights.Count() );
 	for ( int i = 0; i < lights.Count(); ++i )
 	{
-		Vector direction;
-		const Vector rgb = sample( lights[i], direction );
-		const float energy = rgb.x * 0.2126f + rgb.y * 0.7152f + rgb.z * 0.0722f;
+		auto &contribution = s.modelLightSamples[i];
+		contribution.rgb = sample( lights[i], contribution.direction );
+		contribution.energy = contribution.rgb.x * 0.2126f + contribution.rgb.y * 0.7152f + contribution.rgb.z * 0.0722f;
+		const float energy = contribution.energy;
+		const Vector &direction = contribution.direction;
 		if ( energy <= 0.0f ) continue;
 		// Resident realtime lights precede static-only lights, preserving moving shadow receivers.
 		const bool realtime = lights[i].realtimeWeight > 0.0f;
@@ -2301,8 +2320,8 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		bool selected = false;
 		for ( int slot = 0; slot < limit; ++slot ) selected |= rows[0][slot] == float( i );
 		if ( selected ) continue;
-		Vector direction;
-		const Vector rgb = sample( lights[i], direction );
+		const auto &contribution = s.modelLightSamples[i];
+		const Vector &rgb = contribution.rgb, &direction = contribution.direction;
 		if ( rgb.LengthSqr() == 0.0f || blocked( lights[i], direction ) ) continue;
 		// Retail's six-axis cosine projection, evaluated once at the lighting origin.
 		for ( int axis = 0; axis < 3; ++axis )
@@ -2312,6 +2331,11 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 				rows[face][channel] += rgb[channel] * fabsf( direction[axis] );
 		}
 	}
+	cached.mapGeneration = packet.view.mapGeneration;
+	cached.viewGeneration = packet.view.viewGeneration;
+	cached.limit = limit;
+	cached.origin = origin;
+	memcpy( cached.rows, rows, sizeof( cached.rows ) );
 	return live;
 }
 
