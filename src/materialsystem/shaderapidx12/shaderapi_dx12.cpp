@@ -1524,7 +1524,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		if ( record->legacyBytecode.IsEmpty() ) return record->nativeSamplerMask & all;
 		return record->activeVariantValid ? record->translated.usedSamplerMask & all : all;
 	};
-	const uint32_t pixelSamplers = opaqueCaster ? 0u : samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
+	const bool prepassNullPS = depthPrepass && !m_ActiveSnapshot.alphaTest &&
+		!m_ActiveSnapshot.alphaToCoverage && !m_bAlphaToCoverage && !m_nClipPlaneMask &&
+		m_HeightClipMode == MATERIAL_HEIGHTCLIPMODE_DISABLE && !m_bFastClipEnabled &&
+		( !psRecord || psRecord->forceEarlyDepth );
+	const uint32_t pixelSamplers = opaqueCaster || ( prepassNullPS && m_hBoundGS == GEOMETRY_SHADER_HANDLE_INVALID ) ?
+		0u : samplerMask( psRecord, 0xffff ), vertexSamplers = samplerMask( vsRecord, 0xf );
 	const uint32_t sampledMask = pixelSamplers | ( vertexSamplers << 16 );
 	// Only the native PBR model environment pass owns these two extra SRVs. Keep the existing
 	// engine binding as fallback, and do not mutate the material system's current texture state.
@@ -1969,12 +1974,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	// clears the memo before it can switch any record's active variant and stores it only on success.
 	// Bit 3 distinguishes the SUN-only IA override in both pipeline memos and input-layout caches.
 	const uint8_t meshStreamFlags = static_cast<uint8_t>( ( meshStreams ? ( ( bindings[1].buffer ? 1 : 0 ) | ( bindings[2].buffer ? 2 : 0 ) | ( flexWrinkle ? 4 : 0 ) ) : 0 ) | ( sunCoordinateInput ? 8 : 0 ) );
-	const bool prepassNullPS = depthPrepass && !m_ActiveSnapshot.alphaTest &&
-		!m_ActiveSnapshot.alphaToCoverage && !m_bAlphaToCoverage && !drawClipMask &&
-		( !psRecord || psRecord->forceEarlyDepth );
 	// Texture dimensions (not identities) are the only texture inputs of pipeline selection.
 	ShaderRasterStateDX12 raster{};
 	uint32_t textureTypesPacked = 0;
+	if ( !vsRecord || !psRecord || !vsRecord->legacyBytecode.IsEmpty() || !psRecord->legacyBytecode.IsEmpty() )
+	{
 	for ( size_t i = 0; i < ARRAYSIZE( m_BoundTextures ); ++i )
 	{
 		const ShaderAPITextureHandle_t handle = m_BoundTextures[i];
@@ -1997,6 +2001,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	for ( unsigned i = 0; i < 16; ++i )
 		textureTypesPacked |= static_cast<uint32_t>( raster.textureTypes[i] ) << ( 2 * i );
+	}
 	// Only the current PBR writer can attach the SSR payload; its native g_Flags1.x/hasEnvmap mirrors legacy c4.x.
 	const bool nonEnvmapSsrPayload = ssrPayloadTargets && m_PsFloat[4][0] == 0.0f;
 	const bool gbufferColorWrite = m_bColorWriteOverride ? m_bColorWriteOverrideValue : m_ActiveSnapshot.colorWrites;
@@ -2012,8 +2017,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	{
 		signature.resolveEpoch = m_nNamedResolveEpoch;
 		signature.snapshot = m_hActiveSnapshotId;
-		signature.vs = reinterpret_cast<uint64_t>( m_hBoundVS );
-		signature.ps = reinterpret_cast<uint64_t>( m_hBoundPS );
+		signature.vs = reinterpret_cast<uint64_t>( vsRecord );
+		signature.ps = reinterpret_cast<uint64_t>( psRecord );
 		signature.gs = reinterpret_cast<uint64_t>( m_hBoundGS );
 		signature.textureTypes = textureTypesPacked;
 		signature.format = static_cast<uint64_t>( format );
@@ -2026,6 +2031,8 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		signature.primitive = static_cast<uint32_t>( primitive );
 		signature.streamFlags = meshStreamFlags;
 		signature.motionPass = ( motionActive ? 1u : 0u ) | ( highresMap ? 2u : 0u ) | ( depthPrepass ? 4u : 0u ) | ( prepassReadOnly ? 8u : 0u );
+		signature.motionPass |= ( gbufferTargets ? 16u : 0u ) | ( ssrPayloadTargets ? 32u : 0u ) |
+			( shadowPass ? 64u : 0u ) | ( prepassNullPS ? 128u : 0u );
 		signature.clipMask = drawClipMask;
 		memcpy( signature.colorFormats, target.colorFormats, sizeof( signature.colorFormats ) );
 		signature.depthFormat = target.depthFormat;
@@ -2069,12 +2076,14 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			signature.depthDecal = config.m_DepthBias_Decal;
 			signature.depthNormal = config.m_DepthBias_Normal;
 		}
-		memoSlot = &m_PipelineMemos[Mix32HashFunctor()( static_cast<uint32_t>( signature.snapshot ) * 0x9E3779B1u ^ static_cast<uint32_t>( signature.vs >> 4 ) ^ static_cast<uint32_t>( signature.ps >> 4 ) * 31u ^ static_cast<uint32_t>( signature.textureTypes ) ^ static_cast<uint32_t>( signature.format ) ^ ( uint32_t( signature.streamFlags ) << 24 ) ) & ( ARRAYSIZE( m_PipelineMemos ) - 1 )];
+		memoSlot = &m_PipelineMemos[Mix32HashFunctor()( static_cast<uint32_t>( signature.snapshot ) * 0x9E3779B1u ^ static_cast<uint32_t>( signature.vs >> 4 ) ^ static_cast<uint32_t>( signature.ps >> 4 ) * 31u ^ static_cast<uint32_t>( signature.textureTypes ) ^ static_cast<uint32_t>( signature.format ) ^ ( uint32_t( signature.streamFlags ) << 24 ) ^ signature.motionPass * 0x85ebca6bu ) & ( ARRAYSIZE( m_PipelineMemos ) - 1 )];
 		// Records may have switched translated variant since the entry was stored; require the stored ones.
 		// A shader alternating between translated variants (e.g. fog or clip state) still hits: the stored
 		// variants are reactivated, which is exactly what the slow path's EnsureTranslated would do.
 		memoHit = memoSlot->epoch == m_nPipelineMemoEpoch && memoSlot->psoEpoch == m_Pipeline.PipelineEpoch() && !memcmp( &signature, &memoSlot->signature, sizeof( signature ) ) &&
-		    ActivateTranslatedVariant( memoSlot->vs, memoSlot->vsVariant ) && ( !memoSlot->ps || ActivateTranslatedVariant( memoSlot->ps, memoSlot->psVariant ) );
+		    ( ( !shadowPass && !motionActive && vsRecord && psRecord && vsRecord->dxil && psRecord->dxil &&
+		        m_hBoundGS == GEOMETRY_SHADER_HANDLE_INVALID ) ||
+		      ( ActivateTranslatedVariant( memoSlot->vs, memoSlot->vsVariant ) && ( !memoSlot->ps || ActivateTranslatedVariant( memoSlot->ps, memoSlot->psVariant ) ) ) );
 	}
 	bool depthOnly = false, generatedVS = false, generatedPS = false, zeroInput = false, geometryStage = false;
 	D3D12_SHADER_BYTECODE geometryCode{};
@@ -2290,6 +2299,9 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
 		}
+	}
+	{
+		// Layout and fold-payload validity belong to the live material, not the cached PSO.
 		// A native record's space-1 cbuffers must be engine blocks with the backend layout or material blocks
 		// written through the bridge with the same layout hash; anything else rejects the draw before PSO creation.
 		auto validateNative = [&]( ShaderRecordDX12 *record, bool pixel ) -> bool
