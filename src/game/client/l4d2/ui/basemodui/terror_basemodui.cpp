@@ -391,8 +391,15 @@ public:
 	}
 	virtual void LoadingProgress( float fraction, const char *statusText ) OVERRIDE
 	{
-		if ( !UpdateShaderProgress( 32, fraction ) )
-			UpdateTerrorLoadingScreenProgress( fraction, statusText );
+		if ( UpdateShaderProgress( 32, fraction ) ) return;
+		if ( m_bShaderStatusVisible )
+		{
+			m_bShaderStatusVisible = false;
+			if ( !statusText || !*statusText ) statusText = "#L4D360UI_Loading";
+			if ( CTransitionStatsPanel *stats = m_hLoadingStats.Get() )
+				stats->SetLoadingStatus( g_pVGuiLocalize->Find( "#L4D360UI_Loading" ) );
+		}
+		UpdateTerrorLoadingScreenProgress( fraction, statusText );
 	}
 	virtual void LoadingFinished( bool error, const char *reason, const char *extended ) OVERRIDE
 	{
@@ -473,6 +480,7 @@ protected:
 private:
 	double m_LoadStart = 0;
 	IShaderAPIDX12 *m_pWarmRenderer = NULL;
+	bool m_bShaderStatusVisible = false;
 	bool UpdateShaderProgress( unsigned budget, float fraction )
 	{
 		if ( !m_pWarmRenderer ) return false;
@@ -489,6 +497,7 @@ private:
 			stats->SetLoadingStatus( text );
 		else
 			SetTerrorShaderLoadingStatus( fraction, text );
+		m_bShaderStatusVisible = true;
 		return true;
 	}
 	void CloseLoadingScreens()
