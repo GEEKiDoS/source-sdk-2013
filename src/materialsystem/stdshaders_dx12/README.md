@@ -1310,10 +1310,16 @@ over its 985 MiB budget before the grid, so uploading it whole made WDDM page th
 (`0x887a0006`).
 
 Enhanced PBR models without a validated static-prop receiver use the archived `r_model_local_lights` budget
-(default 4, range 1–4; 0 selects the full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` runs on the recording
-owner using `CShaderAPIDX12::m_LightingOrigin`, the current retained view packet and a map-owned copy of the
-validated structural BSP. It ranks lights by linear irradiance after the authored radius, falloff, cap, fade and
-spot cone; charted lights take precedence. Static-only candidates behind solid world leaves are rejected.
+(default 4, range 1–4; 0 selects the full per-pixel list). `IShaderAPIDX12Lighting::ModelLocalLighting` consumes an exact
+lighting origin, a retained view light table and the validated map BSP. On a result-cache miss it prepares independent
+light ranges (attenuation, cone, irradiance, visibility). At most two pool workers classify 32-unit receiver cells
+against fixed map emitters. The BSP test clips possible and certain parameter intervals for the whole family of
+biased rays: no possible solid leaf proves clear; a common interval inside one solid leaf proves blocked.
+Otherwise the draw traces its exact segment. Jobs publish with release/acquire, never write shader state, and are
+drained before replacement of either map span. Cold cells do not stall recording: large cold tables split the exact
+per-light sample work with one helper, with disjoint output and trace-cache lanes, joined before reduction.
+Ranking and ambient accumulation retain the original packet order. `r_dx12_model_light_workers 0` disables both
+worker paths. Charted lights take precedence; static-only candidates behind solid world leaves are rejected.
 Material registers c40–c46 carry four packet indices and six ambient-cube RGB rows.
 During a residency transition c42.w carries a four-bit mask of selected slots whose model-origin ray is
 blocked. Their uncharted share is zero; the charted share still uses per-pixel visibility.
@@ -1326,6 +1332,15 @@ exceptions. A visibility-only prop walks the mesh's sparse nonzero R8 entries, r
 packet and applies its baked visibility even without a chart. Realtime charts only refine that visibility, and
 editor lights are still evaluated from the runtime tail. This prevents an omitted or folded map light from making a
 prop pop as the view changes. Dense probes carry indirect lighting, not the ordinary point/spot direct term.
+
+The light-range job does not record GPU commands. A byte chunk in `CCommandRecorderDX12` is **not** an independent
+command list: it can start with a draw inheriting descriptor heaps, root arguments, IA state and render targets from
+the previous chunk. `FlushShadowCasterBatch` likewise replays snapshots and changes the active API state around
+`DrawBuffers`; the shadow atlas must transition from depth-write to sampled before the receiver view. Independent
+native recording would need complete pass packets (resource transitions, viewport/scissor, query/event boundaries,
+PSO/IA and bindings), allocator/list and last-bound state **per worker**, plus fence-retired upload/descriptor spans
+reserved before dispatch. Heap rollover, residency and PSO publication must remain coordinated; lists would execute
+in pass order. Splitting the existing replay stream alone would parallelize driver calls, not the hot material dispatch.
 
 Static and dynamic props are therefore lit by the same carriers: probes (or the ambient cube) plus the
 runtime light table, which holds every map light and the sun. The engine's per-model light list

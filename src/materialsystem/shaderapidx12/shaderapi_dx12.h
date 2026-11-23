@@ -82,6 +82,7 @@ protected:
 		const dx12native::NativeCBufferLegacyMapDX12 *legacyMap = nullptr;
 		uint64_t layoutHash = 0, version = 0;
 		uint32_t byteSize = 0;
+		uint64_t mirrorVersions[3]{};
 		bool written = false;
 	};
 
@@ -90,7 +91,7 @@ protected:
 	uint64_t m_nNativeVSVersion = 1, m_nNativePSVersion = 1;
 	// Engine-owned space-1 blocks for native records, rebuilt only when their legacy inputs change.
 	dx12native::DX12VSEngine m_NativeVSEngine{};
-	dx12native::DX12VSBones m_NativeVSBones{};
+	uint64_t m_nBoneRowsVersion = 1;
 	dx12native::DX12PSEngine m_NativePSEngine{};
 	uint64_t m_NativeVSEngineInputs[5]{};
 	uint64_t m_nNativeVSEngineVersion = 1, m_nNativePSEngineVersion = 1;

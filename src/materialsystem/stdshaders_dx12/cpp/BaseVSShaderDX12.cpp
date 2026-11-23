@@ -141,6 +141,33 @@ void DX12SelectNativeBlockByName( const char *name, uint32_t stage )
 	( stage == dx12native::kStageVertex ? g_DX12Constants.vsPassthrough : g_DX12Constants.psPassthrough ) = true;
 }
 
+DX12RegisterRuns::DX12RegisterRuns( const dx12native::NativeCBufferLegacyMapDX12 &source ) : map( source )
+{
+	m_Entries.EnsureCapacity( source.entryCount );
+	for ( uint32_t i = 0; i < source.entryCount; ++i )
+	{
+		auto e = source.entries[i];
+		if ( e.bank == dx12native::kLegacyFloat && e.elementBytes == 16 && !e.component &&
+			( e.elementCount == 1 || e.srcStride == 16 ) )
+		{
+			e.srcStride = 16;
+			if ( m_Entries.Count() )
+			{
+				auto &p = m_Entries.Tail();
+				if ( p.bank == e.bank && p.elementBytes == 16 && !p.component && p.srcStride == 16 &&
+					p.byteOffset + 16u * p.elementCount == e.byteOffset && p.reg + p.elementCount == e.reg )
+				{
+					p.elementCount += e.elementCount;
+					continue;
+				}
+			}
+		}
+		m_Entries.AddToTail( e );
+	}
+	map.entries = m_Entries.Base();
+	map.entryCount = m_Entries.Count();
+}
+
 void DX12GatherLegacyRegisters( const dx12native::NativeCBufferLegacyMapDX12 &map, uint32_t stage,
 	const DX12ConstantStaging &staging, void *block )
 {
@@ -149,6 +176,12 @@ void DX12GatherLegacyRegisters( const dx12native::NativeCBufferLegacyMapDX12 &ma
 	for ( uint32_t i = 0; i < map.entryCount; ++i )
 	{
 		const dx12native::NativeCBufferLegacyEntryDX12 &e = map.entries[i];
+		if ( e.bank == dx12native::kLegacyFloat && e.srcStride == 16 && e.elementBytes == 16 && !e.component &&
+			e.reg + e.elementCount <= ( vertex ? DX12ConstantStaging::kVSFloat : DX12ConstantStaging::kPSFloat ) )
+		{
+			memcpy( bytes + e.byteOffset, vertex ? staging.vsFloat[e.reg] : staging.psFloat[e.reg], 16u * e.elementCount );
+			continue;
+		}
 		for ( uint32_t element = 0; element < e.elementCount; ++element )
 		{
 			const uint32_t reg = e.reg + element;

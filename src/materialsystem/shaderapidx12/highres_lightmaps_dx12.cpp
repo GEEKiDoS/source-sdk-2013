@@ -897,10 +897,15 @@ struct CHighresLightmapsDX12::Impl
             if (i == DX12_PROBE_T_INDIRECTION) continue;
             const uint32 bytes = kProbeTexelBytes[i], rowPitch = pitch(size_t(width)*bytes);
             probeStaging.assign(placed(size_t(rowPitch)*kSide*kSide),0);
+            const size_t atlasPitch = size_t(g.atlasBricks[0])*kSide*bytes;
+            const size_t atlasSlice = atlasPitch*g.atlasBricks[1]*kSide;
             for (size_t k=0; k<probeMoves.size(); ++k)
-                for (uint32 z=0; z<kSide; ++z) for (uint32 y=0; y<kSide; ++y) for (uint32 x=0; x<kSide; ++x)
-                    memcpy(probeStaging.data()+(size_t(z)*kSide+y)*rowPitch+(k*kSide+x)*bytes,
-                        sources[i]+size_t(hprobe::TexelIndex(g,probeMoves[k].first,x,y,z))*bytes,bytes);
+            {
+                const uint8 *brick = sources[i]+size_t(hprobe::TexelIndex(g,probeMoves[k].first,0,0,0))*bytes;
+                for (uint32 z=0; z<kSide; ++z) for (uint32 y=0; y<kSide; ++y)
+                    memcpy(probeStaging.data()+(size_t(z)*kSide+y)*rowPitch+k*kSide*bytes,
+                        brick+z*atlasSlice+y*atlasPitch,kSide*bytes);
+            }
             ID3D12Resource *upload = nullptr; uint64 offset = 0;
             if (!api->m_Pipeline.UploadStructured(probeStaging.data(),probeStaging.size(),D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,fence,&upload,&offset)) { ok = false; break; }
             D3D12_TEXTURE_COPY_LOCATION src{}, dst{};

@@ -6,6 +6,8 @@
 #include "hardwareconfig_dx12.h"
 #include "shader_vcs_dx12.h"
 #include "staticprop_visibility_dx12.h"
+#include "model_light_work_dx12.h"
+#include "model_light_cell_dx12.h"
 #include "hlight_engine_bridge.h"
 #include "shadowmap_bsp.h"
 #include "filesystem.h"
@@ -28,6 +30,8 @@
 #include <memory>
 #include <string>
 #include <vector>
+
+static ConVar r_dx12_model_light_workers( "r_dx12_model_light_workers", "1", FCVAR_NONE, "Prepare model light visibility on CPU workers." );
 
 namespace shaderapidx12
 {
@@ -1314,12 +1318,15 @@ struct CLightingDX12::Impl
 	CUtlVector<DX12LightingSelectedLight> selected;
 	CUtlVector<DX12ModelLightNode> modelLightNodes;
 	struct ModelLightTest { uint32 generation = 0; Vector receiver, source; bool blocked = false; };
-	std::array<ModelLightTest, 2048> modelLightTests{};
+	// Workers own disjoint exact-segment caches. Never share writes even on hash collisions.
+	std::array<ModelLightTest, 4096> modelLightTests[2]{};
+	ModelLightWorkDX12 modelLightWork;
+	ModelLightCellsDX12 modelLightCells;
 	// ModelLocalLighting results per view and lighting origin: a model's materials and passes repeat the same query.
 	struct ModelLightingResult { uint32 mapGeneration = 0, viewGeneration = 0; int limit = 0; Vector origin; float rows[7][4]; };
 	std::array<ModelLightingResult, 512> modelLightingResults{};
 	// Per-light contribution at the current lighting origin, filled once per ModelLocalLighting miss.
-	struct ModelLightSample { Vector rgb, direction; float energy; };
+	struct ModelLightSample { Vector rgb, direction; float energy; bool blocked; };
 	CUtlVector<ModelLightSample> modelLightSamples;
 	std::atomic<uint32> activeMap{ 0 };
 	bool highresMap = false;
@@ -1730,6 +1737,7 @@ void CLightingDX12::Shutdown()
 	for ( ShadowTargetDX12 *target : s.targets ) if ( target ) target->Release();
 	s.targets.RemoveAll();
 	s.statuses.RemoveAll();
+	s.modelLightCells.Clear();
 	s.selected.RemoveAll();
 	s.modelLightNodes.Purge();
 	s.mapNullTable.Reset();
@@ -2061,6 +2069,7 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	}
 	if ( map.highresRoute )
 	{
+		s.modelLightCells.Clear();
 		s.selected.CopyArray( map.selectedLights, map.selectedLightCount );
 		s.modelLightNodes.CopyArray( map.modelLightNodes, map.modelLightNodeCount );
 		s.mapNullTable = nullTable;
@@ -2115,6 +2124,7 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	}
 	s.receiverMaps.emplace( map.mapGeneration, receiver );
 	s.receiverStats[map.mapGeneration] = receiver->stats;
+	s.modelLightCells.Clear();
 	s.selected.CopyArray( map.selectedLights, map.selectedLightCount );
 	s.modelLightNodes.Purge();
 	s.mapNullTable = nullTable;
@@ -2154,8 +2164,12 @@ static bool ModelLightBlocked( const CUtlVector<DX12ModelLightNode> &nodes, cons
 			const int side = da < 0.0f;
 			if ( side != ( db < 0.0f ) )
 			{
+				// Both pieces have positive extent or touch the split exactly as in the leaf walk.
+				const int nearNode = n.children[side], farNode = n.children[1-side];
+				if ( nearNode == -2 || farNode == -2 ) return true;
 				const Vector split = ray.a + ( ray.b - ray.a ) * ( da / ( da - db ) );
-				stack.AddToTail( Segment{ n.children[1-side], split, ray.b } );
+				if ( nearNode < 0 ) { ray.a = split; ray.node = farNode; continue; }
+				if ( farNode >= 0 ) stack.AddToTail( Segment{ farNode, split, ray.b } );
 				ray.b = split;
 			}
 			ray.node = n.children[side];
@@ -2256,15 +2270,28 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 		return Vector( light.radiance[0], light.radiance[1], light.radiance[2] ) * falloff;
 	};
-	auto blocked = [&]( const RuntimeShadowLightGpu &light, const Vector &direction )
+	// Exclude map replacement while publishing work or consuming its cell. Replacement drains
+	// the two background lanes under this same mutex; callbacks never acquire it.
+	AUTO_LOCK( s.mutex );
+	const bool parallel = r_dx12_model_light_workers.GetBool();
+	const auto *cell = parallel ? s.modelLightCells.Request( origin, s.modelLightNodes, s.selected ) : nullptr;
+	auto blocked = [&]( const RuntimeShadowLightGpu &light, const Vector &direction, int lane )
 	{
 		if ( !s.modelLightNodes.Count() ) return false;
 		const Vector end( light.origin[0], light.origin[1], light.origin[2] );
+		if ( cell && light.lightId < cell->result.size() )
+		{
+			const auto result = cell->result[light.lightId];
+			const auto &p = s.selected[light.lightId].origin;
+			if ( result != ModelCellResult::Mixed && end.x == p[0] && end.y == p[1] && end.z == p[2] )
+				return result == ModelCellResult::Blocked && ( end - origin ).LengthSqr() > 1.0f / 256.0f;
+		}
 		// Share exact segments across a model's materials and passes. Do not
 		// quantize positions: opposite sides of a wall must not alias.
 		const uint32 bucket = ( FloatBits( origin.x ) >> 6 ) ^ ( FloatBits( origin.y ) >> 9 ) ^
 			( FloatBits( origin.z ) >> 12 ) ^ ( light.lightId * 2654435761u );
-		auto &test = s.modelLightTests[bucket % s.modelLightTests.size()];
+		auto &tests = s.modelLightTests[lane];
+		auto &test = tests[bucket % tests.size()];
 		if ( test.generation != packet.view.mapGeneration || test.receiver != origin || test.source != end )
 		{
 			test.generation = packet.view.mapGeneration;
@@ -2276,21 +2303,32 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 		return test.blocked;
 	};
-	s.modelLightSamples.SetCount( lights.Count() );
+	// Resize before submitting the immutable view/BSP query. No vector, API state, or descriptor allocator is
+	// mutated by both threads. Ranking and the ambient sum below stay in original light order (including ties).
+	s.modelLightSamples.SetCountNonDestructively( lights.Count() );
+	auto prepare = [&]( int begin, int end, int lane )
+	{
+		for ( int i = begin; i < end; ++i )
+		{
+			auto &contribution = s.modelLightSamples[i];
+			contribution.rgb = sample( lights[i], contribution.direction );
+			contribution.energy = contribution.rgb.x * 0.2126f + contribution.rgb.y * 0.7152f + contribution.rgb.z * 0.0722f;
+			contribution.blocked = contribution.rgb.LengthSqr() != 0.0f && blocked( lights[i], contribution.direction, lane );
+		}
+	};
+	if ( parallel && !cell ) s.modelLightWork.Run( lights.Count(), prepare );
+	else prepare( 0, lights.Count(), 0 );
 	for ( int i = 0; i < lights.Count(); ++i )
 	{
-		auto &contribution = s.modelLightSamples[i];
-		contribution.rgb = sample( lights[i], contribution.direction );
-		contribution.energy = contribution.rgb.x * 0.2126f + contribution.rgb.y * 0.7152f + contribution.rgb.z * 0.0722f;
+		const auto &contribution = s.modelLightSamples[i];
 		const float energy = contribution.energy;
-		const Vector &direction = contribution.direction;
 		if ( energy <= 0.0f ) continue;
 		// Resident realtime lights precede static-only lights, preserving moving shadow receivers.
 		const bool realtime = lights[i].realtimeWeight > 0.0f;
 		// Charted lights retain per-pixel visibility (a large door may span a
 		// penumbra). A static-only local has no visibility endpoint on a moving
 		// model, so don't admit it through a structural wall.
-		if ( !realtime && blocked( lights[i], direction ) ) continue;
+		if ( !realtime && contribution.blocked ) continue;
 		int slot = 0;
 		while ( slot < limit && rows[0][slot] >= 0.0f )
 		{
@@ -2310,9 +2348,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	{
 		const auto &light = lights[int( rows[0][slot] )];
 		if ( light.realtimeWeight <= 0.0f || light.realtimeWeight >= 1.0f ) continue;
-		Vector direction( light.origin[0] - origin.x, light.origin[1] - origin.y, light.origin[2] - origin.z );
-		direction.NormalizeInPlace();
-		if ( blocked( light, direction ) ) blockedSlots |= 1u << slot;
+		if ( s.modelLightSamples[int( rows[0][slot] )].blocked ) blockedSlots |= 1u << slot;
 	}
 	rows[2][3] = float( blockedSlots );
 	for ( int i = 0; i < lights.Count(); ++i )
@@ -2322,7 +2358,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		if ( selected ) continue;
 		const auto &contribution = s.modelLightSamples[i];
 		const Vector &rgb = contribution.rgb, &direction = contribution.direction;
-		if ( rgb.LengthSqr() == 0.0f || blocked( lights[i], direction ) ) continue;
+		if ( rgb.LengthSqr() == 0.0f || contribution.blocked ) continue;
 		// Retail's six-axis cosine projection, evaluated once at the lighting origin.
 		for ( int axis = 0; axis < 3; ++axis )
 		{
@@ -2851,6 +2887,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				s.propScopes.RemoveAll();
 				s.activeMap = 0;
 				s.highresMap = false; s.nativeMapGeneration = 0;
+				s.modelLightCells.Clear();
 				s.selected.RemoveAll();
 				s.modelLightNodes.Purge();
 				s.mapNullTable.Reset();

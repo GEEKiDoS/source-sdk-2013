@@ -72,8 +72,19 @@ void DX12SetDepthFeatheringPixelShaderConstant( int reg, float depthBlendScale )
 // (the SM5.1 profile every native source is compiled for). Names without such a suffix are copied unchanged.
 void DX12NativeShaderName( const char *name, const char *stage, char *out, int outSize );
 
+// Precompile the reflected scatter/gather map once per native block type. Consecutive full
+// float4 fields (including arrays) then cross the DLL boundary as one contiguous register run.
+class DX12RegisterRuns
+{
+public:
+	explicit DX12RegisterRuns( const dx12native::NativeCBufferLegacyMapDX12 &source );
+	dx12native::NativeCBufferLegacyMapDX12 map;
+private:
+	CUtlVector<dx12native::NativeCBufferLegacyEntryDX12> m_Entries;
+};
+
 // Sends one generated block through the private bridge (magic/version/stage/space/register/size/hash/map).
-template< class CB > void DX12WriteNativeCBuffer( IShaderDynamicAPI *api, const CB &block )
+template< class CB > void DX12WriteNativeCBuffer( IShaderDynamicAPI *api, const CB &block, const dx12native::NativeCBufferLegacyMapDX12 &map )
 {
 	static_assert( std::is_trivially_copyable< CB >::value && std::is_standard_layout< CB >::value,
 		"A native block must be byte-identical to its reflected HLSL layout" );
@@ -84,7 +95,7 @@ template< class CB > void DX12WriteNativeCBuffer( IShaderDynamicAPI *api, const 
 		"Material cbuffer register is reserved or out of range" );
 	const dx12native::NativeCBufferWriteDX12 write = {
 		dx12native::kDX12NativeCBufferWriteMagic, dx12native::kDX12NativeCBufferVersion,
-		CB::kStage, 1, CB::kRegister, CB::kSize, CB::kLayoutHash, &block, &CB::LegacyMap()
+		CB::kStage, 1, CB::kRegister, CB::kSize, CB::kLayoutHash, &block, &map
 	};
 	if ( CB::kStage == dx12native::kStageVertex )
 		api->SetVertexShaderConstant( dx12native::kDX12NativeCBufferPointerVar, reinterpret_cast< const float * >( &write ), 1, true );
@@ -98,9 +109,10 @@ void DX12GatherLegacyRegisters( const dx12native::NativeCBufferLegacyMapDX12 &ma
 
 template< class CB > void DX12WriteBlockFromStaging( IShaderDynamicAPI *api, const DX12ConstantStaging &staging )
 {
+	static const DX12RegisterRuns runs( CB::LegacyMap() );
 	CB block;
-	DX12GatherLegacyRegisters( CB::LegacyMap(), CB::kStage, staging, &block );
-	DX12WriteNativeCBuffer( api, block );
+	DX12GatherLegacyRegisters( runs.map, CB::kStage, staging, &block );
+	DX12WriteNativeCBuffer( api, block, runs.map );
 }
 
 typedef void ( *DX12NativeBlockWriter )( IShaderDynamicAPI *api, const DX12ConstantStaging &staging );

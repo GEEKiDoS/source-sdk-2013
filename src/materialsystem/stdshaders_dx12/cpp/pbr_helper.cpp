@@ -1298,7 +1298,8 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			if ( bEnhanced )
 			{
 				float modelLighting[7][4] = {};
-				liveLights = MIN( liveLights, DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting ) );
+				const int remaining = DX12ShadowmapLighting()->ModelLocalLighting( r_model_local_lights.GetInt(), modelLighting );
+				liveLights = MIN( liveLights, remaining );
 				DynamicCmdsOut.SetPixelShaderConstant( 40, modelLighting[0], 7 );
 			}
 			// pbr_model_vs51 interpolates no world position; the pixel stage rebuilds it from this eye (PBRMaterialPS c56).

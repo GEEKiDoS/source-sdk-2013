@@ -2680,17 +2680,18 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			memcpy( e.cClipPlanes, m_PreviousVertexExtension.clipPlanes, sizeof( e.cClipPlanes ) );
 			e.cClipMask[0] = drawClipMask;
 			e.cClipMask[1] = e.cClipMask[2] = e.cClipMask[3] = 0;
-			static_assert( sizeof( m_NativeVSBones.cModel ) == sizeof( float ) * 4 * 3 * 53, "bone rows" );
-			memcpy( m_NativeVSBones.cModel, m_VsFloat[VERTEX_SHADER_MODEL], sizeof( m_NativeVSBones.cModel ) );
 			memcpy( m_NativeVSEngineInputs, engineInputs, sizeof( m_NativeVSEngineInputs ) );
 			++m_nNativeVSEngineVersion;
 		}
 		bindingInput.nativeData[0] = &m_NativeVSEngine;
 		bindingInput.nativeSizes[0] = sizeof( m_NativeVSEngine );
 		bindingInput.nativeVersions[0] = m_nNativeVSEngineVersion;
-		bindingInput.nativeData[1] = &m_NativeVSBones;
-		bindingInput.nativeSizes[1] = sizeof( m_NativeVSBones );
-		bindingInput.nativeVersions[1] = m_nNativeVSEngineVersion;
+		// The native bone layout is the contiguous legacy register range. Only a write that
+		// overlaps that range invalidates its upload; viewport/clip/light changes don't.
+		static_assert( VERTEX_SHADER_MODEL + sizeof( dx12native::DX12VSBones ) / 16 <= ARRAYSIZE( m_VsFloat ), "bone rows" );
+		bindingInput.nativeData[1] = m_VsFloat[VERTEX_SHADER_MODEL];
+		bindingInput.nativeSizes[1] = sizeof( dx12native::DX12VSBones );
+		bindingInput.nativeVersions[1] = m_nBoneRowsVersion;
 		for ( unsigned slot = 0; slot < ARRAYSIZE( m_NativeVSBlocks ); ++slot )
 			if ( m_NativeVSBlocks[slot].written )
 			{
@@ -3888,26 +3889,48 @@ void CShaderAPIDX12::Color4ubv( unsigned char const *pColor )
 void CShaderAPIDX12::ApplyNativeCBufferWrite( const dx12native::NativeCBufferWriteDX12 &write, bool bPixel )
 {
 	NativeCBufferSlotDX12 &slot = bPixel ? m_NativePSBlocks[write.shaderRegister - 1] : m_NativeVSBlocks[write.shaderRegister - 2];
-	slot.bytes.SetCount( write.byteSize );
-	memcpy( slot.bytes.Base(), write.data, write.byteSize );
+	const unsigned nFirstBank = bPixel ? 3 : 0;
+	const bool unchanged = slot.written && slot.byteSize == write.byteSize && slot.legacyMap == write.legacyMap &&
+		slot.layoutHash == write.layoutHash && !memcmp( slot.bytes.Base(), write.data, write.byteSize );
+	if ( unchanged && !memcmp( slot.mirrorVersions, m_ConstantVersions + nFirstBank, sizeof( slot.mirrorVersions ) ) )
+		return;
+	if ( !unchanged )
+	{
+		slot.bytes.SetCountNonDestructively( write.byteSize );
+		memcpy( slot.bytes.Base(), write.data, write.byteSize );
+		slot.version = bPixel ? ++m_nNativePSVersion : ++m_nNativeVSVersion;
+	}
 	slot.legacyMap = write.legacyMap;
 	slot.layoutHash = write.layoutHash;
 	slot.byteSize = write.byteSize;
 	slot.written = true;
-	slot.version = bPixel ? ++m_nNativePSVersion : ++m_nNativeVSVersion;
-	const unsigned nFirstBank = bPixel ? 3 : 0;
 	bool bFloats = false, bInts = false, bBools = false;
 	const unsigned char *pBytes = static_cast<const unsigned char *>( write.data );
 	for ( uint32_t e = 0; e < write.legacyMap->entryCount; ++e )
 	{
 		const dx12native::NativeCBufferLegacyEntryDX12 &entry = write.legacyMap->entries[e];
+		const size_t floatCount = bPixel ? ARRAYSIZE( m_PsFloat ) : ARRAYSIZE( m_VsFloat );
+		const size_t runBytes = size_t( entry.elementCount ) * 16;
+		if ( entry.bank == dx12native::kLegacyFloat && entry.elementBytes == 16 && entry.srcStride == 16 && !entry.component &&
+			entry.reg + entry.elementCount <= floatCount && size_t( entry.byteOffset ) + runBytes <= write.byteSize )
+		{
+			float *dst = bPixel ? m_PsFloat[entry.reg] : m_VsFloat[entry.reg];
+			if ( memcmp( dst, pBytes + entry.byteOffset, runBytes ) )
+			{
+				memcpy( dst, pBytes + entry.byteOffset, runBytes );
+				bFloats = true;
+				if ( !bPixel && entry.reg < VERTEX_SHADER_MODEL + sizeof( dx12native::DX12VSBones ) / 16 &&
+					entry.reg + entry.elementCount > VERTEX_SHADER_MODEL ) ++m_nBoneRowsVersion;
+			}
+			continue;
+		}
 		for ( uint32_t n = 0; n < entry.elementCount; ++n )
 		{
 			const unsigned char *pSrc = pBytes + entry.byteOffset + size_t( n ) * entry.srcStride;
 			const size_t nReg = size_t( entry.reg ) + n;
 			if ( size_t( entry.byteOffset ) + size_t( n ) * entry.srcStride + entry.elementBytes > write.byteSize )
 				break;
-			if ( entry.bank == dx12native::kLegacyFloat && nReg < ARRAYSIZE( m_VsFloat ) )
+			if ( entry.bank == dx12native::kLegacyFloat && nReg < floatCount )
 			{
 				float( &dst )[4] = bPixel ? m_PsFloat[nReg] : m_VsFloat[nReg];
 				const size_t nBytes = MIN( static_cast<size_t>( entry.elementBytes ), static_cast<size_t>( 16u - entry.component * 4u ) );
@@ -3915,6 +3938,8 @@ void CShaderAPIDX12::ApplyNativeCBufferWrite( const dx12native::NativeCBufferWri
 				{
 					memcpy( dst + entry.component, pSrc, nBytes );
 					bFloats = true;
+					if ( !bPixel && nReg >= VERTEX_SHADER_MODEL && nReg < VERTEX_SHADER_MODEL + sizeof( dx12native::DX12VSBones ) / 16 )
+						++m_nBoneRowsVersion;
 				}
 			}
 			else if ( entry.bank == dx12native::kLegacyInt && nReg < ARRAYSIZE( m_VsInt ) )
@@ -3946,6 +3971,7 @@ void CShaderAPIDX12::ApplyNativeCBufferWrite( const dx12native::NativeCBufferWri
 		++m_ConstantVersions[nFirstBank + 1];
 	if ( bBools )
 		++m_ConstantVersions[nFirstBank + 2];
+	memcpy( slot.mirrorVersions, m_ConstantVersions + nFirstBank, sizeof( slot.mirrorVersions ) );
 }
 
 //-----------------------------------------------------------------------------
@@ -3980,7 +4006,11 @@ void CShaderAPIDX12::SetVertexShaderConstant( int var, float const *values, int 
 		}
 	}
 	if ( changed )
+	{
 		++m_ConstantVersions[0];
+		if ( var < int( VERTEX_SHADER_MODEL + sizeof( dx12native::DX12VSBones ) / 16 ) && end > VERTEX_SHADER_MODEL )
+			++m_nBoneRowsVersion;
+	}
 }
 
 //-----------------------------------------------------------------------------
