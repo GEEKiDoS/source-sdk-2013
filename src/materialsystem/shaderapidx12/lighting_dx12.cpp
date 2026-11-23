@@ -1358,6 +1358,16 @@ struct CLightingDX12::Impl
 		std::string modelName;
 	};
 	std::map<uint64,std::shared_ptr<ModelMetadata>> modelMeshes;
+	struct PropLookup
+	{
+		uint64 revision = 0;
+		StaticPropInstanceKeyDX12 key{};
+		std::shared_ptr<ModelMetadata> metadata;
+		std::shared_ptr<RegisteredProp> record;
+		bool registered = false, ambiguous = false;
+	};
+	std::array<PropLookup, 512> propLookups{};
+	uint64 propLookupRevision = 1;
 	using PropDetailKey = std::array<uint64, 12>;
 	struct PropDetail
 	{
@@ -1371,6 +1381,7 @@ struct CLightingDX12::Impl
 	std::array<uint64, DX12_PROP_VISIBILITY_REASON_COUNT> propReasons{};
 	void ClearPropDiagnostics()
 	{
+		propLookups.fill( PropLookup{} ); ++propLookupRevision;
 		modelMeshes.clear(); propDetails.clear();
 		propModelDraws = propAuthoredModelDraws = propRegisteredDraws = propRegisteredFallbackDraws = propDetailOverflow = 0;
 		propReasons.fill(0);
@@ -2476,6 +2487,7 @@ void CLightingDX12::RegisterStaticPropReceiver( uint64 renderableToken, const DX
 		record->proofs.resize( receiver.meshCount );
 	}
 	AUTO_LOCK( s.mutex );
+	++s.propLookupRevision;
 	auto old = s.registeredProps.find( renderableToken );
 	if ( old != s.registeredProps.end() )
 	{
@@ -2523,7 +2535,7 @@ void CLightingDX12::RegisterModelMeshMetadata( const DX12ModelMeshMetadata &meta
 	AUTO_LOCK(s.mutex);
 	if ( !metadata.meshToken )
 	{
-		if ( !metadata.modelName ) { s.modelMeshes.clear(); s.propDetails.clear(); }
+		if ( !metadata.modelName ) { ++s.propLookupRevision; s.modelMeshes.clear(); s.propDetails.clear(); }
 		return;
 	}
 	auto old = s.modelMeshes.find(metadata.meshToken);
@@ -2535,6 +2547,7 @@ void CLightingDX12::RegisterModelMeshMetadata( const DX12ModelMeshMetadata &meta
 			v.stripGroup == metadata.stripGroup && v.staticPropModel == metadata.staticPropModel &&
 			old->second->modelName == metadata.modelName ) return;
 	}
+	++s.propLookupRevision;
 	for ( auto row = s.propDetails.begin(); row != s.propDetails.end(); )
 		if ( row->first[0] == metadata.meshToken ) row = s.propDetails.erase(row); else ++row;
 	if ( !metadata.modelName ) { if ( old != s.modelMeshes.end() ) s.modelMeshes.erase(old); return; }
@@ -3593,18 +3606,39 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	bool meshRegistered = false, ambiguous = false;
 	{
 		AUTO_LOCK(s.mutex);
-		const auto model = s.modelMeshes.find(meshToken);
-		if ( model != s.modelMeshes.end() ) metadata = model->second;
+		// Handles alone do not identify an instance: only a fully matching
+		// canonical pose may reuse a registry lookup. Scoped draws need no lookup.
+		Impl::PropLookup *hit = nullptr;
 		if ( !receiver && validKey )
 		{
-			const auto entry = s.propInstances.find(instanceKey);
-			if ( entry != s.propInstances.end() )
+			const uint64 mix = (meshToken >> 3) ^ (instanceKey[2] * 31u) ^ (instanceKey[4] * 131u) ^ instanceKey[6];
+			hit = &s.propLookups[Mix32HashFunctor()( uint32(mix) ^ uint32(mix >> 32) ) % s.propLookups.size()];
+		}
+		if ( hit && hit->revision == s.propLookupRevision && hit->key == instanceKey )
+		{
+			record = hit->record; metadata = hit->metadata;
+			meshRegistered = hit->registered; ambiguous = hit->ambiguous;
+		}
+		else
+		{
+			const auto model = s.modelMeshes.find(meshToken);
+			if ( model != s.modelMeshes.end() ) metadata = model->second;
+			if ( !receiver )
+				meshRegistered = s.propMeshRegistrationCounts.find(meshToken) != s.propMeshRegistrationCounts.end();
+			if ( hit )
 			{
-				record = UniqueStaticPropInstanceDX12(entry->second);
-				ambiguous = !record;
+				if ( meshRegistered )
+				{
+					const auto entry = s.propInstances.find(instanceKey);
+					if ( entry != s.propInstances.end() )
+					{
+						record = UniqueStaticPropInstanceDX12(entry->second);
+						ambiguous = !record;
+					}
+				}
+				*hit = { s.propLookupRevision, instanceKey, metadata, record, meshRegistered, ambiguous };
 			}
 		}
-		meshRegistered = s.propMeshRegistrationCounts.find(meshToken) != s.propMeshRegistrationCounts.end();
 	}
 	if ( record ) receiver = &record->receiver;
 	const auto finish = [&](DX12StaticPropVisibilityReason reason, bool accepted = true)
