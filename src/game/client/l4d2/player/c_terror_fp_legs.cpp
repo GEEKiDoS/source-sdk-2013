@@ -90,7 +90,7 @@ C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player
 
 C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
 	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nFirstHiddenBone( MAXSTUDIOBONES ), m_nLeanBone( -1 ),
-	m_nBoneNamesGeneration( s_nBoneNamesGeneration ), m_flLean( 0.0f )
+	m_nBoneNamesGeneration( s_nBoneNamesGeneration ), m_flLean( 0.0f ), m_vecViewRight( 0.0f, -1.0f, 0.0f )
 {
 }
 
@@ -178,6 +178,7 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	m_flLean = Lerp( duck, cl_fp_legs_lean.GetFloat(), cl_fp_legs_duck_lean.GetFloat() );
 	Vector viewForward;
 	AngleVectors( QAngle( 0.0f, player->EyeAngles().y, 0.0f ), &viewForward );
+	m_vecViewRight = CrossProduct( viewForward, Vector( 0.0f, 0.0f, 1.0f ) );
 	SetAbsOrigin( player->GetRenderOrigin() - viewForward * offset );
 	QAngle angles( 0.0f, player->GetRenderAngles().y, 0.0f );
 	float pitch = player->EyeAngles().x;
@@ -191,7 +192,7 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 		// Rotating about forward x up (the view's right axis) by a positive angle tips the model's up toward -forward.
 		matrix3x4_t yaw, rotate, tilted;
 		AngleMatrix( angles, yaw );
-		MatrixBuildRotationAboutAxis( CrossProduct( viewForward, Vector( 0.0f, 0.0f, 1.0f ) ), tilt, rotate );
+		MatrixBuildRotationAboutAxis( m_vecViewRight, tilt, rotate );
 		ConcatTransforms( rotate, yaw, tilted );
 		MatrixAngles( tilted, angles );
 	}
@@ -242,18 +243,17 @@ void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *
 	BaseClass::BuildTransformations( studio, pos, q, cameraTransform, boneMask, computed );
 	const int bones = MIN( studio->numbones(), MAXSTUDIOBONES );
 
-	// Lean the upper body back about the model's right axis, pivoting at the lean bone: whatever stays visible above
-	// it and the collapse points move away from the camera while the hips and legs stay put.
+	// Lean the upper body back about the view's right axis, pivoting at the lean bone: whatever stays visible above
+	// it and the collapse points move straight away from the camera's facing while the hips and legs stay put. The
+	// model's own axes would follow the body yaw, which lags the view and twists in the aim stances.
 	const float lean = m_flLean;
 	if ( m_nLeanBone >= 0 && lean != 0.0f )
 	{
-		Vector forward, right, up;
-		AngleVectors( GetAbsAngles(), &forward, &right, &up );
 		Vector pivot;
 		MatrixGetColumn( GetBone( m_nLeanBone ), 3, pivot );
 		// Rotating about forward x up (the right axis) by a positive angle tips up toward -forward.
 		matrix3x4_t rotate;
-		MatrixBuildRotationAboutAxis( CrossProduct( forward, up ), lean, rotate );
+		MatrixBuildRotationAboutAxis( m_vecViewRight, lean, rotate );
 		Vector rotatedPivot;
 		VectorRotate( pivot, rotate, rotatedPivot );
 		MatrixSetColumn( pivot - rotatedPivot, 3, rotate );

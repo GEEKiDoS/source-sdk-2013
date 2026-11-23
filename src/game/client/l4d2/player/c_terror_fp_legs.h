@@ -57,6 +57,7 @@ private:
 	int m_nBoneNamesGeneration; // cl_fp_legs_hide_bones / cl_fp_legs_lean_bone changes rebuild the bone sets
 	CBitVec< MAXSTUDIOBONES > m_LeanBones;
 	float m_flLean; // degrees, blended between cl_fp_legs_lean and cl_fp_legs_duck_lean each sync
+	Vector m_vecViewRight; // horizontal view right axis at the last sync; the lean and tilt pivot about it
 };
 
 // The active weapon's world model bone-merged onto the shadow copy; shadow passes only.
