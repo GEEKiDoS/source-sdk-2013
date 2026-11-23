@@ -3527,7 +3527,10 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 	else
 		pRecord->legacyBytecode.CopyArray( pBits, nBytes );
 	if ( pRecord->legacyBytecode.IsEmpty() )
+	{
+		pRecord->dxil = ClassifyShaderBytecodeDX12( pBits, nBytes ) == ShaderBytecodeKindDX12::Dxil;
 		pRecord->forceEarlyDepth = NativeShaderForcesEarlyDepth( pBits, static_cast<size_t>( nBytes ) );
+	}
 	if ( pRecord->legacyBytecode.IsEmpty() )
 	{
 		CUtlString error;

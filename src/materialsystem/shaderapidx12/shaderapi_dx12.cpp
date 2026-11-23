@@ -974,6 +974,19 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 	if ( m_pDevice && m_pDevice->Highres().EnhancedMap() && !m_pDevice->Lighting().ShadowPassActive() &&
 		!( m_RenderingInts[INT_RENDERPARM_DX12_VIEW_FLAGS] & DX12_VIEW_FLAG_REFLECTION ) )
 	{
+		// The snapshot fixes shader names, static combos and cutout state. The
+		// only additional routing input is early depth (PS) or receiver ABI (VS).
+		const auto *bound = reinterpret_cast<const ShaderRecordDX12 *>( m_hBoundPS );
+		const bool route = bPixel ? CanUseEarlyDepthDX12( m_ActiveSnapshot.alphaTest, m_ActiveSnapshot.alphaToCoverage, m_bAlphaToCoverage ) :
+			bound && ( bound->lightmapSamplerMask || bound->highresAbi );
+		auto &cache = m_HighresResolveCache[bPixel][route];
+		auto &entry = cache[Mix32HashFunctor()( uint32( m_hActiveSnapshotId ) * 0x9E3779B1u ^ uint32( nDynamicIndex ) ) % ARRAYSIZE( cache )];
+		if ( m_hActiveSnapshotId >= 0 && entry.snapshot == m_hActiveSnapshotId && entry.dynamicIndex == nDynamicIndex &&
+			entry.epoch == m_nNamedResolveEpoch && entry.referenceEpoch == m_nNamedReferenceEpoch )
+		{
+			m_BoundNamedCombos[bPixel] = entry.combo;
+			return entry.record;
+		}
 		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
 		char highresName[256];
 		const ShaderRecordDX12 *pixel = bPixel ? record : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS );
@@ -1004,8 +1017,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 				return nullptr;
 			}
 		}
-		if ( bPixel && record && record->nativeEarlyDepthTwin &&
-			CanUseEarlyDepthDX12( m_ActiveSnapshot.alphaTest, m_ActiveSnapshot.alphaToCoverage, m_bAlphaToCoverage ) )
+		if ( bPixel && record && record->nativeEarlyDepthTwin && route )
 		{
 			// Metadata admits only audited no-kill/no-depth-output twins. Never force
 			// early depth updates on runtime cutout or alpha-to-coverage draws.
@@ -1021,7 +1033,13 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 				return nullptr;
 			}
 		}
-		if ( record ) m_BoundNamedCombos[bPixel ? 1 : 0] = m_NamedShaderCombos[m_NamedComboHints[bPixel ? 1 : 0]];
+		if ( record )
+		{
+			auto *combo = m_NamedShaderCombos[m_NamedComboHints[bPixel]];
+			m_BoundNamedCombos[bPixel] = combo;
+			if ( m_hActiveSnapshotId >= 0 )
+				entry = { m_hActiveSnapshotId, nDynamicIndex, m_nNamedResolveEpoch, record, combo, 0, m_nNamedReferenceEpoch };
+		}
 		return record;
 	}
 	if ( m_pDevice && m_pDevice->Lighting().ShadowPassActive() )
@@ -2877,8 +2895,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		// depth-only without the sky clip.
 		const auto isDxil = []( const ShaderRecordDX12 *record )
 		{
-			return record && record->legacyBytecode.IsEmpty() &&
-				ClassifyShaderBytecodeDX12( record->bytecode.Base(), size_t( record->bytecode.Count() ) ) == ShaderBytecodeKindDX12::Dxil;
+			return record && record->dxil;
 		};
 		if ( ps && isDxil( vs ) != isDxil( ps ) )
 		{

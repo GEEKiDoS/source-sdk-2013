@@ -1561,6 +1561,7 @@ private:
 	// Bumped when reference marks are cleared; cached entries re-mark their reference before reuse.
 	uint64_t m_nNamedReferenceEpoch = 1;
 	NamedResolveEntryDX12 m_NamedResolveCache[2][1024];
+	NamedResolveEntryDX12 m_HighresResolveCache[2][2][512];
 	uint64_t m_nNamedResolveEpoch = 1;
 	ShaderRecordDX12 *ResolveActiveNamedShader( bool bPixel, int nDynamicIndex );
 	// Exact-input transform cache: recomputed only when view/projection bytes differ.

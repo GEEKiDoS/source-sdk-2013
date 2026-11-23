@@ -46,6 +46,7 @@ struct ShaderRecordDX12
 	bool constantLayoutValid = false;
 	CUtlVector<unsigned char> legacyBytecode;
 	CUtlVector<unsigned char> bytecode;
+	bool dxil = false;
 	bool stagePixel = false;
 	// SM2 centroid declarations live in the VCS header, not the bytecode's DCL tokens.
 	uint32_t centroidTexcoordMask = 0;
