@@ -318,11 +318,14 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Releases every device object; the cache may be re-initialized
+// Purpose: Replay distinct descriptors on the drained loading owner and two workers.
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned &total )
 {
 	total = m_Recipes.Total();
+	if ( !budget || m_Recipes.Next() == total ) { done = m_Recipes.Next(); return; }
+	const double start = Plat_FloatTime();
+	unsigned compiled = 0, loaded = 0, failed = 0;
 	ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
 	while ( budget && m_Recipes.Next() < total )
 	{
@@ -350,9 +353,14 @@ void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned 
 		{
 			if ( jobs[i].created ) m_Library.Store( jobs[i].key, jobs[i].pso.Get() );
 			if ( jobs[i].pso ) m_Recipes.Publish( jobs[i].key, jobs[i].pso.Get() );
+			if ( !jobs[i].pso ) ++failed;
+			else if ( jobs[i].created ) ++compiled;
+			else ++loaded;
 		}
 	}
 	done = m_Recipes.Next();
+	DevMsg( "DX12 PSO warmup %u/%u: %u compiled, %u library, %u refused in %.2f ms\n",
+		done, total, compiled, loaded, failed, ( Plat_FloatTime() - start ) * 1000.0 );
 }
 
 void CPipelineCacheDX12::Shutdown()
@@ -1585,6 +1593,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	const uint64_t diskKey = m_Library.Key( desc, root );
 	HRESULT hr = S_OK;
 	pso = m_Recipes.Find( diskKey );
+	const bool resident = pso != nullptr;
 	if ( !pso && m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
 		++g_FirstUse.libraryHits;
 	else if ( !pso )
@@ -1606,7 +1615,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		if ( SUCCEEDED( hr ) )
 			m_Library.Store( diskKey, pso.Get() );
 	}
-	if ( pso )
+	if ( !resident && pso )
 		m_Recipes.Record( diskKey, root, desc, pso.Get() );
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );

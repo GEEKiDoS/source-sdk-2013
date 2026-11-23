@@ -19,15 +19,19 @@ class CPersistentPipelineDX12
 public:
 	void Open( ID3D12Device *device, IFileSystem *filesystem )
 	{
-		Microsoft::WRL::ComPtr<ID3D12Device1> device1;
-		if ( FAILED( device->QueryInterface( IID_PPV_ARGS( &device1 ) ) ) )
-			return;
 		wchar_t dir[MAX_PATH];
 		const DWORD length = GetEnvironmentVariableW( L"LOCALAPPDATA", dir, ARRAYSIZE( dir ) );
 		if ( !length || length >= ARRAYSIZE( dir ) - 96 )
 			return;
 		wcscat_s( dir, L"\\SourceDX12" );
 		CreateDirectoryW( dir, nullptr );
+		uint64_t pack;
+		if ( !filesystem || !PackIdentity( *filesystem, pack ) )
+			return;
+		swprintf_s( m_RecipePath, L"%s\\graphics-v1-%016llx.recipes", dir, pack );
+		Microsoft::WRL::ComPtr<ID3D12Device1> device1;
+		if ( FAILED( device->QueryInterface( IID_PPV_ARGS( &device1 ) ) ) )
+			return;
 		const LUID id = device->GetAdapterLuid();
 		Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
 		Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
@@ -39,10 +43,8 @@ public:
 		// CreatePipelineLibrary still rejects a blob from a different driver.
 		adapter->CheckInterfaceSupport( __uuidof( IDXGIDevice ), &driver );
 		DXGI_ADAPTER_DESC desc{};
-		uint64_t pack;
-		if ( FAILED( adapter->GetDesc( &desc ) ) || !filesystem || !PackIdentity( *filesystem, pack ) )
+		if ( FAILED( adapter->GetDesc( &desc ) ) )
 			return;
-		swprintf_s( m_RecipePath, L"%s\\graphics-v1-%016llx.recipes", dir, pack );
 		swprintf_s( m_Prefix, L"%s\\pipeline-v1-%04x-%04x-%08x-", dir, desc.VendorId, desc.DeviceId, desc.SubSysId );
 		swprintf_s( m_Path, L"%s%016llx-%016llx.bin", m_Prefix, driver.QuadPart, pack );
 		// A legacy name can only be attributed to this adapter for its current LUID.

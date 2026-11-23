@@ -1,7 +1,6 @@
 #pragma once
 #include "persistent_pipeline_dx12.h"
 #include <map>
-#include <array>
 
 namespace shaderapidx12
 {
@@ -49,7 +48,8 @@ class CPipelineRecipesDX12
 		for ( UINT i = 0; i < header[1]; ++i )
 		{
 			uint64_t id; UINT size;
-			if ( !fread( &id, sizeof( id ), 1, f ) || !fread( &size, sizeof( size ), 1, f ) || !size || size > kBytes - m_Bytes ) return false;
+			if ( !fread( &id, sizeof( id ), 1, f ) || !fread( &size, sizeof( size ), 1, f ) || !size || size > kBytes ) return false;
+			if ( !m_Blobs.count( id ) && ( size > kBytes - m_Bytes || m_Blobs.size() >= kLimit ) ) return false;
 			Bytes data( size );
 			if ( !fread( data.data(), size, 1, f ) || Hash( data.data(), size ) != id ) return false;
 			if ( m_Blobs.emplace( id, std::move( data ) ).second ) m_Bytes += size;
@@ -71,9 +71,17 @@ public:
 	{
 		wcscpy_s( m_Path, path );
 		FILE *f = nullptr;
-		if ( !_wfopen_s( &f, path, L"rb" ) ) { Read( f ); fclose( f ); }
+		if ( !_wfopen_s( &f, path, L"rb" ) )
+		{
+			if ( !Read( f ) ) DevWarning( "DX12: incomplete local PSO recipes: %ls\n", path );
+			fclose( f );
+		}
 		char seed[MAX_PATH];
-		if ( fs && fs->RelativePathToFullPath( "shaders/pso/graphics-v1.recipes", "GAME", seed, sizeof( seed ) ) && !fopen_s( &f, seed, "rb" ) ) { Read( f ); fclose( f ); }
+		if ( fs && fs->RelativePathToFullPath( "shaders/pso/graphics-v1.recipes", "GAME", seed, sizeof( seed ) ) && !fopen_s( &f, seed, "rb" ) )
+		{
+			if ( !Read( f ) ) DevWarning( "DX12: incomplete bundled PSO recipes: %s\n", seed );
+			fclose( f );
+		}
 	}
 	void Close()
 	{
