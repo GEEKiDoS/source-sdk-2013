@@ -944,13 +944,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const DescriptorRangeDX12 table = m_Bindings.AllocateDescriptors( 8, input.retireFence );
 		if ( table.count != 8 )
 			return false;
-		for ( unsigned slot = 0; slot < 8; ++slot )
-		{
-			D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
-			cpu.ptr += SIZE_T( slot ) * resourceStride;
-			const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
-			m_pDevice->CreateConstantBufferView( &view, cpu );
-		}
+		pList->WriteNativeCbvTable( table.cpu, m_nResourceStride, addresses, sizes );
 		memcpy( cached.addresses, addresses, sizeof( addresses ) );
 		memcpy( cached.sizes, sizes, sizeof( sizes ) );
 		cached.gpu = table.gpu;

@@ -1695,6 +1695,19 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->EndQuery( heap, type, index );
 			break;
 		}
+		case Op::WriteNativeCbvTable:
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE dst;
+			UINT stride, sizes[8];
+			D3D12_GPU_VIRTUAL_ADDRESS addresses[8];
+			get( dst ); get( stride ); get( addresses ); get( sizes );
+			for ( unsigned i = 0; i < 8; ++i, dst.ptr += stride )
+			{
+				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[i], sizes[i] };
+				device->CreateConstantBufferView( &view, dst );
+			}
+			break;
+		}
 		case Op::CopyDescriptorTable:
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE destination;
