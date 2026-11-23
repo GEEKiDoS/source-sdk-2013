@@ -50,10 +50,12 @@ private:
 	CHandle< C_TerrorPlayer > m_hPlayer;
 	Role m_Role;
 	int m_nSyncFrame;
-	// Legs only: bones collapsed by BuildTransformations, the cut bone and every descendant (chest, arms, neck, head).
-	int m_nCutBone;
-	int m_nCutBoneGeneration; // cl_fp_legs_cut_bone changes rebuild m_HiddenBones
-	CBitVec< MAXSTUDIOBONES > m_HiddenBones;
+	// Legs only: for each bone, the hidden subtree root (head, arms) it collapses to, or -1; and the subtree leaned
+	// back from the lean bone before the collapse.
+	short m_CollapseRoot[MAXSTUDIOBONES];
+	int m_nFirstHiddenBone, m_nLeanBone;
+	int m_nBoneNamesGeneration; // cl_fp_legs_hide_bones / cl_fp_legs_lean_bone changes rebuild the bone sets
+	CBitVec< MAXSTUDIOBONES > m_LeanBones;
 };
 
 // The active weapon's world model bone-merged onto the shadow copy; shadow passes only.

@@ -16,12 +16,31 @@
 ConVar cl_fp_legs( "cl_fp_legs", "1", FCVAR_ARCHIVE, "Show your survivor's legs when looking down in first person." );
 ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
 	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
-static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "16", FCVAR_ARCHIVE,
-	"Units the first-person legs and their shadow sit behind the camera along the view's facing, so the upper-body cut stays out of view." );
-static int s_nCutBoneGeneration = 0;
-static void CutBoneChanged( IConVar *, const char *, float ) { ++s_nCutBoneGeneration; }
-static ConVar cl_fp_legs_cut_bone( "cl_fp_legs_cut_bone", "ValveBiped.Bip01_Spine2", 0,
-	"Bone collapsed with all of its descendants (chest, arms, head) on the first-person legs.", CutBoneChanged );
+static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "8", 0,
+	"Units the first-person legs and their shadow sit behind the camera along the view's facing." );
+static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "45", 0,
+	"Degrees the first-person legs' upper body leans back from cl_fp_legs_lean_bone, moving the collapsed waist behind the camera." );
+static int s_nBoneNamesGeneration = 0;
+static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
+static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Spine1", 0,
+	"Space-separated bones collapsed with all of their descendants on the first-person legs. Spine1: chest, arms and head; "
+	"\"ValveBiped.Bip01_Neck1 ValveBiped.Bip01_L_Clavicle ValveBiped.Bip01_R_Clavicle\": head and arms only.", BoneNameChanged );
+static ConVar cl_fp_legs_lean_bone( "cl_fp_legs_lean_bone", "ValveBiped.Bip01_Spine", 0,
+	"Bone the first-person legs' upper body leans back from (cl_fp_legs_lean).", BoneNameChanged );
+
+// Marks `root` and every descendant; studio bones are ordered parent before child.
+static void MarkSubtree( CStudioHdr *studio, int root, CBitVec< MAXSTUDIOBONES > &bones )
+{
+	bones.ClearAll();
+	if ( root < 0 )
+		return;
+	for ( int i = root; i < studio->numbones() && i < MAXSTUDIOBONES; ++i )
+	{
+		const int parent = studio->pBone( i )->parent;
+		if ( i == root || ( parent >= 0 && bones.IsBitSet( parent ) ) )
+			bones.Set( i );
+	}
+}
 
 static bool InFeatureShadowDraw( int flags )
 {
@@ -61,7 +80,8 @@ C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player
 }
 
 C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
-	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nCutBone( -1 ), m_nCutBoneGeneration( s_nCutBoneGeneration )
+	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nFirstHiddenBone( MAXSTUDIOBONES ), m_nLeanBone( -1 ),
+	m_nBoneNamesGeneration( s_nBoneNamesGeneration )
 {
 }
 
@@ -118,9 +138,9 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	CStudioHdr *source = player->GetModelPtr();
 	if ( !studio || !source )
 		return;
-	if ( m_Role == ROLE_LEGS && m_nCutBoneGeneration != s_nCutBoneGeneration )
+	if ( m_Role == ROLE_LEGS && m_nBoneNamesGeneration != s_nBoneNamesGeneration )
 	{
-		m_nCutBoneGeneration = s_nCutBoneGeneration;
+		m_nBoneNamesGeneration = s_nBoneNamesGeneration;
 		FindHiddenBones();
 	}
 
@@ -157,37 +177,75 @@ CStudioHdr *C_TerrorFirstPersonBody::OnNewModel()
 
 void C_TerrorFirstPersonBody::FindHiddenBones()
 {
-	m_HiddenBones.ClearAll();
-	m_nCutBone = -1;
+	m_LeanBones.ClearAll();
+	m_nLeanBone = -1;
+	m_nFirstHiddenBone = MAXSTUDIOBONES;
+	for ( int i = 0; i < MAXSTUDIOBONES; ++i )
+		m_CollapseRoot[i] = -1;
 	CStudioHdr *studio = GetModelPtr();
 	if ( m_Role != ROLE_LEGS || !studio )
 		return;
-	m_nCutBone = Studio_BoneIndexByName( studio, cl_fp_legs_cut_bone.GetString() );
-	if ( m_nCutBone < 0 )
-		return;
-	// Studio bones are ordered parent before child.
-	for ( int i = m_nCutBone; i < studio->numbones() && i < MAXSTUDIOBONES; ++i )
+	const int bones = MIN( studio->numbones(), MAXSTUDIOBONES );
+	CUtlStringList names;
+	V_SplitString( cl_fp_legs_hide_bones.GetString(), " ", names );
+	for ( int n = 0; n < names.Count(); ++n )
 	{
-		const int parent = studio->pBone( i )->parent;
-		if ( i == m_nCutBone || ( parent >= 0 && m_HiddenBones.IsBitSet( parent ) ) )
-			m_HiddenBones.Set( i );
+		const int root = Studio_BoneIndexByName( studio, names[n] );
+		if ( root < 0 || m_CollapseRoot[root] >= 0 )
+			continue;
+		m_nFirstHiddenBone = MIN( m_nFirstHiddenBone, root );
+		// Studio bones are ordered parent before child.
+		for ( int i = root; i < bones; ++i )
+		{
+			const int parent = studio->pBone( i )->parent;
+			if ( i == root || ( parent >= 0 && m_CollapseRoot[parent] == root ) )
+				m_CollapseRoot[i] = root;
+		}
 	}
+	m_nLeanBone = Studio_BoneIndexByName( studio, cl_fp_legs_lean_bone.GetString() );
+	MarkSubtree( studio, m_nLeanBone, m_LeanBones );
 }
 
 void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform,
 	int boneMask, CBoneBitList &computed )
 {
 	BaseClass::BuildTransformations( studio, pos, q, cameraTransform, boneMask, computed );
-	if ( m_nCutBone < 0 )
-		return;
-	// Collapse the upper body to one point: triangles skinned to it vanish, and the ones shared with the waist
-	// close into a cap at the cut bone instead of stretching toward each limb's own joint.
-	Vector collapse;
-	MatrixGetColumn( GetBone( m_nCutBone ), 3, collapse );
-	for ( int i = m_nCutBone; i < studio->numbones() && i < MAXSTUDIOBONES; ++i )
+	const int bones = MIN( studio->numbones(), MAXSTUDIOBONES );
+
+	// Lean the upper body back about the model's right axis, pivoting at the lean bone: whatever stays visible above
+	// it and the collapse points move away from the camera while the hips and legs stay put.
+	const float lean = cl_fp_legs_lean.GetFloat();
+	if ( m_nLeanBone >= 0 && lean != 0.0f )
 	{
-		if ( !m_HiddenBones.IsBitSet( i ) )
+		Vector forward, right, up;
+		AngleVectors( GetAbsAngles(), &forward, &right, &up );
+		Vector pivot;
+		MatrixGetColumn( GetBone( m_nLeanBone ), 3, pivot );
+		// Rotating about forward x up (the right axis) by a positive angle tips up toward -forward.
+		matrix3x4_t rotate;
+		MatrixBuildRotationAboutAxis( CrossProduct( forward, up ), lean, rotate );
+		Vector rotatedPivot;
+		VectorRotate( pivot, rotate, rotatedPivot );
+		MatrixSetColumn( pivot - rotatedPivot, 3, rotate );
+		for ( int i = m_nLeanBone; i < bones; ++i )
+		{
+			if ( !m_LeanBones.IsBitSet( i ) )
+				continue;
+			matrix3x4_t &bone = GetBoneForWrite( i );
+			const matrix3x4_t original = bone;
+			ConcatTransforms( rotate, original, bone );
+		}
+	}
+
+	// Collapse each hidden subtree to its root joint: triangles skinned to it vanish, and the ones shared with visible
+	// bones close into a cap at that joint instead of stretching toward each limb's own joint.
+	for ( int i = m_nFirstHiddenBone; i < bones; ++i )
+	{
+		const int root = m_CollapseRoot[i];
+		if ( root < 0 )
 			continue;
+		Vector collapse;
+		MatrixGetColumn( GetBone( root ), 3, collapse ); // a root keeps its position when collapsed
 		matrix3x4_t &bone = GetBoneForWrite( i );
 		SetIdentityMatrix( bone );
 		MatrixScaleByZero( bone );
