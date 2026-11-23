@@ -1547,7 +1547,18 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		++g_FirstUse.libraryHits;
 	else
 	{
+		static const bool trace = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
+		LARGE_INTEGER begin, end, frequency;
+		if ( trace )
+			QueryPerformanceCounter( &begin );
 		hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
+		if ( trace )
+		{
+			QueryPerformanceCounter( &end );
+			QueryPerformanceFrequency( &frequency );
+			Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
+				begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
+		}
 		++m_Stats.pipelinesCreated;
 		++g_FirstUse.creates;
 		if ( SUCCEEDED( hr ) )
