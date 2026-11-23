@@ -320,9 +320,9 @@ void CBaseVSShaderDX12::Draw( bool bMakeActualDrawCall )
 	{
 		IShaderAPIDX12Lighting *lighting = DX12ShadowmapLighting();
 		const int lightingFlags = MATERIAL_VAR2_LIGHTING_VERTEX_LIT | MATERIAL_VAR2_LIGHTING_LIGHTMAP | MATERIAL_VAR2_LIGHTING_BUMPED_LIGHTMAP;
-		if ( !DX12HighresMap() && lighting && lighting->ReceiverFeatureGeneration() != 0 && !DX12ShadowmapFullbright() &&
+		if ( !g_DX12Constants.shadowmapPassAdmitted && lighting && lighting->ReceiverFeatureGeneration() != 0 &&
 			( s_ppParams[FLAGS2]->GetIntValue() & lightingFlags ) != 0 &&
-			!g_DX12Constants.shadowmapPassAdmitted && !UsingFlashlight( s_ppParams ) )
+			!DX12ShadowmapFullbright() && !UsingFlashlight( s_ppParams ) && !DX12HighresMap() )
 		{
 			Warning( "DX12 shadowmaps: lit shader %s drew without selecting its receiver variant (flags2=0x%x)\n", GetName(), s_ppParams[FLAGS2]->GetIntValue() );
 			lighting->RejectUnsupportedLitShader( GetName() );

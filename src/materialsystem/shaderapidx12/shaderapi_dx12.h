@@ -864,8 +864,8 @@ private:
 	void DrawVolumetrics() override;
 	void DrawBounce() override;
 	void DrawViewModelBounce() override;
-	void BeginDepthPrepass() override;
-	void EndDepthPrepass() override;
+	bool BeginDepthPrepass( bool allowSingleSubmit ) override;
+	void EndDepthPrepass( bool resolvedScene ) override;
 	void BeginSkybox() override;
 	void EndSkybox() override;
 	void BeginViewModelContacts( bool reuseMainDepth ) override;
@@ -879,7 +879,7 @@ private:
 	void ReplayEndContactDepth();
 	void ReplayScreenSpaceEndView();
 	void ReleaseScreenSpaceResources();
-	void ReplayDepthPrepass( bool bBegin );
+	void ReplayDepthPrepass( bool bBegin, bool resolvedScene );
 	bool m_bDepthPrepass = false; // ordered normal-geometry replay into scene depth; independent of SSR/contact enable
 	// From the end of that prepass to the main view's screen-space EndView: alpha-tested opaque scene draws test depth read-only.
 	bool m_bDepthPrepassResolved = false;
@@ -1561,6 +1561,7 @@ private:
 	// Bumped when reference marks are cleared; cached entries re-mark their reference before reuse.
 	uint64_t m_nNamedReferenceEpoch = 1;
 	NamedResolveEntryDX12 m_NamedResolveCache[2][1024];
+	NamedResolveEntryDX12 m_HighresResolveCache[2][2][512];
 	uint64_t m_nNamedResolveEpoch = 1;
 	ShaderRecordDX12 *ResolveActiveNamedShader( bool bPixel, int nDynamicIndex );
 	// Exact-input transform cache: recomputed only when view/projection bytes differ.

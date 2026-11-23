@@ -66,6 +66,7 @@ public:
 		EndQuery,
 		ResolveQueryData,
 		CopyDescriptorTable,
+		WriteNativeCbvTable,
 		ExternalCommand,
 		BeginEvent,
 		EndEvent,
@@ -358,6 +359,16 @@ public:
 		Put( p, count );
 		Put( p, count );
 		PutArray( p, sources, count );
+	}
+
+	// The table and uploads are already reserved through the submission fence.
+	void WriteNativeCbvTable( D3D12_CPU_DESCRIPTOR_HANDLE dst, UINT stride, const D3D12_GPU_VIRTUAL_ADDRESS (&addresses)[8], const UINT (&sizes)[8] )
+	{
+		auto *p = Begin( Op::WriteNativeCbvTable, sizeof( dst ) + sizeof( stride ) + sizeof( addresses ) + sizeof( sizes ) );
+		Put( p, dst );
+		Put( p, stride );
+		PutArray( p, addresses, 8 );
+		PutArray( p, sizes, 8 );
 	}
 
 	// Copies exactly `bytes` of a trivially-copyable, non-owning payload; `fn` receives a pointer to the copy at replay.

@@ -2089,7 +2089,9 @@ void CClientLeafSystem::EnumerateShadowCasters( const ShadowCasterVolume_t &volu
 	// Do not cache eligibility or bounds: even unnotified material changes are
 	// observed by CollectShadowCaster and EmitShadowCasters on every receiver.
 	const uint64 generation=m_ShadowCasterGeneration;
-	bool sameVolume=m_CachedShadowCasterFrame==gpGlobals->framecount &&
+	// Only the ordered candidate handles are reused. Dynamic bounds and
+	// live material eligibility still run below on every query.
+	bool sameVolume=m_CachedShadowCasterFrame>=0 &&
 		m_CachedShadowCasterGeneration==generation &&
 		m_CachedShadowCasterVolume.m_vecMins==volume.m_vecMins &&
 		m_CachedShadowCasterVolume.m_vecMaxs==volume.m_vecMaxs &&

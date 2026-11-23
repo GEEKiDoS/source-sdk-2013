@@ -100,6 +100,13 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass()
 	return r_depth_prepass.GetBool() ? s_pScreenSpace : nullptr;
 }
 
+bool ScreenSpaceDX12_AllowsSingleSubmit()
+{
+	static ConVarRef queueMode( "mat_queue_mode" );
+	return queueMode.GetInt() == 0 && !r_contactshadows.GetBool() && !r_contactshadows_debug.GetBool() &&
+		!r_ssr.GetBool() && !s_bVolumetricScope;
+}
+
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts()
 {
 	static ConVarRef compact( "r_pbr_lean_lighting", true );

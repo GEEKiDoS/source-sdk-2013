@@ -944,12 +944,18 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const DescriptorRangeDX12 table = m_Bindings.AllocateDescriptors( 8, input.retireFence );
 		if ( table.count != 8 )
 			return false;
-		for ( unsigned slot = 0; slot < 8; ++slot )
+		// In queued mode recording is already off the main thread. Don't put
+		// extra descriptor work ahead of ExecuteCommandLists on the submit worker.
+		if ( m_bDeferNativeCbvs )
+			pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>(resourceStride), addresses, sizes );
+		else
 		{
-			D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
-			cpu.ptr += SIZE_T( slot ) * resourceStride;
-			const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
-			m_pDevice->CreateConstantBufferView( &view, cpu );
+			auto cpu = table.cpu;
+			for ( unsigned slot = 0; slot < 8; ++slot, cpu.ptr += resourceStride )
+			{
+				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
+				m_pDevice->CreateConstantBufferView( &view, cpu );
+			}
 		}
 		memcpy( cached.addresses, addresses, sizeof( addresses ) );
 		memcpy( cached.sizes, sizes, sizeof( sizes ) );
@@ -997,7 +1003,11 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			}
 			else
 			{
-				const uint64_t identity = input.srvSources[0].ptr ^ ( input.srvSources[1].ptr * 1099511628211ull ) ^ input.srvSources[2].ptr;
+				// Highres world materials can share t0..t2 and differ at the
+				// lightmap or detail slots. Equality still checks the full table.
+				uint64_t identity = 0;
+				for ( unsigned i = 0; i < 16; ++i )
+					identity = ( identity ^ input.srvSources[i].ptr ) * 1099511628211ull;
 				slot = &m_SrvTables[Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & ( ARRAYSIZE( m_SrvTables ) - 1 )];
 				if ( sameTable( *slot ) )
 				{

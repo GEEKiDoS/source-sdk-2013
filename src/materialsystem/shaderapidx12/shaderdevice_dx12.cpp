@@ -761,6 +761,11 @@ uint64_t CShaderDeviceDX12::SubmitFrameSync()
 	// Current-frame completion remains mandatory in readback/resource lifecycle paths.
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 PreviousFrameWait", DX12_ZONES_ACTIVE );
+		// Sustained queue slack, not a particular GPU tier or output size.
+		if ( m_nFrameSyncFence && CompletedFenceValue() >= m_nFrameSyncFence )
+			m_nReadyFrameSyncs = MIN( m_nReadyFrameSyncs + 1, 16u );
+		else if ( m_nReadyFrameSyncs )
+			m_nReadyFrameSyncs -= MIN( m_nReadyFrameSyncs, 4u );
 		if ( !WaitForFence( m_nFrameSyncFence ) )
 			return 0;
 	}
@@ -1695,6 +1700,19 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->EndQuery( heap, type, index );
 			break;
 		}
+		case Op::WriteNativeCbvTable:
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE dst;
+			UINT stride, sizes[8];
+			D3D12_GPU_VIRTUAL_ADDRESS addresses[8];
+			get( dst ); get( stride ); get( addresses ); get( sizes );
+			for ( unsigned i = 0; i < 8; ++i, dst.ptr += stride )
+			{
+				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[i], sizes[i] };
+				device->CreateConstantBufferView( &view, dst );
+			}
+			break;
+		}
 		case Op::CopyDescriptorTable:
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE destination;
@@ -2107,6 +2125,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 	}
 	m_pfnSigner = nullptr;
 	m_nFenceValue = m_nFrameSyncFence = 0;
+	m_nReadyFrameSyncs = 0;
 	m_nFrameIndex = 0;
 	m_bRecording = false;
 	m_bFailed = false;
@@ -3527,7 +3546,10 @@ static ShaderRecordDX12 *CreateShaderRecord( IShaderBuffer *pShaderBuffer, bool 
 	else
 		pRecord->legacyBytecode.CopyArray( pBits, nBytes );
 	if ( pRecord->legacyBytecode.IsEmpty() )
+	{
+		pRecord->dxil = ClassifyShaderBytecodeDX12( pBits, nBytes ) == ShaderBytecodeKindDX12::Dxil;
 		pRecord->forceEarlyDepth = NativeShaderForcesEarlyDepth( pBits, static_cast<size_t>( nBytes ) );
+	}
 	if ( pRecord->legacyBytecode.IsEmpty() )
 	{
 		CUtlString error;

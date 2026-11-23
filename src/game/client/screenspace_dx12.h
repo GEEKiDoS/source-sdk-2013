@@ -21,6 +21,7 @@ void ScreenSpaceDX12_Shutdown();
 bool ScreenSpaceDX12_Available();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_GetAPI();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_DepthPrepass();
+bool ScreenSpaceDX12_AllowsSingleSubmit();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelContacts();
 IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_ViewModelBounce();
 bool ScreenSpaceDX12_ContactDebug();

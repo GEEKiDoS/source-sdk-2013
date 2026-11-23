@@ -24,7 +24,7 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_011"
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_012"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
 struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
@@ -100,8 +100,10 @@ public:
 	virtual void DrawViewModelBounce() = 0;
 	// Replays the ordinary main-view opaque draws into scene depth, retaining their VS/LOD/alpha coverage.
 	// Only opaque depth writers are admitted; the backend masks color and removes the PS only when coverage is fixed.
-	virtual void BeginDepthPrepass() = 0;
-	virtual void EndDepthPrepass() = 0;
+	// Returns whether to replay world/models as well as viewmodels. Single-submit
+	// is only offered by an immediate caller that needs no depth until after color.
+	virtual bool BeginDepthPrepass( bool allowSingleSubmit ) = 0;
+	virtual void EndDepthPrepass( bool resolvedScene ) = 0;
 	// Renders ordinary sky only through untouched main-view depth pixels, using reserved stencil bit 0x40.
 	// End restores their far depth and removes the mask; main scene depth and stencil bit 0x80 stay intact.
 	virtual void BeginSkybox() = 0;

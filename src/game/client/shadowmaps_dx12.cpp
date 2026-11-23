@@ -1139,6 +1139,7 @@ public:
 	CUtlVector<ShadowMapSceneCaster_t> selfCasters; // Viewmodel renderables; drawn only into g_ViewModelSelfSun.
 	Vector selfReceiverMins, selfReceiverMaxs;		// World bounds of the viewmodel receivers (with selfCasters).
 	CUtlVector<ShadowChartCaster_t> localFaceCasters;
+	CUtlVector<int> dynamicFaceDrawOrder;
 	CUtlVector<ShadowChartCaster_t> casterKeys;
 	CUtlVector<unsigned char> casterContent;
 	uint64 casterContentGeneration;
@@ -2149,6 +2150,7 @@ void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t 
 	// Retain scratch capacity across faces/views; canonical order compares the
 	// exact set, independent of leaf enumeration order, without hashes/copies.
 	data.localFaceCasters.RemoveAll();
+	data.dynamicFaceDrawOrder.RemoveAll();
 	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.casters.Count();
 	bool ordered=true;
 	for ( int i=0;i<count;++i )
@@ -2156,6 +2158,7 @@ void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t 
 		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : i;
 		const ShadowMapSceneCaster_t &caster=data.casters[index];
 		if ( caster.immutable || !BoxInVolume(volume,caster.mins,caster.maxs) ) continue;
+		data.dynamicFaceDrawOrder.AddToTail(index);
 		const ShadowChartCaster_t &entry=data.casterKeys[index];
 		if ( data.localFaceCasters.Count() && ChartCasterCompare(&data.localFaceCasters.Tail(),&entry)>0 ) ordered=false;
 		data.localFaceCasters.AddToTail(entry);
@@ -2335,6 +2338,13 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	scene.casters=&data.casters; scene.lighting=g_Lighting; scene.target=target;
 	scene.candidateIndices=data.drawCandidateFirst>=0 ? &data.casterIndices : NULL;
 	scene.candidateFirst=data.drawCandidateFirst; scene.candidateCount=data.drawCandidateCount;
+	// Certification sorts localFaceCasters by identity. Rasterization must instead
+	// consume the same face membership in the original engine draw order.
+	if ( dynamic && !immutable )
+	{
+		scene.candidateIndices=&data.dynamicFaceDrawOrder;
+		scene.candidateFirst=0; scene.candidateCount=data.dynamicFaceDrawOrder.Count();
+	}
 	scene.x=x; scene.y=y; scene.size=size; scene.clear=clear;
 	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail; scene.instanceCasters=r_shadowmap_instancing.GetBool();
 	scene.dynamicLayer=dynamicLayer;

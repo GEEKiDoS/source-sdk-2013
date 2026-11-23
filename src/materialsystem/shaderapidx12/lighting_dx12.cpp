@@ -1294,6 +1294,7 @@ struct LightingViewStateDX12
 {
 	LightingPacketDX12 *packet = nullptr;
 	uint64_t fence = 0, heap = 0;
+	uint64_t modelLightEpoch = 0;
 	DescriptorRangeDX12 table{};
 	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
@@ -1322,8 +1323,10 @@ struct CLightingDX12::Impl
 	std::array<ModelLightTest, 4096> modelLightTests[2]{};
 	ModelLightWorkDX12 modelLightWork;
 	ModelLightCellsDX12 modelLightCells;
-	// ModelLocalLighting results per view and lighting origin: a model's materials and passes repeat the same query.
-	struct ModelLightingResult { uint32 mapGeneration = 0, viewGeneration = 0; int limit = 0; Vector origin; float rows[7][4]; };
+	// Reuse rows across views only when the complete ordered light table is identical.
+	CUtlVector<RuntimeShadowLightGpu> previousModelLights;
+	uint64_t modelLightEpoch = 1;
+	struct ModelLightingResult { uint32 mapGeneration = 0; uint64_t epoch = 0; int limit = 0; Vector origin; float rows[7][4]; };
 	std::array<ModelLightingResult, 512> modelLightingResults{};
 	// Per-light contribution at the current lighting origin, filled once per ModelLocalLighting miss.
 	struct ModelLightSample { Vector rgb, direction; float energy; bool blocked; };
@@ -1355,6 +1358,16 @@ struct CLightingDX12::Impl
 		std::string modelName;
 	};
 	std::map<uint64,std::shared_ptr<ModelMetadata>> modelMeshes;
+	struct PropLookup
+	{
+		uint64 revision = 0;
+		StaticPropInstanceKeyDX12 key{};
+		std::shared_ptr<ModelMetadata> metadata;
+		std::shared_ptr<RegisteredProp> record;
+		bool registered = false, ambiguous = false;
+	};
+	std::array<PropLookup, 512> propLookups{};
+	uint64 propLookupRevision = 1;
 	using PropDetailKey = std::array<uint64, 12>;
 	struct PropDetail
 	{
@@ -1368,6 +1381,7 @@ struct CLightingDX12::Impl
 	std::array<uint64, DX12_PROP_VISIBILITY_REASON_COUNT> propReasons{};
 	void ClearPropDiagnostics()
 	{
+		propLookups.fill( PropLookup{} ); ++propLookupRevision;
 		modelMeshes.clear(); propDetails.clear();
 		propModelDraws = propAuthoredModelDraws = propRegisteredDraws = propRegisteredFallbackDraws = propDetailOverflow = 0;
 		propReasons.fill(0);
@@ -2230,11 +2244,22 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	if ( limit <= 0 ) return live;
 	limit = MIN( limit, 4 );
 	const Vector &origin = s.api->m_LightingOrigin;
-	// Lights are fixed for a view (copied at BeginView) and the BSP for a map, so the result depends only on the view,
-	// the limit and the exact lighting origin. Exact positions, not quantized: opposite sides of a wall must not alias.
-	auto &cached = s.modelLightingResults[( ( FloatBits( origin.x ) >> 4 ) ^ ( FloatBits( origin.y ) * 31u ) ^
-		( FloatBits( origin.z ) * 2654435761u ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
-	if ( cached.mapGeneration == packet.view.mapGeneration && cached.viewGeneration == packet.view.viewGeneration &&
+	auto &epoch = s.views.Tail()->modelLightEpoch;
+	if ( !epoch )
+	{
+		if ( s.previousModelLights.Count() != lights.Count() || ( lights.Count() &&
+			memcmp( s.previousModelLights.Base(), lights.Base(), lights.Count() * sizeof( lights[0] ) ) ) )
+		{
+			s.previousModelLights = lights;
+			++s.modelLightEpoch;
+		}
+		epoch = s.modelLightEpoch;
+	}
+	// Use the high bits of the mixed hash: aligned map coordinates often have identical low mantissa bits.
+	uint32 hash = FloatBits( origin.x ) * 31u + FloatBits( origin.y );
+	hash = ( hash * 31u + FloatBits( origin.z ) ) * 2654435761u;
+	auto &cached = s.modelLightingResults[( ( hash >> 16 ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
+	if ( cached.mapGeneration == packet.view.mapGeneration && cached.epoch == epoch &&
 		cached.limit == limit && cached.origin == origin )
 	{
 		memcpy( rows, cached.rows, sizeof( cached.rows ) );
@@ -2368,7 +2393,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 	}
 	cached.mapGeneration = packet.view.mapGeneration;
-	cached.viewGeneration = packet.view.viewGeneration;
+	cached.epoch = epoch;
 	cached.limit = limit;
 	cached.origin = origin;
 	memcpy( cached.rows, rows, sizeof( cached.rows ) );
@@ -2462,6 +2487,7 @@ void CLightingDX12::RegisterStaticPropReceiver( uint64 renderableToken, const DX
 		record->proofs.resize( receiver.meshCount );
 	}
 	AUTO_LOCK( s.mutex );
+	++s.propLookupRevision;
 	auto old = s.registeredProps.find( renderableToken );
 	if ( old != s.registeredProps.end() )
 	{
@@ -2509,7 +2535,7 @@ void CLightingDX12::RegisterModelMeshMetadata( const DX12ModelMeshMetadata &meta
 	AUTO_LOCK(s.mutex);
 	if ( !metadata.meshToken )
 	{
-		if ( !metadata.modelName ) { s.modelMeshes.clear(); s.propDetails.clear(); }
+		if ( !metadata.modelName ) { ++s.propLookupRevision; s.modelMeshes.clear(); s.propDetails.clear(); }
 		return;
 	}
 	auto old = s.modelMeshes.find(metadata.meshToken);
@@ -2521,6 +2547,7 @@ void CLightingDX12::RegisterModelMeshMetadata( const DX12ModelMeshMetadata &meta
 			v.stripGroup == metadata.stripGroup && v.staticPropModel == metadata.staticPropModel &&
 			old->second->modelName == metadata.modelName ) return;
 	}
+	++s.propLookupRevision;
 	for ( auto row = s.propDetails.begin(); row != s.propDetails.end(); )
 		if ( row->first[0] == metadata.meshToken ) row = s.propDetails.erase(row); else ++row;
 	if ( !metadata.modelName ) { if ( old != s.modelMeshes.end() ) s.modelMeshes.erase(old); return; }
@@ -3579,18 +3606,39 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	bool meshRegistered = false, ambiguous = false;
 	{
 		AUTO_LOCK(s.mutex);
-		const auto model = s.modelMeshes.find(meshToken);
-		if ( model != s.modelMeshes.end() ) metadata = model->second;
+		// Handles alone do not identify an instance: only a fully matching
+		// canonical pose may reuse a registry lookup. Scoped draws need no lookup.
+		Impl::PropLookup *hit = nullptr;
 		if ( !receiver && validKey )
 		{
-			const auto entry = s.propInstances.find(instanceKey);
-			if ( entry != s.propInstances.end() )
+			const uint64 mix = (meshToken >> 3) ^ (instanceKey[2] * 31u) ^ (instanceKey[4] * 131u) ^ instanceKey[6];
+			hit = &s.propLookups[Mix32HashFunctor()( uint32(mix) ^ uint32(mix >> 32) ) % s.propLookups.size()];
+		}
+		if ( hit && hit->revision == s.propLookupRevision && hit->key == instanceKey )
+		{
+			record = hit->record; metadata = hit->metadata;
+			meshRegistered = hit->registered; ambiguous = hit->ambiguous;
+		}
+		else
+		{
+			const auto model = s.modelMeshes.find(meshToken);
+			if ( model != s.modelMeshes.end() ) metadata = model->second;
+			if ( !receiver )
+				meshRegistered = s.propMeshRegistrationCounts.find(meshToken) != s.propMeshRegistrationCounts.end();
+			if ( hit )
 			{
-				record = UniqueStaticPropInstanceDX12(entry->second);
-				ambiguous = !record;
+				if ( meshRegistered )
+				{
+					const auto entry = s.propInstances.find(instanceKey);
+					if ( entry != s.propInstances.end() )
+					{
+						record = UniqueStaticPropInstanceDX12(entry->second);
+						ambiguous = !record;
+					}
+				}
+				*hit = { s.propLookupRevision, instanceKey, metadata, record, meshRegistered, ambiguous };
 			}
 		}
-		meshRegistered = s.propMeshRegistrationCounts.find(meshToken) != s.propMeshRegistrationCounts.end();
 	}
 	if ( record ) receiver = &record->receiver;
 	const auto finish = [&](DX12StaticPropVisibilityReason reason, bool accepted = true)

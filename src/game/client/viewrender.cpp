@@ -7402,19 +7402,19 @@ void CBaseWorldView::DrawExecute( float waterHeight, view_id_t viewID, float wat
 		if ( pDepthPrepass && pDepthContext->GetRenderTarget() == nullptr )
 		{
 			PIXEVENT( pDepthContext, "Opaque depth prepass" );
-			pDepthPrepass->BeginDepthPrepass();
+			const bool replayScene = pDepthPrepass->BeginDepthPrepass( !pDepthContext->GetCallQueue() && ScreenSpaceDX12_AllowsSingleSubmit() );
 			// Viewmodels first: neither the rest of this prepass nor the scene then shades under them.
 			m_pMainView->DrawViewModelDepthPrepass();
-			if ( r_drawopaqueworld.GetBool() )
+			if ( replayScene && r_drawopaqueworld.GetBool() )
 			{
 				const unsigned long flags = BuildEngineDrawWorldListFlags( m_DrawFlags ) &
 					~( DRAWWORLDLISTS_DRAW_SKYBOX | DRAWWORLDLISTS_DRAW_WATERSURFACE );
 				render->DrawWorldLists( m_pWorldRenderList, flags, waterZAdjust );
 			}
-			if ( bDrawEntities )
+			if ( replayScene && bDrawEntities )
 				DrawOpaqueRenderables( DEPTH_MODE_NORMAL, true );
-			pDepthPrepass->EndDepthPrepass();
-			pPrepassScope = pDepthPrepass;
+			pDepthPrepass->EndDepthPrepass( replayScene );
+			if ( replayScene ) pPrepassScope = pDepthPrepass;
 		}
 	}
 
