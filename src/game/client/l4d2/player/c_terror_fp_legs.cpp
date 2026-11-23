@@ -11,6 +11,7 @@
 #include "shadowmaps_dx12.h"
 #include "bone_setup.h"
 #include "model_types.h"
+#include "gamerules.h"
 #include "tier0/memdbgon.h"
 
 ConVar cl_fp_legs( "cl_fp_legs", "1", FCVAR_ARCHIVE, "Show your survivor's legs when looking down in first person." );
@@ -18,12 +19,16 @@ ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
 	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
 static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "0", 0,
 	"Units the first-person legs and their shadow sit behind the camera along the view's facing." );
-static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "45", 0,
+static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "90", 0,
 	"Degrees the first-person legs' upper body leans back from cl_fp_legs_lean_bone, moving the collapsed waist behind the camera." );
-static ConVar cl_fp_legs_tilt( "cl_fp_legs_tilt", "35", 0,
+static ConVar cl_fp_legs_tilt( "cl_fp_legs_tilt", "20", 0,
 	"Degrees the first-person legs tip back about the feet when looking straight down (ramping in from cl_fp_legs_tilt_start), "
 	"so the feet stay under the camera while the hips and the cut leave the bottom of the screen." );
 static ConVar cl_fp_legs_tilt_start( "cl_fp_legs_tilt_start", "30", 0, "View pitch (degrees down) where cl_fp_legs_tilt starts ramping in." );
+// Crouched values blend in with the eye height between the standing and crouched view heights.
+static ConVar cl_fp_legs_duck_offset( "cl_fp_legs_duck_offset", "8", 0, "cl_fp_legs_offset while crouched." );
+static ConVar cl_fp_legs_duck_lean( "cl_fp_legs_duck_lean", "90", 0, "cl_fp_legs_lean while crouched." );
+static ConVar cl_fp_legs_duck_tilt( "cl_fp_legs_duck_tilt", "35", 0, "cl_fp_legs_tilt while crouched." );
 static int s_nBoneNamesGeneration = 0;
 static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
 static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Spine1", 0,
@@ -85,7 +90,7 @@ C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player
 
 C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
 	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nFirstHiddenBone( MAXSTUDIOBONES ), m_nLeanBone( -1 ),
-	m_nBoneNamesGeneration( s_nBoneNamesGeneration )
+	m_nBoneNamesGeneration( s_nBoneNamesGeneration ), m_flLean( 0.0f )
 {
 }
 
@@ -166,7 +171,11 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	// faces. Both copies share the offset, so the shadow starts at the visible feet; the tilt pivots on the feet and
 	// applies to the legs only, so the shadow keeps the upright body.
 	const bool legsPose = cl_fp_legs.GetBool() && LegsPose( player );
-	const float offset = legsPose ? cl_fp_legs_offset.GetFloat() : 0.0f;
+	const float stand = g_pGameRules->GetViewVectors()->m_vView.z * player->GetEyeHeightScale();
+	const float crouch = g_pGameRules->GetViewVectors()->m_vDuckView.z * player->GetEyeHeightScale();
+	const float duck = clamp( ( stand - player->GetViewOffset().z ) / MAX( stand - crouch, 1.0f ), 0.0f, 1.0f );
+	const float offset = legsPose ? Lerp( duck, cl_fp_legs_offset.GetFloat(), cl_fp_legs_duck_offset.GetFloat() ) : 0.0f;
+	m_flLean = Lerp( duck, cl_fp_legs_lean.GetFloat(), cl_fp_legs_duck_lean.GetFloat() );
 	Vector viewForward;
 	AngleVectors( QAngle( 0.0f, player->EyeAngles().y, 0.0f ), &viewForward );
 	SetAbsOrigin( player->GetRenderOrigin() - viewForward * offset );
@@ -176,7 +185,7 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 		pitch -= 360.0f;
 	const float start = cl_fp_legs_tilt_start.GetFloat();
 	const float tilt = m_Role == ROLE_LEGS && legsPose && pitch > start ?
-		cl_fp_legs_tilt.GetFloat() * MIN( ( pitch - start ) / MAX( 89.0f - start, 1.0f ), 1.0f ) : 0.0f;
+		Lerp( duck, cl_fp_legs_tilt.GetFloat(), cl_fp_legs_duck_tilt.GetFloat() ) * MIN( ( pitch - start ) / MAX( 89.0f - start, 1.0f ), 1.0f ) : 0.0f;
 	if ( tilt != 0.0f )
 	{
 		// Rotating about forward x up (the view's right axis) by a positive angle tips the model's up toward -forward.
@@ -235,7 +244,7 @@ void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *
 
 	// Lean the upper body back about the model's right axis, pivoting at the lean bone: whatever stays visible above
 	// it and the collapse points move away from the camera while the hips and legs stay put.
-	const float lean = cl_fp_legs_lean.GetFloat();
+	const float lean = m_flLean;
 	if ( m_nLeanBone >= 0 && lean != 0.0f )
 	{
 		Vector forward, right, up;
