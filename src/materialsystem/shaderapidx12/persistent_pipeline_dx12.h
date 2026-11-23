@@ -19,15 +19,23 @@ class CPersistentPipelineDX12
 public:
 	void Open( ID3D12Device *device, IFileSystem *filesystem )
 	{
-		Microsoft::WRL::ComPtr<ID3D12Device1> device1;
-		if ( FAILED( device->QueryInterface( IID_PPV_ARGS( &device1 ) ) ) )
-			return;
 		wchar_t dir[MAX_PATH];
-		const DWORD length = GetEnvironmentVariableW( L"LOCALAPPDATA", dir, ARRAYSIZE( dir ) );
+		// Give capture/QA runs a private cache without disturbing the user's library
+		// (even if the game or the harness is forcibly terminated).
+		DWORD length = GetEnvironmentVariableW( L"SOURCE_DX12_CACHE_HOME", dir, ARRAYSIZE( dir ) );
+		if ( !length )
+			length = GetEnvironmentVariableW( L"LOCALAPPDATA", dir, ARRAYSIZE( dir ) );
 		if ( !length || length >= ARRAYSIZE( dir ) - 96 )
 			return;
 		wcscat_s( dir, L"\\SourceDX12" );
 		CreateDirectoryW( dir, nullptr );
+		uint64_t pack;
+		if ( !filesystem || !PackIdentity( *filesystem, pack ) )
+			return;
+		swprintf_s( m_RecipePath, L"%s\\graphics-v1-%016llx.recipes", dir, pack );
+		Microsoft::WRL::ComPtr<ID3D12Device1> device1;
+		if ( FAILED( device->QueryInterface( IID_PPV_ARGS( &device1 ) ) ) )
+			return;
 		const LUID id = device->GetAdapterLuid();
 		Microsoft::WRL::ComPtr<IDXGIFactory4> factory;
 		Microsoft::WRL::ComPtr<IDXGIAdapter> adapter;
@@ -39,8 +47,7 @@ public:
 		// CreatePipelineLibrary still rejects a blob from a different driver.
 		adapter->CheckInterfaceSupport( __uuidof( IDXGIDevice ), &driver );
 		DXGI_ADAPTER_DESC desc{};
-		uint64_t pack;
-		if ( FAILED( adapter->GetDesc( &desc ) ) || !filesystem || !PackIdentity( *filesystem, pack ) )
+		if ( FAILED( adapter->GetDesc( &desc ) ) )
 			return;
 		swprintf_s( m_Prefix, L"%s\\pipeline-v1-%04x-%04x-%08x-", dir, desc.VendorId, desc.DeviceId, desc.SubSysId );
 		swprintf_s( m_Path, L"%s%016llx-%016llx.bin", m_Prefix, driver.QuadPart, pack );
@@ -119,18 +126,18 @@ public:
 		std::vector<unsigned char>().swap( m_Backing );
 		m_Keys.clear();
 		m_Dirty = false;
+		m_RecipePath[0] = L'\0';
 	}
 
+	const wchar_t *RecipePath() const { return m_RecipePath; }
 	bool Enabled() const { return m_Library != nullptr; }
-	uint64_t Key( D3D12_GRAPHICS_PIPELINE_STATE_DESC desc, unsigned root ) const
+	uint64_t Key( const D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc, unsigned root ) const
 	{
 		uint64_t hash = 14695981039346656037ull;
 		Mix( hash, &root, sizeof( root ) );
-		desc.pRootSignature = nullptr;
-		for ( D3D12_SHADER_BYTECODE *stage : { &desc.VS, &desc.PS, &desc.GS } )
+		for ( const D3D12_SHADER_BYTECODE *stage : { &desc.VS, &desc.PS, &desc.GS } )
 		{
 			Mix( hash, stage->pShaderBytecode, stage->BytecodeLength );
-			stage->pShaderBytecode = nullptr;
 		}
 		for ( UINT i = 0; i < desc.InputLayout.NumElements; ++i )
 		{
@@ -139,8 +146,32 @@ public:
 			// Exclude pointer and tail padding, which are not stable across launches.
 			Mix( hash, &el.SemanticIndex, 6 * sizeof( UINT ) );
 		}
-		desc.InputLayout.pInputElementDescs = nullptr;
-		Mix( hash, &desc, sizeof( desc ) );
+		// Keep v1's byte positions so an existing zero-padded library key
+		// still hits. Copy only defined bytes: in particular assigning InputLayout
+		// wholesale from a draw copies four bytes of caller stack padding on x64.
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC canonical;
+		memset( &canonical, 0, sizeof( canonical ) );
+		canonical.VS.BytecodeLength = desc.VS.BytecodeLength;
+		canonical.PS.BytecodeLength = desc.PS.BytecodeLength;
+		canonical.GS.BytecodeLength = desc.GS.BytecodeLength;
+		canonical.InputLayout.NumElements = desc.InputLayout.NumElements;
+		canonical.PrimitiveTopologyType = desc.PrimitiveTopologyType;
+		canonical.NumRenderTargets = desc.NumRenderTargets;
+		memcpy( canonical.RTVFormats, desc.RTVFormats, sizeof( desc.RTVFormats ) );
+		canonical.DSVFormat = desc.DSVFormat;
+		canonical.SampleDesc = desc.SampleDesc;
+		canonical.SampleMask = desc.SampleMask;
+		canonical.RasterizerState = desc.RasterizerState;
+		canonical.BlendState.AlphaToCoverageEnable = desc.BlendState.AlphaToCoverageEnable;
+		canonical.BlendState.IndependentBlendEnable = desc.BlendState.IndependentBlendEnable;
+		for ( UINT i = 0; i < ARRAYSIZE( desc.RTVFormats ); ++i )
+			memcpy( &canonical.BlendState.RenderTarget[i], &desc.BlendState.RenderTarget[i],
+				offsetof( D3D12_RENDER_TARGET_BLEND_DESC, RenderTargetWriteMask ) + sizeof( UINT8 ) );
+		memcpy( &canonical.DepthStencilState, &desc.DepthStencilState,
+			offsetof( D3D12_DEPTH_STENCIL_DESC, StencilWriteMask ) + sizeof( UINT8 ) );
+		canonical.DepthStencilState.FrontFace = desc.DepthStencilState.FrontFace;
+		canonical.DepthStencilState.BackFace = desc.DepthStencilState.BackFace;
+		Mix( hash, &canonical, sizeof( canonical ) );
 		return hash;
 	}
 
@@ -241,6 +272,7 @@ private:
 	}
 	static constexpr size_t kMaxEntries = 65536, kMaxBytes = 256u * 1024 * 1024;
 	wchar_t m_Path[MAX_PATH]{};
+	wchar_t m_RecipePath[MAX_PATH]{};
 	wchar_t m_Prefix[MAX_PATH]{}, m_LegacyPrefix[MAX_PATH]{};
 	bool m_DiscardDisk = false;
 	std::set<uint64_t> m_Keys;

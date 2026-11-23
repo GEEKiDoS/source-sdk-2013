@@ -11,6 +11,8 @@
 #include "tier0/icommandline.h"
 #include "tracy_dx12.h"
 #include <utility>
+#include <thread>
+#include <atomic>
 #include "hitch_stats_dx12.h"
 
 namespace shaderapidx12
@@ -25,6 +27,8 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	Shutdown();
 	m_pDevice = pDevice;
 	m_Library.Open( pDevice, filesystem );
+	if ( *m_Library.RecipePath() && !CommandLine()->CheckParm( "-dx12noprecache" ) )
+		m_Recipes.Open( m_Library.RecipePath(), filesystem );
 	m_bVramFit = lowTier && !( CommandLine() && CommandLine()->CheckParm( "-dx12novramfit" ) );
 	m_nResourceStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_nSamplerStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
@@ -314,10 +318,54 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 }
 
 //-----------------------------------------------------------------------------
-// Purpose: Releases every device object; the cache may be re-initialized
+// Purpose: Replay distinct descriptors on the drained loading owner and two workers.
 //-----------------------------------------------------------------------------
+void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned &total )
+{
+	total = m_Recipes.Total();
+	if ( !budget || m_Recipes.Next() == total ) { done = m_Recipes.Next(); return; }
+	const double start = Plat_FloatTime();
+	unsigned compiled = 0, loaded = 0, failed = 0;
+	ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
+	while ( budget && m_Recipes.Next() < total )
+	{
+		struct Job { uint64_t key; Microsoft::WRL::ComPtr<ID3D12PipelineState> pso; bool created = false; };
+		Job jobs[32];
+		unsigned count = 0;
+		while ( count < ARRAYSIZE( jobs ) && budget && m_Recipes.Next() < total )
+		{
+			const uint64_t key = m_Recipes.Pop();
+			if ( m_Recipes.Find( key ) ) continue;
+			jobs[count++].key = key;
+			--budget;
+		}
+		std::atomic<unsigned> next{ 0 };
+		auto work = [&]() {
+			for ( unsigned i = next++; i < count; i = next++ )
+				m_Recipes.Replay( jobs[i].key, m_pDevice, roots, m_Library, jobs[i].pso, jobs[i].created );
+		};
+		std::thread workers[2];
+		try { for ( unsigned i = 0; i < ARRAYSIZE( workers ) && i + 1 < count; ++i ) workers[i] = std::thread( work ); }
+		catch ( const std::system_error & ) {}
+		work();
+		for ( auto &worker : workers ) if ( worker.joinable() ) worker.join();
+		for ( unsigned i = 0; i < count; ++i )
+		{
+			if ( jobs[i].created ) m_Library.Store( jobs[i].key, jobs[i].pso.Get() );
+			if ( jobs[i].pso ) m_Recipes.Publish( jobs[i].key, jobs[i].pso.Get() );
+			if ( !jobs[i].pso ) ++failed;
+			else if ( jobs[i].created ) ++compiled;
+			else ++loaded;
+		}
+	}
+	done = m_Recipes.Next();
+	DevMsg( "DX12 PSO warmup %u/%u: %u compiled, %u library, %u refused in %.2f ms\n",
+		done, total, compiled, loaded, failed, ( Plat_FloatTime() - start ) * 1000.0 );
+}
+
 void CPipelineCacheDX12::Shutdown()
 {
+	m_Recipes.Close();
 	m_Library.Close();
 	m_Entries.Purge();
 	++m_nPipelineEpoch;
@@ -1541,18 +1589,34 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.DepthStencilState.FrontFace.StencilFunc = StencilFunctionDX12( key.stencilFunction );
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
-	const uint64_t diskKey = m_Library.Enabled() ? m_Library.Key( desc, key.highresAbi ? 2 : key.lightingAbi ? 1 : 0 ) : 0;
+	const UINT root = key.highresAbi ? 2 : key.lightingAbi ? 1 : 0;
+	const uint64_t diskKey = m_Library.Key( desc, root );
 	HRESULT hr = S_OK;
-	if ( m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
+	pso = m_Recipes.Find( diskKey );
+	const bool resident = pso != nullptr;
+	if ( !pso && m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
 		++g_FirstUse.libraryHits;
-	else
+	else if ( !pso )
 	{
+		static const bool trace = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
+		LARGE_INTEGER begin{}, end, frequency;
+		if ( trace )
+			QueryPerformanceCounter( &begin );
 		hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
+		if ( trace )
+		{
+			QueryPerformanceCounter( &end );
+			QueryPerformanceFrequency( &frequency );
+			Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
+				begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
+		}
 		++m_Stats.pipelinesCreated;
 		++g_FirstUse.creates;
 		if ( SUCCEEDED( hr ) )
 			m_Library.Store( diskKey, pso.Get() );
 	}
+	if ( !resident && pso )
+		m_Recipes.Record( diskKey, root, desc, pso.Get() );
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
 	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.

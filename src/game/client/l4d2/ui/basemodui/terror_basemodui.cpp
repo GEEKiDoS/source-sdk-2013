@@ -28,6 +28,7 @@
 #include "steam/isteamcontroller.h"
 #include "steam/steam_api.h"
 #include "materialsystem/imaterialsystem.h"
+#include "shaderapi/ishaderapidx12.h"
 #include "materialsystem/materialsystem_config.h"
 #include "tier1/fmtstr.h"
 #include "vgui/ILocalize.h"
@@ -342,6 +343,7 @@ public:
 		int wide, tall; vgui::surface()->GetScreenSize( wide, tall ); SetBounds( 0, 0, wide, tall );
 		// G0D6F0. gameui/valve and platform/vgui remain target GameUI-owned.
 		g_pVGuiLocalize->AddFile( "Resource/l4d360ui_%language%.txt", NULL, false );
+		g_pVGuiLocalize->AddFile( "resource/pipelineprecache_%language%.txt", NULL, false );
 		g_pVGuiLocalize->AddFile( "Resource/l4d360ui_tu_%language%.txt", NULL, false );
 		SetScheme( vgui::scheme()->LoadSchemeFromFile( "resource/l4d360uischeme.res", "L4D360UIScheme" ) );
 		m_pFooter = new CL4DFooterPanel( this, "FooterPanel" ); m_pFooter->LoadLayout( "resource/ui/l4d360ui/footerpanel.res" );
@@ -379,10 +381,33 @@ public:
 		if ( GetWide() != wide || GetTall() != tall ) SetBounds( 0, 0, wide, tall );
 	}
 	virtual void OnCommand( const char *command ) OVERRIDE;
-	virtual void LoadingStarted() OVERRIDE { OnCommand( "LevelLoadingStarted" ); }
-	virtual void LoadingProgress( float fraction, const char *statusText ) OVERRIDE { UpdateTerrorLoadingScreenProgress( fraction, statusText ); }
+	virtual void LoadingStarted() OVERRIDE
+	{
+		m_LoadStart = Plat_FloatTime();
+		OnCommand( "LevelLoadingStarted" );
+		CreateInterfaceFn factory = Sys_GetFactory( "shaderapidx12" );
+		m_pWarmRenderer = factory ? static_cast<IShaderAPIDX12 *>( factory( SHADERAPIDX12_INTERFACE_VERSION, NULL ) ) : NULL;
+		UpdateShaderProgress( 0, 0.0f );
+	}
+	virtual void LoadingProgress( float fraction, const char *statusText ) OVERRIDE
+	{
+		if ( UpdateShaderProgress( 32, fraction ) ) return;
+		if ( m_bShaderStatusVisible )
+		{
+			m_bShaderStatusVisible = false;
+			if ( !statusText || !*statusText ) statusText = "#L4D360UI_Loading";
+			if ( CTransitionStatsPanel *stats = m_hLoadingStats.Get() )
+				stats->SetLoadingStatus( g_pVGuiLocalize->Find( "#L4D360UI_Loading" ) );
+		}
+		UpdateTerrorLoadingScreenProgress( fraction, statusText );
+	}
 	virtual void LoadingFinished( bool error, const char *reason, const char *extended ) OVERRIDE
 	{
+		if ( !error )
+		{
+			UpdateShaderProgress( ~0u, 1.0f );
+			DevMsg( "DX12 level loading finished: %.2f ms\n", ( Plat_FloatTime() - m_LoadStart ) * 1000.0 );
+		}
 		m_bLoadingFinished = !error;
 		if ( !error ) return;
 		m_bLevelLoading = false;
@@ -453,6 +478,28 @@ protected:
 			UpdateBlur( inMap );
 	}
 private:
+	double m_LoadStart = 0;
+	IShaderAPIDX12 *m_pWarmRenderer = NULL;
+	bool m_bShaderStatusVisible = false;
+	bool UpdateShaderProgress( unsigned budget, float fraction )
+	{
+		if ( !m_pWarmRenderer ) return false;
+		unsigned done, total;
+		MaterialLock_t lock = materials->Lock();
+		m_pWarmRenderer->WarmPipelineBatch( budget, done, total );
+		materials->Unlock( lock );
+		if ( done == total ) m_pWarmRenderer = NULL;
+		if ( !total || ( !budget && done == total ) ) return false;
+		const wchar_t *label = g_pVGuiLocalize->Find( "#DX12_CompilingShaders" );
+		wchar_t text[128];
+		V_snwprintf( text, ARRAYSIZE( text ), L"%ls (%u/%u)", label ? label : L"Compiling Shaders", done, total );
+		if ( CTransitionStatsPanel *stats = m_hLoadingStats.Get() )
+			stats->SetLoadingStatus( text );
+		else
+			SetTerrorShaderLoadingStatus( fraction, text );
+		m_bShaderStatusVisible = true;
+		return true;
+	}
 	void CloseLoadingScreens()
 	{
 		if ( CTransitionStatsPanel *stats = m_hLoadingStats.Get() )

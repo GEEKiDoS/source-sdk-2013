@@ -40,6 +40,7 @@ protected:
 	bool m_bChatActive;
 };
 
+void SetTerrorShaderLoadingStatus( float fraction, const wchar_t *text );
 class CTransitionStatsPanel : public CTerrorViewportPanel
 {
 	DECLARE_CLASS_SIMPLE( CTransitionStatsPanel, CTerrorViewportPanel );
@@ -52,6 +53,7 @@ public:
 	virtual void ShowPanel( bool state ) OVERRIDE;
 	bool IsLoadingPanel() const { return m_bLoadingPanel; } // 2EB190.
 	bool BeginLoading();
+	void SetLoadingStatus( const wchar_t *text );
 	void EndLoading();
 	bool AdvanceLoadingAnimation(); // 2EB2B0, wall-clock, not an OnThink timer.
 	void AdvanceLoadingStats(); // 2EB1F0, called by actual loading-progress owner.

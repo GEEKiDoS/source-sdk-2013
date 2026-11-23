@@ -91,6 +91,50 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   variant is missing still rejects the map, since its lighting would otherwise be wrong for the whole map.
 - `shader_precache <logical> [static] [dynamic] | all` (cheat) validates/reflects published VCS payloads on the render
   thread; it never writes VCS files.
+- Map-load **Compiling Shaders** replays observed material-draw graphics pipelines, not the Cartesian product of
+  VCS records. Two draws with identical VS/PS can require different PSOs (e.g. depth-only vs mixed-format MRT,
+  vertex declaration, MSAA, independent blend or root ABI). A material snapshot cannot predict all of those.
+  The renderer interns the *resolved* VS/PS/GS bytes, including translated shaders, and records the final descriptor.
+  On subsequent loads it holds the resulting PSOs on the device, independent of transient shader handles.
+- For seed capture use the release shader pack, play representative campaign sections at the supported quality/MSAA
+  settings, and quit normally. The global `%LOCALAPPDATA%/SourceDX12/graphics-v1-<pack>.recipes` accumulates the
+  union across sessions using that pack. Install the capture as a **loose** `shaders/pso/graphics-v1.recipes` in
+  the mod. Do not distribute `pipeline-v1-*.bin`: it is an adapter/driver-specific acceleration library.
+  Regenerate the seed with shader/root changes. Unseen states still take the normal draw-time path. This does not
+  precache independent compute pipelines or feature-specific pipelines outside the material graphics cache.
+- For an A/B, `-dx12noprecache` disables both recipe collection and replay without disabling the existing driver
+  library. `-dx12psotrace` logs each draw-path `CreateGraphicsPipelineState` start (absolute QPC milliseconds) and
+  duration for correlation with PresentMon. A present interval overlapping creation is not necessarily CPU-bound.
+
+  **GTX 1050 capture:** `test_3_2.dem`, `c5m4_quarter`, 960×540, `mat_queue_mode 2`, seek tick 15500.
+  The shipping seed contains 355 distinct observed descriptors and 154 shader payloads (3,301,384 bytes).
+  It was trained on multiple playbacks, then tested in **separate processes** with an empty renderer cache
+  (`SOURCE_DX12_CACHE_HOME`) and immediately again with that run's library. The user's cache and the
+  vendor's own driver cache were not cleared. This is a cold *application library*, not a fresh driver installation.
+
+  | Configuration | Map load | Draw-time creates after `playdemo` | Creates in 30 s | Presents >25 ms overlapping a create | Median / p95 / p99 frame ms |
+  |---|---:|---:|---:|---:|---:|
+  | Control, cold | 14.826 s | 334 | 87 / 1566 frames | 29 | 18.81 / 27.08 / 32.65 |
+  | Seed, cold | 14.888 s | 0 | 0 / 1577 | 0 | 18.77 / 26.90 / 32.94 |
+  | Control, warm | 14.731 s | 92 | 5 / 1568 | 2 | 18.83 / 26.86 / 32.83 |
+  | Seed, warm | 15.015 s | 0 | 0 / 1578 | 0 | 18.63 / 26.83 / 32.23 |
+
+  The cold control made 342 creates process-wide (447.84 ms total; median/p95/max 0.105/10.764/18.158 ms).
+  The warm control made 93 (139.54 ms; 0.096/6.149/16.632 ms). The final cold load compiled 345 nonresident
+  PSOs in 329 ms wall time; on the warm load all 345 came from the library in 238 ms. Neither load refused
+  any recipe. Total load deltas in this pair were +62 ms cold and +283 ms warm (1.9%); not zero-cost.
+  Canonicalizing D3D12 descriptor padding was necessary: one early capture had 350 disk keys but only
+  330 distinct reconstructed descriptions. Identical state must not miss because of the tail padding in `InputLayout`.
+
+  PresentMon did not emit a CSV here. `-dx12psotrace` with `SOURCE_DX12_PRESENT_TRACE` set to a file records
+  a buffered stream of little-endian double QPC milliseconds at native DXGI Present entry. Compare consecutive
+  timestamps with the create intervals; overlap is evidence of coincidence, not proof the entire frame was stalled.
+  The table uses the first 30 seconds of the 45-second captures: the cold control hit an unrelated highres
+  lightmap rejection and returned to the menu late in the window. No draw-time material PSOs were created
+  anywhere after `playdemo` in either final run, including outside the 30-second comparison. Other frame spikes
+  remained. A separate `mat_queue_mode 0` smoke run rendered after a mode change and a transition to `c5m3_cemetery`.
+  These results cover this demo and settings, not unseen combinations or every campaign.
+
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
 - Eligible native mono main views shade the 3D sky after opaque geometry and motion vectors, before GTAO/SSR.

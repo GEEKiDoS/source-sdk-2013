@@ -576,6 +576,7 @@ FodyWeavers.xsd
 !/game/mod_l4d2/resource/graphicsoptions_perf_schinese.txt
 !/game/mod_l4d2/resource/graphicsoptions_gpu_english.txt
 !/game/mod_l4d2/resource/graphicsoptions_gpu_schinese.txt
+!/game/mod_l4d2/resource/pipelineprecache_*.txt
 
 # Local reference trees and reverse-engineering outputs are not distributable.
 /retail/

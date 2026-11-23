@@ -791,6 +791,9 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 {
 	if ( !g_pShaderDeviceMgrDX12 || !g_pShaderDeviceMgrDX12->HostFileSystem() )
 		return;
+	// Non-GameUI loads and short progress sequences take the same owner barrier.
+	unsigned done, total;
+	m_Pipeline.WarmRecipes( UINT_MAX, done, total );
 	const uint64_t before = g_FirstUse.decodes.load();
 	const double start = Plat_FloatTime();
 	ReleaseLevelShaderPins();
