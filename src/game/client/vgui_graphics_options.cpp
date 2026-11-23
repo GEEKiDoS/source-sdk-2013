@@ -146,15 +146,20 @@ static const Choice_t kShadowFilter[] =
 	{ "#GraphicsOptions_Soft", { 1, 0, 0, 0, 0 } },
 };
 
-// (r_shadowmap_enable, r_shadowmap_filter_quality); Off disables runtime shadow maps and matches the enable cvar alone
-// (ROWF_OFF_ENABLE_ONLY). The quality selects the soft-shadow (PCSS) sample budget combo of the PBR receivers.
+// (r_shadowmap_enable, r_shadowmap_filter_quality, r_csm_cascades, r_csm_eye_centered, r_csm_split_log); Off disables
+// runtime shadow maps and matches the enable cvar alone (ROWF_OFF_ENABLE_ONLY). The quality selects the soft-shadow
+// (PCSS) sample budget combo of the PBR receivers and how far the dynamic sun cascades reach before the static sun map
+// (no dynamic casters) takes over. High and above fit the cascades to the view slice and pack the splits nearer the
+// camera: the nearest cascade shrinks from about 430 to 230 (High) and 190 (Extra) units at r_csm_distance 4096, so
+// its texels are about half the size, while the extra cascades keep the dynamic reach at or beyond Medium's. Low and
+// Medium match the GPU-tier presets (gpu_optimized_settings.cpp), so a preset never reads back as Custom.
 static const Choice_t kShadowQuality[] =
 {
-	{ "#GraphicsOptions_Off", { 0, 1, 0, 0, 0 } },
-	{ "#GraphicsOptions_Low", { 1, 0, 0, 0, 0 } },
-	{ "#GraphicsOptions_Medium", { 1, 1, 0, 0, 0 } },
-	{ "#GraphicsOptions_High", { 1, 2, 0, 0, 0 } },
-	{ "#GraphicsOptions_Extra", { 1, 3, 0, 0, 0 } },
+	{ "#GraphicsOptions_Off", { 0, 1, 2, 1, 0.6f } },
+	{ "#GraphicsOptions_Low", { 1, 0, 1, 1, 0.6f } },
+	{ "#GraphicsOptions_Medium", { 1, 1, 2, 1, 0.6f } },
+	{ "#GraphicsOptions_High", { 1, 2, 3, 0, 0.8f } },
+	{ "#GraphicsOptions_Extra", { 1, 3, 4, 0, 0.85f } },
 };
 
 static const Choice_t kSunDistance[] =
@@ -332,7 +337,7 @@ static const RowDef_t g_Rows[] =
 	{ "#GraphicsOptions_Detail", TAB_DISPLAY, ROW_SLIDER, { "cl_detaildist", NULL, NULL, NULL, NULL }, NULL, 0, 0, 4000, 50, NULL, ROWF_NONE },
 
 	{ "Compact PBR lighting", TAB_LIGHTING, ROW_CHECK, { "r_pbr_lean_lighting", NULL, NULL, NULL, NULL }, NULL, 0, 0, 0, 0, NULL, ROWF_DX12_ONLY },
-	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", NULL, NULL, NULL }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
+	{ "#GraphicsOptions_Shadows", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_enable", "r_shadowmap_filter_quality", "r_csm_cascades", "r_csm_eye_centered", "r_csm_split_log" }, kShadowQuality, ARRAYSIZE( kShadowQuality ), 0, 0, 0, NULL, ROWF_OFF_ENABLE_ONLY | ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowRes", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_resolution", NULL, NULL, NULL, NULL }, kQuality4, ARRAYSIZE( kQuality4 ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_ShadowFilter", TAB_LIGHTING, ROW_COMBO, { "r_shadowmap_filter", NULL, NULL, NULL, NULL }, kShadowFilter, ARRAYSIZE( kShadowFilter ), 0, 0, 0, NULL, ROWF_DX12_ONLY },
 	{ "#GraphicsOptions_SunDist", TAB_LIGHTING, ROW_COMBO, { "r_csm_distance", NULL, NULL, NULL, NULL }, kSunDistance, ARRAYSIZE( kSunDistance ), 0, 0, 0, NULL, ROWF_DX12_ONLY },

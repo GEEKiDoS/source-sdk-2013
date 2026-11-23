@@ -49,7 +49,7 @@ void ShadowMapScene_BuildOrtho( float x, float y, float n, float f, VMatrix &m )
 	m.Init( 1/x,0,0,0, 0,1/y,0,0, 0,0,1/(f-n),-n/(f-n), 0,0,0,1 );
 }
 
-bool ShadowMapScene_CascadeSplits( float n, float f, float splits[5], float blend[3] )
+bool ShadowMapScene_CascadeSplits( float n, float f, float logWeight, float splits[5], float blend[3] )
 {
 	memset( splits, 0, 5 * sizeof(float) );
 	memset( blend, 0, 3 * sizeof(float) );
@@ -58,7 +58,7 @@ bool ShadowMapScene_CascadeSplits( float n, float f, float splits[5], float blen
 	for ( int i = 1; i < 4; ++i )
 	{
 		float a = i / 4.0f;
-		splits[i] = 0.6f*n*powf( f/n, a ) + 0.4f*(n+(f-n)*a);
+		splits[i] = logWeight*n*powf( f/n, a ) + ( 1.0f - logWeight )*(n+(f-n)*a);
 	}
 	for ( int i = 1; i < 4; ++i ) blend[i-1] = 0.05f*MIN( splits[i]-splits[i-1], splits[i+1]-splits[i] );
 	return true;
