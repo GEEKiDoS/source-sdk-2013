@@ -16,12 +16,14 @@
 ConVar cl_fp_legs( "cl_fp_legs", "1", FCVAR_ARCHIVE, "Show your survivor's legs when looking down in first person." );
 ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
 	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
-static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "8", 0,
+static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "0", 0,
 	"Units the first-person legs and their shadow sit behind the camera along the view's facing." );
 static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "45", 0,
 	"Degrees the first-person legs' upper body leans back from cl_fp_legs_lean_bone, moving the collapsed waist behind the camera." );
-static ConVar cl_fp_legs_stretch( "cl_fp_legs_stretch", "48", 0,
-	"Units behind the camera the first-person legs' hidden bones collapse to, so the cut stretches off screen; 0 closes each at its root joint." );
+static ConVar cl_fp_legs_tilt( "cl_fp_legs_tilt", "35", 0,
+	"Degrees the first-person legs tip back about the feet when looking straight down (ramping in from cl_fp_legs_tilt_start), "
+	"so the feet stay under the camera while the hips and the cut leave the bottom of the screen." );
+static ConVar cl_fp_legs_tilt_start( "cl_fp_legs_tilt_start", "30", 0, "View pitch (degrees down) where cl_fp_legs_tilt starts ramping in." );
 static int s_nBoneNamesGeneration = 0;
 static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
 static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Spine1", 0,
@@ -83,7 +85,7 @@ C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player
 
 C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
 	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nFirstHiddenBone( MAXSTUDIOBONES ), m_nLeanBone( -1 ),
-	m_nBoneNamesGeneration( s_nBoneNamesGeneration ), m_vecStretchTarget( vec3_origin )
+	m_nBoneNamesGeneration( s_nBoneNamesGeneration )
 {
 }
 
@@ -159,18 +161,32 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	for ( int i = 0; i < layers; ++i )
 		m_AnimOverlay[i] = player->m_AnimOverlay[i];
 
-	// The model faces the body yaw (the render angles follow the feet, lagging the view while standing). It backs off
-	// along the view yaw instead, so the collapsed upper body stays behind the camera whichever way the body faces.
-	// Both copies use the same offset while the legs show, so the shadow starts at the visible feet.
-	const QAngle angles( 0.0f, player->GetRenderAngles().y, 0.0f );
-	const float offset = cl_fp_legs.GetBool() && LegsPose( player ) ? cl_fp_legs_offset.GetFloat() : 0.0f;
+	// The model faces the body yaw (the render angles follow the feet, lagging the view while standing). Offset and
+	// tilt follow the view yaw instead, so the collapsed upper body goes behind the camera whichever way the body
+	// faces. Both copies share the offset, so the shadow starts at the visible feet; the tilt pivots on the feet and
+	// applies to the legs only, so the shadow keeps the upright body.
+	const bool legsPose = cl_fp_legs.GetBool() && LegsPose( player );
+	const float offset = legsPose ? cl_fp_legs_offset.GetFloat() : 0.0f;
 	Vector viewForward;
 	AngleVectors( QAngle( 0.0f, player->EyeAngles().y, 0.0f ), &viewForward );
 	SetAbsOrigin( player->GetRenderOrigin() - viewForward * offset );
+	QAngle angles( 0.0f, player->GetRenderAngles().y, 0.0f );
+	float pitch = player->EyeAngles().x;
+	if ( pitch > 180.0f )
+		pitch -= 360.0f;
+	const float start = cl_fp_legs_tilt_start.GetFloat();
+	const float tilt = m_Role == ROLE_LEGS && legsPose && pitch > start ?
+		cl_fp_legs_tilt.GetFloat() * MIN( ( pitch - start ) / MAX( 89.0f - start, 1.0f ), 1.0f ) : 0.0f;
+	if ( tilt != 0.0f )
+	{
+		// Rotating about forward x up (the view's right axis) by a positive angle tips the model's up toward -forward.
+		matrix3x4_t yaw, rotate, tilted;
+		AngleMatrix( angles, yaw );
+		MatrixBuildRotationAboutAxis( CrossProduct( viewForward, Vector( 0.0f, 0.0f, 1.0f ) ), tilt, rotate );
+		ConcatTransforms( rotate, yaw, tilted );
+		MatrixAngles( tilted, angles );
+	}
 	SetAbsAngles( angles );
-	// Hidden bones collapse to a point behind the camera, so the cut body stretches off the screen's edge instead
-	// of closing into a visible cap.
-	m_vecStretchTarget = player->EyePosition() - viewForward * cl_fp_legs_stretch.GetFloat();
 }
 
 CStudioHdr *C_TerrorFirstPersonBody::OnNewModel()
@@ -242,18 +258,15 @@ void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *
 		}
 	}
 
-	// Collapse each hidden subtree: triangles skinned to it vanish, and the ones shared with visible bones stretch
-	// toward the collapse point. With cl_fp_legs_stretch that point sits behind the camera, so the cut runs off the
-	// screen's edge; with 0 each subtree closes into a cap at its root joint.
-	const bool stretch = cl_fp_legs_stretch.GetFloat() > 0.0f;
+	// Collapse each hidden subtree to its root joint: triangles skinned to it vanish, and the ones shared with visible
+	// bones close into a cap at that joint, which the lean and tilt keep below the bottom of the screen.
 	for ( int i = m_nFirstHiddenBone; i < bones; ++i )
 	{
 		const int root = m_CollapseRoot[i];
 		if ( root < 0 )
 			continue;
-		Vector collapse = m_vecStretchTarget;
-		if ( !stretch )
-			MatrixGetColumn( GetBone( root ), 3, collapse ); // a root keeps its position when collapsed
+		Vector collapse;
+		MatrixGetColumn( GetBone( root ), 3, collapse ); // a root keeps its position when collapsed
 		matrix3x4_t &bone = GetBoneForWrite( i );
 		SetIdentityMatrix( bone );
 		MatrixScaleByZero( bone );
