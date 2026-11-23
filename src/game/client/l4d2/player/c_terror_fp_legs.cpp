@@ -20,6 +20,8 @@ static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "8", 0,
 	"Units the first-person legs and their shadow sit behind the camera along the view's facing." );
 static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "45", 0,
 	"Degrees the first-person legs' upper body leans back from cl_fp_legs_lean_bone, moving the collapsed waist behind the camera." );
+static ConVar cl_fp_legs_stretch( "cl_fp_legs_stretch", "48", 0,
+	"Units behind the camera the first-person legs' hidden bones collapse to, so the cut stretches off screen; 0 closes each at its root joint." );
 static int s_nBoneNamesGeneration = 0;
 static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
 static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Spine1", 0,
@@ -81,7 +83,7 @@ C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player
 
 C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
 	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nFirstHiddenBone( MAXSTUDIOBONES ), m_nLeanBone( -1 ),
-	m_nBoneNamesGeneration( s_nBoneNamesGeneration )
+	m_nBoneNamesGeneration( s_nBoneNamesGeneration ), m_vecStretchTarget( vec3_origin )
 {
 }
 
@@ -166,6 +168,9 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	AngleVectors( QAngle( 0.0f, player->EyeAngles().y, 0.0f ), &viewForward );
 	SetAbsOrigin( player->GetRenderOrigin() - viewForward * offset );
 	SetAbsAngles( angles );
+	// Hidden bones collapse to a point behind the camera, so the cut body stretches off the screen's edge instead
+	// of closing into a visible cap.
+	m_vecStretchTarget = player->EyePosition() - viewForward * cl_fp_legs_stretch.GetFloat();
 }
 
 CStudioHdr *C_TerrorFirstPersonBody::OnNewModel()
@@ -237,15 +242,18 @@ void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *
 		}
 	}
 
-	// Collapse each hidden subtree to its root joint: triangles skinned to it vanish, and the ones shared with visible
-	// bones close into a cap at that joint instead of stretching toward each limb's own joint.
+	// Collapse each hidden subtree: triangles skinned to it vanish, and the ones shared with visible bones stretch
+	// toward the collapse point. With cl_fp_legs_stretch that point sits behind the camera, so the cut runs off the
+	// screen's edge; with 0 each subtree closes into a cap at its root joint.
+	const bool stretch = cl_fp_legs_stretch.GetFloat() > 0.0f;
 	for ( int i = m_nFirstHiddenBone; i < bones; ++i )
 	{
 		const int root = m_CollapseRoot[i];
 		if ( root < 0 )
 			continue;
-		Vector collapse;
-		MatrixGetColumn( GetBone( root ), 3, collapse ); // a root keeps its position when collapsed
+		Vector collapse = m_vecStretchTarget;
+		if ( !stretch )
+			MatrixGetColumn( GetBone( root ), 3, collapse ); // a root keeps its position when collapsed
 		matrix3x4_t &bone = GetBoneForWrite( i );
 		SetIdentityMatrix( bone );
 		MatrixScaleByZero( bone );

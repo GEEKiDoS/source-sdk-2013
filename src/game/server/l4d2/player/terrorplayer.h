@@ -408,6 +408,9 @@ public:
 	bool IsCrawling() const;
 	float GetPushDistance() const;
 	Vector GetMovementViewOffset( bool duck ) const;
+	// Eye heights scale with the survivor model (see CTerrorPlayer::OnNewModel); exactly 1 for the stock models.
+	float GetEyeHeightScale() const { return m_flEyeHeightScale; }
+	virtual CStudioHdr *OnNewModel() OVERRIDE;
 	Vector TraceMovementViewOffset( const Vector &origin, const QAngle &angles, float height, bool pounced ) const;
 	Vector ComputeMovementViewOffset( const Vector &origin, const QAngle &angles );
 	bool IsHangingFromLedge() const;
@@ -511,6 +514,7 @@ public:
 	void UpdateCulling();
 
 	CNetworkVar( int, m_survivorCharacter );
+	CNetworkVar( float, m_flEyeHeightScale );
 	CNetworkVar( int, m_zombieClass );
 	CNetworkVar( int, m_zombieState );
 	CNetworkVar( float, m_jumpSupressedUntil );

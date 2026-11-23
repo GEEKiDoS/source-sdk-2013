@@ -56,6 +56,7 @@ private:
 	int m_nFirstHiddenBone, m_nLeanBone;
 	int m_nBoneNamesGeneration; // cl_fp_legs_hide_bones / cl_fp_legs_lean_bone changes rebuild the bone sets
 	CBitVec< MAXSTUDIOBONES > m_LeanBones;
+	Vector m_vecStretchTarget; // where hidden bones collapse with cl_fp_legs_stretch (behind the camera)
 };
 
 // The active weapon's world model bone-merged onto the shadow copy; shadow passes only.

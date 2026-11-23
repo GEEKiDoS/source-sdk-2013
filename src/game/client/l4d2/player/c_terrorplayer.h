@@ -65,6 +65,8 @@ public:
 	bool IsCrawling() const;
 	float GetPushDistance() const;
 	Vector GetMovementViewOffset( bool duck ) const;
+	// Eye heights scale with the survivor model (server CTerrorPlayer::OnNewModel); exactly 1 for the stock models.
+	float GetEyeHeightScale() const { return m_flEyeHeightScale; }
 	Vector TraceMovementViewOffset( const Vector &origin, const QAngle &angles, float height, bool pounced ) const;
 	Vector ComputeMovementViewOffset( const Vector &origin, const QAngle &angles );
 	bool IsHangingFromLedge() const;
@@ -690,6 +692,7 @@ private:
 	// Local player only. Handles: level shutdown releases client entities before the player is destroyed.
 	CHandle< C_TerrorFirstPersonBody > m_hFirstPersonLegs, m_hFirstPersonShadow;
 	CHandle< C_TerrorFirstPersonShadowWeapon > m_hFirstPersonShadowWeapon;
+	float m_flEyeHeightScale; // networked; the server measures its own model, so prediction always agrees
 };
 
 C_TerrorPlayer *GetTerrorPlayerBySurvivorCharacter( int character );

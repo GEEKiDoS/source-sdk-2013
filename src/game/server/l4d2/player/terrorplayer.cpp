@@ -241,6 +241,7 @@ IMPLEMENT_SERVERCLASS_ST( CTerrorPlayer, DT_TerrorPlayer )
 	SendPropDataTable( SENDINFO_DT( m_itTimer ), &REFERENCE_SEND_TABLE( DT_CountdownTimer ) ),
 	SendPropBool( SENDINFO( m_bAdrenalineActive ) ),
 	SendPropInt( SENDINFO( m_survivorCharacter ), 8 ),
+	SendPropFloat( SENDINFO( m_flEyeHeightScale ), 0, SPROP_NOSCALE ),
 	SendPropInt( SENDINFO( m_zombieClass ), 8 ),
 	SendPropInt( SENDINFO( m_zombieState ), 8 ),
 	SendPropBool( SENDINFO( m_isIncapacitated ) ),
@@ -476,6 +477,7 @@ CTerrorPlayer::CTerrorPlayer()
 	m_zombieClass = 9;
 	m_nativeZombieVariantChoice = RandomInt( 1, 6 );
 	m_survivorCharacter = 8;
+	m_flEyeHeightScale = 1.0f;
 	m_isGhost = false;
 	m_bNativeGhostClockFlag = false;
 	m_isInMissionStartArea = false;
@@ -599,6 +601,13 @@ CTerrorPlayer::~CTerrorPlayer()
 CTerrorPlayer *CTerrorPlayer::CreatePlayer( const char *pClassName, edict_t *pEdict )
 {
 	return static_cast< CTerrorPlayer * >( CBasePlayer::CreatePlayer( pClassName, pEdict ) );
+}
+
+CStudioHdr *CTerrorPlayer::OnNewModel()
+{
+	CStudioHdr *studio = BaseClass::OnNewModel();
+	m_flEyeHeightScale = TerrorEyeHeightScaleForModel( studio, STRING( GetModelName() ) );
+	return studio;
 }
 
 void CTerrorPlayer::Precache()

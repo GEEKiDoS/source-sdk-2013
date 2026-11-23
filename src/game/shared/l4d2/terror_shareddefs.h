@@ -172,4 +172,9 @@ enum TerrorPlayerAnimEvent
 #define TERROR_VEC_OBS_HULL_MAX		Vector( 10, 10, 10 )
 #define TERROR_VEC_DEAD_VIEWHEIGHT	Vector( 0, 0, 14 )
 
+// Scale for the survivor eye heights above from a model's reference-pose eyes; 1 for the stock models
+// (terrorplayer_shared.cpp).
+class CStudioHdr;
+float TerrorEyeHeightScaleForModel( CStudioHdr *studio, const char *modelName );
+
 #endif // TERROR_SHAREDDEFS_H

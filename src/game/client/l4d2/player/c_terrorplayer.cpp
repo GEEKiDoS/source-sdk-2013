@@ -166,6 +166,7 @@ IMPLEMENT_CLIENTCLASS_DT( C_TerrorPlayer, DT_TerrorPlayer, CTerrorPlayer )
 	RecvPropDataTable( RECVINFO_DT( m_itTimer ), 0, &REFERENCE_RECV_TABLE( DT_CountdownTimer ) ),
 	RecvPropBool( RECVINFO( m_bAdrenalineActive ) ),
 	RecvPropInt( RECVINFO( m_survivorCharacter ) ),
+	RecvPropFloat( RECVINFO( m_flEyeHeightScale ) ),
 	RecvPropInt( RECVINFO( m_zombieClass ) ),
 	RecvPropInt( RECVINFO( m_zombieState ), 0, RecvProxy_TerrorZombieState ),
 	RecvPropBool( RECVINFO( m_isIncapacitated ) ),
@@ -321,6 +322,7 @@ C_TerrorPlayer::C_TerrorPlayer()
 {
 	// Music default-constructs once at its native member phase.
 	m_music.SetOwner( this );
+	m_flEyeHeightScale = 1.0f;
 	// Actual handle/timer/vector/panel/map/reference constructors are supplied
 	// by the one ordered union. D586 removes only vectors7160/7180.
 	AddVar( &m_Local.m_vecPunchAngle, &m_Local.m_iv_vecPunchAngle, LATCH_SIMULATION_VAR, false );

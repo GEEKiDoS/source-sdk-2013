@@ -15,6 +15,7 @@
 #include "l4d2/player/terror_playeranimstate.h"
 #include "in_buttons.h"
 #include "gamemovement.h"
+#include "bone_setup.h"
 #include "l4d2/player/terrorplayer_shared_console_server_cvars.inc"
 #include "tier0/memdbgon.h"
 extern IGameMovement *g_pGameMovement;
@@ -959,15 +960,89 @@ float CTerrorPlayer::GetPushDistance() const
 	return (float)sqrt( (double)( ( delta.y * delta.y + delta.z * delta.z ) + delta.x * delta.x ) );
 }
 
+// Eye height of a model's "eyes" attachment (head bone without one) in its reference pose, in model units.
+static float TerrorModelEyeHeight( CStudioHdr *studio )
+{
+	if ( !studio || !studio->IsValid() )
+		return 0.0f;
+	int bone;
+	matrix3x4_t local;
+	SetIdentityMatrix( local );
+	const int attachment = Studio_FindAttachment( studio, "eyes" );
+	if ( attachment >= 0 )
+	{
+		bone = studio->GetAttachmentBone( attachment );
+		local = studio->pAttachment( attachment ).local;
+	}
+	else
+		bone = Studio_BoneIndexByName( studio, "ValveBiped.Bip01_Head1" );
+	if ( bone < 0 )
+		return 0.0f;
+	matrix3x4_t boneToModel, eyes;
+	MatrixInvert( studio->pBone( bone )->poseToBone, boneToModel );
+	ConcatTransforms( boneToModel, local, eyes );
+	return eyes[2][3];
+}
+
+namespace
+{
+// TerrorModelEyeHeight of the stock survivor models (measured from the shipped VPK content). A model at one of these
+// paths (an addon replacing it) scales the eye heights by its own measurement over this one, so the stock models keep
+// the retail heights exactly.
+const struct { const char *model; float eyeHeight; } s_StockSurvivorEyes[] =
+{
+	{ "models/survivors/survivor_gambler.mdl", 68.130f },
+	{ "models/survivors/survivor_producer.mdl", 60.757f },
+	{ "models/survivors/survivor_coach.mdl", 70.721f },
+	{ "models/survivors/survivor_mechanic.mdl", 63.985f },
+	{ "models/survivors/survivor_namvet.mdl", 68.130f },
+	{ "models/survivors/survivor_teenangst.mdl", 63.220f },
+	{ "models/survivors/survivor_biker.mdl", 71.841f },
+	{ "models/survivors/survivor_manager.mdl", 71.526f },
+};
+}
+
+// Ratio applied to the standing, crouched, incapacitated and pounced eye heights. A survivor model at an unknown
+// path under models/survivors/ compares with the stock average; anything else (infected) keeps 1. Ratios within 1%
+// of 1 snap to 1. Clamped so the eyes stay inside the standing and crouched hulls.
+float TerrorEyeHeightScaleForModel( CStudioHdr *studio, const char *modelName )
+{
+	const float measured = TerrorModelEyeHeight( studio );
+	if ( measured <= 0.0f || !modelName )
+		return 1.0f;
+	char model[MAX_PATH];
+	V_strncpy( model, modelName, sizeof( model ) );
+	V_FixSlashes( model, '/' );
+	float stock = 0.0f, stockSum = 0.0f;
+	for ( int i = 0; i < ARRAYSIZE( s_StockSurvivorEyes ); ++i )
+	{
+		stockSum += s_StockSurvivorEyes[i].eyeHeight;
+		if ( V_stricmp( s_StockSurvivorEyes[i].model, model ) == 0 )
+			stock = s_StockSurvivorEyes[i].eyeHeight;
+	}
+	if ( stock <= 0.0f )
+	{
+		if ( V_strnicmp( model, "models/survivors/", 17 ) != 0 )
+			return 1.0f;
+		stock = stockSum / ARRAYSIZE( s_StockSurvivorEyes );
+	}
+	const float ratio = measured / stock;
+	if ( fabsf( ratio - 1.0f ) < 0.01f )
+		return 1.0f;
+	const float maximum = MIN( ( TERROR_VEC_HULL_MAX.z - 2.0f ) / TERROR_VEC_VIEW.z, ( TERROR_VEC_DUCK_HULL_MAX.z - 2.0f ) / TERROR_VEC_DUCK_VIEW.z );
+	return clamp( ratio, 0.25f, maximum );
+}
+
 // S2C8B00/C26A230. Preserve the existing view's XY and native progress blend.
 Vector CTerrorPlayer::GetMovementViewOffset( bool duck ) const
 {
 	if ( m_usingMountedWeapon )
 		return GetViewOffset();
+	const float scale = GetEyeHeightScale();
 	if ( duck && !IsIncapacitated() )
 	{
 		Vector result = GetViewOffset();
-		result.z = g_pGameRules->GetViewVectors()->m_vDuckView.z;
+		result.z = g_pGameRules->GetViewVectors()->m_vDuckView.z * scale;
 		return result;
 	}
 	Vector result = GetViewOffset();
@@ -976,10 +1051,10 @@ Vector CTerrorPlayer::GetMovementViewOffset( bool duck ) const
 		const float height = survivor_incapacitated_eye_height.GetFloat();
 		const float crouchedHeight = g_pGameRules->GetViewVectors()->m_vDuckView.z;
 		const float progress = GetProgressBarProgress();
-		result.z = ( 1.0f - progress ) * height + progress * crouchedHeight;
+		result.z = ( ( 1.0f - progress ) * height + progress * crouchedHeight ) * scale;
 	}
 	else
-		result.z = g_pGameRules->GetViewVectors()->m_vView.z;
+		result.z = g_pGameRules->GetViewVectors()->m_vView.z * scale;
 	return result;
 }
 
@@ -1086,6 +1161,10 @@ Vector CTerrorPlayer::ComputeMovementViewOffset( const Vector &origin, const QAn
 		return result;
 	}
 
+	// Ledge and tongue hang heights place the camera relative to the ledge/tongue and stay unscaled.
+	const float view = g_pGameRules->GetViewVectors()->m_vView.z * GetEyeHeightScale();
+	const float duckView = g_pGameRules->GetViewVectors()->m_vDuckView.z * GetEyeHeightScale();
+	const float pouncedView = survivor_pounce_victim_eye_height.GetFloat() * GetEyeHeightScale();
 #ifndef CLIENT_DLL
 	if ( IsAlive() && m_isHangingFromLedge )
 		result.z = survivor_hanging_eye_height.GetFloat();
@@ -1094,7 +1173,7 @@ Vector CTerrorPlayer::ComputeMovementViewOffset( const Vector &origin, const QAn
 	else if ( IsIncapacitated() )
 		result.z = GetMovementViewOffset( false ).z;
 	else if ( IsBeingPounced() )
-		result.z = survivor_pounce_victim_eye_height.GetFloat();
+		result.z = pouncedView;
 	else if ( !IsJockeyVictim() )
 	{
 		// The SDK does not replicate the command-owned EFL_NOCLIP_ACTIVE bit.
@@ -1104,13 +1183,13 @@ Vector CTerrorPlayer::ComputeMovementViewOffset( const Vector &origin, const QAn
 			if ( !m_Local.m_bDucking )
 			{
 				if ( !( GetFlags() & FL_DUCKING ) && !m_Local.m_bDucked )
-					result.z = g_pGameRules->GetViewVectors()->m_vView.z;
+					result.z = view;
 				else if ( m_Local.m_bDucked )
-					result.z = g_pGameRules->GetViewVectors()->m_vDuckView.z;
+					result.z = duckView;
 			}
 		}
-		else if ( IsAlive() && g_pGameRules->GetViewVectors()->m_vView.z > result.z )
-			result.z = g_pGameRules->GetViewVectors()->m_vView.z;
+		else if ( IsAlive() && view > result.z )
+			result.z = view;
 	}
 	if ( IsAlive() )
 		return TraceMovementViewOffset( origin, angles, result.z, IsBeingPounced() );
@@ -1123,25 +1202,25 @@ Vector CTerrorPlayer::ComputeMovementViewOffset( const Vector &origin, const QAn
 	else if ( alive && m_isIncapacitated )
 		result.z = GetMovementViewOffset( false ).z;
 	else if ( IsBeingPounced() )
-		result.z = survivor_pounce_victim_eye_height.GetFloat();
+		result.z = pouncedView;
 	else if ( IsJockeyVictim() )
 	{
 		if ( gpGlobals->curtime > m_jockeyAttachmentViewTime )
-			result.z = survivor_pounce_victim_eye_height.GetFloat();
+			result.z = pouncedView;
 	}
 	else if ( alive )
 	{
 		if ( GetMoveType() == MOVETYPE_NOCLIP )
 		{
-			if ( g_pGameRules->GetViewVectors()->m_vView.z > result.z )
-				result.z = g_pGameRules->GetViewVectors()->m_vView.z;
+			if ( view > result.z )
+				result.z = view;
 		}
 		else if ( !IsDucking() )
 		{
 			if ( !( GetFlags() & FL_DUCKING ) && !IsDucked() )
-				result.z = g_pGameRules->GetViewVectors()->m_vView.z;
+				result.z = view;
 			else if ( IsDucked() )
-				result.z = g_pGameRules->GetViewVectors()->m_vDuckView.z;
+				result.z = duckView;
 		}
 	}
 	if ( m_lifeState == LIFE_ALIVE )
