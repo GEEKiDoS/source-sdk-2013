@@ -30,6 +30,36 @@
 
 namespace shaderapidx12
 {
+// Optional PSO diagnostic: CPU start timestamps immediately before real DXGI
+// presents (not DXGI_PRESENT_TEST or enqueue times). Binary QPC milliseconds.
+static void TracePipelinePresent()
+{
+	struct Writer
+	{
+		FILE *file = nullptr;
+		double milliseconds = 0;
+		Writer()
+		{
+			wchar_t path[MAX_PATH];
+			if ( !CommandLine()->CheckParm( "-dx12psotrace" ) ) return;
+			const DWORD n = GetEnvironmentVariableW( L"SOURCE_DX12_PRESENT_TRACE", path, ARRAYSIZE( path ) );
+			if ( !n || n >= ARRAYSIZE( path ) ) return;
+			LARGE_INTEGER hz;
+			if ( QueryPerformanceFrequency( &hz ) && !_wfopen_s( &file, path, L"wb" ) )
+				milliseconds = 1000.0 / hz.QuadPart;
+		}
+		~Writer() { if ( file ) fclose( file ); }
+	};
+	static Writer writer;
+	if ( writer.file )
+	{
+		LARGE_INTEGER now;
+		QueryPerformanceCounter( &now );
+		const double ms = now.QuadPart * writer.milliseconds;
+		fwrite( &ms, sizeof( ms ), 1, writer.file );
+	}
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Loads dxbcSigner.dll from the renderer's directory and resolves SignDxbc
 //-----------------------------------------------------------------------------
@@ -1798,6 +1828,7 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	{
 		ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
 		m_FrameGen.BeforePresent( op.frameId, op.framegenActive );
+		TracePipelinePresent();
 		hr = op.swap->Present( op.interval, op.flags );
 		m_FrameGen.AfterPresent( op.frameId );
 		if ( hr == DXGI_STATUS_OCCLUDED )
@@ -3206,6 +3237,7 @@ void CShaderDeviceDX12::Present()
 		{
 			ZoneNamedN( nativePresent, "DX12 DXGI Present", DX12_ZONES_ACTIVE );
 			m_FrameGen.BeforePresent( nFrameId, bFrameGenActive );
+			TracePipelinePresent();
 			hr = view.swap->Present( nInterval, nFlags );
 			m_FrameGen.AfterPresent( nFrameId );
 		}

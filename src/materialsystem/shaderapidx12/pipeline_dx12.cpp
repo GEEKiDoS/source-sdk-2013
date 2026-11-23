@@ -1599,7 +1599,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	else if ( !pso )
 	{
 		static const bool trace = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
-		LARGE_INTEGER begin, end, frequency;
+		LARGE_INTEGER begin{}, end, frequency;
 		if ( trace )
 			QueryPerformanceCounter( &begin );
 		hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
