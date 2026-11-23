@@ -1294,6 +1294,7 @@ struct LightingViewStateDX12
 {
 	LightingPacketDX12 *packet = nullptr;
 	uint64_t fence = 0, heap = 0;
+	uint64_t modelLightEpoch = 0;
 	DescriptorRangeDX12 table{};
 	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
@@ -1322,8 +1323,10 @@ struct CLightingDX12::Impl
 	std::array<ModelLightTest, 4096> modelLightTests[2]{};
 	ModelLightWorkDX12 modelLightWork;
 	ModelLightCellsDX12 modelLightCells;
-	// ModelLocalLighting results per view and lighting origin: a model's materials and passes repeat the same query.
-	struct ModelLightingResult { uint32 mapGeneration = 0, viewGeneration = 0; int limit = 0; Vector origin; float rows[7][4]; };
+	// Reuse rows across views only when the complete ordered light table is identical.
+	CUtlVector<RuntimeShadowLightGpu> previousModelLights;
+	uint64_t modelLightEpoch = 1;
+	struct ModelLightingResult { uint32 mapGeneration = 0; uint64_t epoch = 0; int limit = 0; Vector origin; float rows[7][4]; };
 	std::array<ModelLightingResult, 512> modelLightingResults{};
 	// Per-light contribution at the current lighting origin, filled once per ModelLocalLighting miss.
 	struct ModelLightSample { Vector rgb, direction; float energy; bool blocked; };
@@ -2230,11 +2233,22 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	if ( limit <= 0 ) return live;
 	limit = MIN( limit, 4 );
 	const Vector &origin = s.api->m_LightingOrigin;
-	// Lights are fixed for a view (copied at BeginView) and the BSP for a map, so the result depends only on the view,
-	// the limit and the exact lighting origin. Exact positions, not quantized: opposite sides of a wall must not alias.
-	auto &cached = s.modelLightingResults[( ( FloatBits( origin.x ) >> 4 ) ^ ( FloatBits( origin.y ) * 31u ) ^
-		( FloatBits( origin.z ) * 2654435761u ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
-	if ( cached.mapGeneration == packet.view.mapGeneration && cached.viewGeneration == packet.view.viewGeneration &&
+	auto &epoch = s.views.Tail()->modelLightEpoch;
+	if ( !epoch )
+	{
+		if ( s.previousModelLights.Count() != lights.Count() || ( lights.Count() &&
+			memcmp( s.previousModelLights.Base(), lights.Base(), lights.Count() * sizeof( lights[0] ) ) ) )
+		{
+			s.previousModelLights = lights;
+			++s.modelLightEpoch;
+		}
+		epoch = s.modelLightEpoch;
+	}
+	// Use the high bits of the mixed hash: aligned map coordinates often have identical low mantissa bits.
+	uint32 hash = FloatBits( origin.x ) * 31u + FloatBits( origin.y );
+	hash = ( hash * 31u + FloatBits( origin.z ) ) * 2654435761u;
+	auto &cached = s.modelLightingResults[( ( hash >> 16 ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
+	if ( cached.mapGeneration == packet.view.mapGeneration && cached.epoch == epoch &&
 		cached.limit == limit && cached.origin == origin )
 	{
 		memcpy( rows, cached.rows, sizeof( cached.rows ) );
@@ -2368,7 +2382,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 	}
 	cached.mapGeneration = packet.view.mapGeneration;
-	cached.viewGeneration = packet.view.viewGeneration;
+	cached.epoch = epoch;
 	cached.limit = limit;
 	cached.origin = origin;
 	memcpy( cached.rows, rows, sizeof( cached.rows ) );
