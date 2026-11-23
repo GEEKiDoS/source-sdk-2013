@@ -12,6 +12,7 @@
 #include "bone_setup.h"
 #include "model_types.h"
 #include "gamerules.h"
+#include "view.h"
 #include "tier0/memdbgon.h"
 
 ConVar cl_fp_legs( "cl_fp_legs", "1", FCVAR_ARCHIVE, "Show your survivor's legs when looking down in first person." );
@@ -29,6 +30,15 @@ static ConVar cl_fp_legs_tilt_start( "cl_fp_legs_tilt_start", "30", 0, "View pit
 static ConVar cl_fp_legs_duck_offset( "cl_fp_legs_duck_offset", "8", 0, "cl_fp_legs_offset while crouched." );
 static ConVar cl_fp_legs_duck_lean( "cl_fp_legs_duck_lean", "45", 0, "cl_fp_legs_lean while crouched." );
 static ConVar cl_fp_legs_duck_tilt( "cl_fp_legs_duck_tilt", "35", 0, "cl_fp_legs_tilt while crouched." );
+static ConVar cl_fp_legs_near( "cl_fp_legs_near", "16", 0,
+	"Near clip distance (units along the view direction) for the first-person legs only, at shallow view pitch: hides "
+	"the jacket right under the camera, which the main view's near plane would otherwise slice into a sliver at the "
+	"bottom of the screen. Depth stays consistent with the world." );
+static ConVar cl_fp_legs_near_fade_start( "cl_fp_legs_near_fade_start", "35", 0,
+	"View pitch (degrees down) where cl_fp_legs_near starts fading out." );
+static ConVar cl_fp_legs_near_fade_end( "cl_fp_legs_near_fade_end", "45", 0,
+	"View pitch (degrees down) from which cl_fp_legs_near is off: looking further down the body is in full view, and "
+	"the clip would cut open the jacket." );
 static int s_nBoneNamesGeneration = 0;
 static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
 static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Neck1 ValveBiped.Bip01_L_Clavicle ValveBiped.Bip01_R_Clavicle", 0,
@@ -121,7 +131,22 @@ int C_TerrorFirstPersonBody::DrawModel( int flags )
 	if ( m_Role == ROLE_LEGS ? ( flags & STUDIO_SHADOWDEPTHTEXTURE ) != 0 : !( InFeatureShadowDraw( flags ) && ShouldCastShadowWhileHidden() ) )
 		return 0;
 	SyncFromPlayer();
-	return BaseClass::DrawModel( flags );
+	if ( m_Role != ROLE_LEGS )
+		return BaseClass::DrawModel( flags );
+	const Vector &forward = CurrentViewForward();
+	const float pitch = RAD2DEG( asinf( -forward.z ) );
+	const float start = cl_fp_legs_near_fade_start.GetFloat();
+	const float clipDistance = cl_fp_legs_near.GetFloat() * clamp( ( cl_fp_legs_near_fade_end.GetFloat() - pitch ) /
+		MAX( cl_fp_legs_near_fade_end.GetFloat() - start, 1.0f ), 0.0f, 1.0f );
+	if ( clipDistance <= 0.0f )
+		return BaseClass::DrawModel( flags );
+	// A clip plane rather than a per-draw projection: a different near z would change the legs' depth values.
+	float plane[4] = { forward.x, forward.y, forward.z, DotProduct( CurrentViewOrigin(), forward ) + clipDistance };
+	CMatRenderContextPtr renderContext( materials );
+	renderContext->PushCustomClipPlane( plane );
+	const int drawn = BaseClass::DrawModel( flags );
+	renderContext->PopCustomClipPlane();
+	return drawn;
 }
 
 bool C_TerrorFirstPersonBody::SetupBones( matrix3x4_t *bones, int maximum, int mask, float time )
