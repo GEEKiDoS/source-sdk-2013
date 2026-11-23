@@ -20,7 +20,11 @@ public:
 	void Open( ID3D12Device *device, IFileSystem *filesystem )
 	{
 		wchar_t dir[MAX_PATH];
-		const DWORD length = GetEnvironmentVariableW( L"LOCALAPPDATA", dir, ARRAYSIZE( dir ) );
+		// Give capture/QA runs a private cache without disturbing the user's library
+		// (even if the game or the harness is forcibly terminated).
+		DWORD length = GetEnvironmentVariableW( L"SOURCE_DX12_CACHE_HOME", dir, ARRAYSIZE( dir ) );
+		if ( !length )
+			length = GetEnvironmentVariableW( L"LOCALAPPDATA", dir, ARRAYSIZE( dir ) );
 		if ( !length || length >= ARRAYSIZE( dir ) - 96 )
 			return;
 		wcscat_s( dir, L"\\SourceDX12" );
