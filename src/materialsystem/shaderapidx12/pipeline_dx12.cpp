@@ -991,7 +991,11 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			}
 			else
 			{
-				const uint64_t identity = input.srvSources[0].ptr ^ ( input.srvSources[1].ptr * 1099511628211ull ) ^ input.srvSources[2].ptr;
+				// Highres world materials can share t0..t2 and differ at the
+				// lightmap or detail slots. Equality still checks the full table.
+				uint64_t identity = 0;
+				for ( unsigned i = 0; i < 16; ++i )
+					identity = ( identity ^ input.srvSources[i].ptr ) * 1099511628211ull;
 				slot = &m_SrvTables[Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & ( ARRAYSIZE( m_SrvTables ) - 1 )];
 				if ( sameTable( *slot ) )
 				{

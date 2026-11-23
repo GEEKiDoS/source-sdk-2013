@@ -410,7 +410,7 @@ private:
 		uint64_t fence = 0, heapGeneration = 0, descriptorEpoch = 0;
 	};
 
-	CachedSrvTable m_SrvTables[64];
+	CachedSrvTable m_SrvTables[512];
 	uint64_t m_nSrvDescriptorEpoch = 1;
 	CachedSrvTable m_LastSrvTable{};
 
