@@ -21,6 +21,8 @@
 #include "vstdlib/jobthread.h"
 #include "tier1/utllinkedlist.h"
 #include "tier1/utlmap.h"
+#include "bitvec.h"
+#include "worldsize.h"
 #include "gamebspfile.h"
 #include "bsp21_format.h"
 #include "datacache/imdlcache.h"
@@ -265,6 +267,7 @@ private:
 	bool IsEligibleShadowCaster( ClientRenderHandle_t handle );
 	void CollectShadowCaster( ClientRenderHandle_t handle, const ShadowCasterVolume_t &volume );
 	bool EnumerateShadowCasterLeaf( int leaf, const ShadowCasterVolume_t &volume );
+	void EnumerateSunCasterLeaves( const ShadowCasterVolume_t &volume );
 	void ValidateShadowCasters( const ShadowCasterVolume_t &volume );
 	void BeginShadowCasterQuery( const ShadowCasterVolume_t &volume );
 	void EmitShadowCasters( IShadowCasterSink &sink );
@@ -394,6 +397,7 @@ private:
 		uint64				m_ShadowCasterReportStamp;
 		int					m_UnlinkedShadowCasterIndex;
 		Vector				m_ShadowCasterMins, m_ShadowCasterMaxs;
+		int					m_ShadowStaticPolicyIndex;
 		bool				m_bShadowCasterBoundsValid;
 		bool				m_bUpdatingShadowCasterBounds;
 		bool				m_bShadowCasterBoundsDirty;
@@ -498,6 +502,10 @@ private:
 	// Reuse only spatial traversal: eligibility, live bounds and sink content
 	// are evaluated again, since materials/opacity need not relink a handle.
 	CUtlVector< ClientRenderHandle_t >	m_ShadowCasterCandidates;
+	// Map-wide sun probes always have the same BSP traversal order. Index
+	// occupancy by that order, not leaf number (which would reorder draws).
+	CUtlVector<int> m_SunLeaves, m_SunLeafRanks;
+	CLargeVarBitVec m_OccupiedSunRanks;
 	uint64								m_ShadowCasterGeneration, m_CachedShadowCasterGeneration;
 	int									m_CachedShadowCasterFrame;
 	ShadowCasterVolume_t				m_CachedShadowCasterVolume;
@@ -899,6 +907,9 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 	m_ShadowStaticPropPolicy.Purge();
 	m_ShadowCasterQueryStamp = 0;
 	m_ShadowCasterCandidates.Purge();
+	m_SunLeaves.Purge();
+	m_SunLeafRanks.Purge();
+	m_OccupiedSunRanks.Resize(0);
 	InvalidateShadowCasterQuery();
 	m_bRecordShadowCasterCandidates=false;
 }
@@ -1046,6 +1057,7 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	info.m_ShadowCasterTestStamp = 0;
 	info.m_ShadowCasterReportStamp = 0;
 	info.m_UnlinkedShadowCasterIndex = -1;
+	info.m_ShadowStaticPolicyIndex = -1;
 	info.m_bShadowCasterBoundsValid = false;
 	info.m_bUpdatingShadowCasterBounds = false;
 	info.m_bShadowCasterBoundsDirty = true;
@@ -1601,6 +1613,8 @@ void CClientLeafSystem::AddRenderableToLeaf( int leaf, ClientRenderHandle_t rend
 #endif // DUMP_RENDERABLE_LEAFS
 
 	m_RenderablesInLeaf.AddElementToBucket(leaf, renderable);
+	if ( m_SunLeafRanks.Count() && m_SunLeafRanks[leaf]>=0 )
+		m_OccupiedSunRanks.Set(m_SunLeafRanks[leaf]);
 	RemoveUnlinkedShadowCaster( renderable );
 
 	if ( !ShouldRenderableReceiveShadow( renderable, SHADOW_FLAGS_PROJECTED_TEXTURE_TYPE_MASK ) )
@@ -1802,12 +1816,11 @@ void CClientLeafSystem::UpdateUnlinkedShadowCaster( ClientRenderHandle_t handle 
 
 void CClientLeafSystem::UpdateShadowCasterBounds( ClientRenderHandle_t handle )
 {
-	// Ineligible renderables (including viewmodels) need no caster-bound work.
-	if ( !ShadowMapsDX12_Active() || !IsEligibleShadowCaster( handle ) )
-		return;
+	if ( !ShadowMapsDX12_Active() ) return;
 	if ( !m_Renderables[handle].m_bShadowCasterBoundsDirty &&
 		m_Renderables[handle].m_bShadowCasterBoundsValid )
 		return;
+	if ( !IsEligibleShadowCaster( handle ) ) return;
 
 	// Following actors can set up their parent's bones while obtaining world bounds.
 	// A nested RenderableChanged still marks the registration dirty, but must not recurse.
@@ -1867,7 +1880,15 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 	if ( ( flags & RENDER_FLAGS_STATIC_PROP ) && ShadowMapsDX12_MapState().featureMap )
 	{
 		ICollideable *pCollideable = pUnknown ? pUnknown->GetCollideable() : NULL;
-		int policy = m_ShadowStaticPropPolicy.Find( pCollideable );
+		// The admitted sprp table is read-only for the level. Keep its node
+		// index with the registration, but still verify the live identity.
+		int policy = m_Renderables[handle].m_ShadowStaticPolicyIndex;
+		if ( policy < 0 || !m_ShadowStaticPropPolicy.IsValidIndex( policy ) ||
+			m_ShadowStaticPropPolicy.Key( policy ) != pCollideable )
+		{
+			policy = m_ShadowStaticPropPolicy.Find( pCollideable );
+			m_Renderables[handle].m_ShadowStaticPolicyIndex = policy;
+		}
 		if ( policy == m_ShadowStaticPropPolicy.InvalidIndex() )
 		{
 			ShadowMapsDX12_RejectMap( SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster identity is not in the admitted sprp policy" );
@@ -1977,6 +1998,53 @@ void CClientLeafSystem::CollectShadowCaster( ClientRenderHandle_t handle, const 
 	m_ShadowCasters[group].AddToTail( handle );
 }
 
+void CClientLeafSystem::EnumerateSunCasterLeaves( const ShadowCasterVolume_t &volume )
+{
+	if ( !m_SunLeafRanks.Count() )
+	{
+		class CLeafOrder : public ISpatialLeafEnumerator
+		{
+		public:
+			CLeafOrder( CUtlVector<int> &leaves ) : m_Leaves(leaves) {}
+			virtual bool EnumerateLeaf( int leaf, intp ) { m_Leaves.AddToTail(leaf); return true; }
+		private:
+			CUtlVector<int> &m_Leaves;
+		} order(m_SunLeaves);
+		engine->GetBSPTreeQuery()->EnumerateLeavesInBox(volume.m_vecMins,volume.m_vecMaxs,&order,0);
+		m_SunLeafRanks.SetCount(m_Leaf.Count());
+		m_SunLeafRanks.FillWithValue(-1);
+		m_OccupiedSunRanks.Resize(m_SunLeaves.Count(),true);
+		for ( int i=0;i<m_SunLeaves.Count();++i )
+		{
+			int leaf=m_SunLeaves[i];
+			// BSPs may share a solid leaf. Keep every occurrence of such a
+			// leaf live rather than losing its first-visit order after a relink.
+			int previous=m_SunLeafRanks[leaf];
+			if ( previous!=-1 )
+			{
+				if ( previous>=0 ) m_OccupiedSunRanks.Set(previous);
+				m_OccupiedSunRanks.Set(i);
+				m_SunLeafRanks[leaf]=-2;
+				continue;
+			}
+			m_SunLeafRanks[leaf]=i;
+			if ( m_RenderablesInLeaf.FirstElement(leaf)!=m_RenderablesInLeaf.InvalidIndex() )
+				m_OccupiedSunRanks.Set(i);
+		}
+	}
+	// Adds set the bit immediately; removals can only leave a false positive.
+	// Read the next bit after callbacks so a relink into a later leaf is visible.
+	for ( int i=m_OccupiedSunRanks.FindNextSetBit(0); i>=0; i=m_OccupiedSunRanks.FindNextSetBit(i+1) )
+	{
+		int leaf=m_SunLeaves[i];
+		if ( m_RenderablesInLeaf.FirstElement(leaf)==m_RenderablesInLeaf.InvalidIndex() )
+		{
+			if ( m_SunLeafRanks[leaf]>=0 ) m_OccupiedSunRanks.Clear(i);
+		}
+		else EnumerateShadowCasterLeaf(leaf,volume);
+	}
+}
+
 bool CClientLeafSystem::EnumerateShadowCasterLeaf( int leaf, const ShadowCasterVolume_t &volume )
 {
 	for ( unsigned int index = m_RenderablesInLeaf.FirstElement( leaf );
@@ -2050,8 +2118,15 @@ void CClientLeafSystem::EnumerateShadowCasters( const ShadowCasterVolume_t &volu
 		}
 		{
 			VPROF_BUDGET( "EnumerateShadowCasters.SpatialQuery", "Shadowmaps" );
-			CShadowCasterLeafEnumerator enumerator( *this, volume );
-			engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
+			const Vector worldMins(MIN_COORD_FLOAT,MIN_COORD_FLOAT,MIN_COORD_FLOAT);
+			const Vector worldMaxs(MAX_COORD_FLOAT,MAX_COORD_FLOAT,MAX_COORD_FLOAT);
+			if ( volume.m_vecMins==worldMins && volume.m_vecMaxs==worldMaxs )
+				EnumerateSunCasterLeaves(volume);
+			else
+			{
+				CShadowCasterLeafEnumerator enumerator( *this, volume );
+				engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
+			}
 		}
 
 		// Callers flush ordinary registrations before querying, but the ten-iteration

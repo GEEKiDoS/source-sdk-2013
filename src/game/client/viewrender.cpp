@@ -231,7 +231,8 @@ static ConVar r_drawopaquerenderables( "r_drawopaquerenderables", "1",
 	FCVAR_CHEAT
 #endif
  );
-static ConVar r_threaded_renderables( "r_threaded_renderables", "0" );
+static ConVar r_threaded_renderables( "r_threaded_renderables", "1", 0,
+	"Use client workers to cull large shadow draws and project caster footprints." );
 #if defined( L4D2 )
 // The local flashlight starts a few units from the eye (r_flashlightoffset*: ~7 high, ~19 low), so seen from that eye
 // any caster's flashlight shadow falls almost exactly behind the caster itself: the visible sliver is the light-to-eye
@@ -5155,12 +5156,6 @@ ConVar r_drawopaquesbucket_stats( "r_drawopaquesbucket_stats", "0", FCVAR_CHEAT,
 #endif
 
 
-static void SetupBonesOnBaseAnimating( C_BaseAnimating *&pBaseAnimating )
-{
-	pBaseAnimating->SetupBones( NULL, -1, -1, gpGlobals->curtime );
-}
-
-
 static void DrawOpaqueRenderables_DrawBrushModels( CClientRenderablesList::CEntry *pEntitiesBegin, CClientRenderablesList::CEntry *pEntitiesEnd, ERenderDepthMode DepthMode )
 {
 	for( CClientRenderablesList::CEntry *itEntity = pEntitiesBegin; itEntity < pEntitiesEnd; ++ itEntity )
@@ -5333,9 +5328,8 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode, bool b
 	for ( int bucket = 0; bucket < RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS; ++ bucket )
 		numOpaqueEnts += m_pRenderablesList->m_RenderGroupCounts[ RENDER_GROUP_OPAQUE_ENTITY_HUGE + 2 * bucket ];
 
-	CUtlVector< C_BaseAnimating * > arrBoneSetupNpcsLast( (C_BaseAnimating **)_alloca( numOpaqueEnts * sizeof( C_BaseAnimating * ) ), numOpaqueEnts, numOpaqueEnts );
 	CUtlVector< CClientRenderablesList::CEntry > arrRenderEntsNpcsFirst( (CClientRenderablesList::CEntry *)_alloca( numOpaqueEnts * sizeof( CClientRenderablesList::CEntry ) ), numOpaqueEnts, numOpaqueEnts );
-	int numNpcs = 0, numNonNpcsAnimating = 0;
+	int numNpcs = 0;
 
 	for ( int bucket = 0; bucket < RENDER_GROUP_CFG_NUM_OPAQUE_ENT_BUCKETS; ++ bucket )
 	{
@@ -5345,29 +5339,9 @@ void CRendering3dView::DrawOpaqueRenderables( ERenderDepthMode DepthMode, bool b
 			*itEntity = pEntitiesBegin; itEntity < pEntitiesEnd; ++ itEntity )
 		{
 			C_BaseEntity *pEntity = itEntity->m_pRenderable ? itEntity->m_pRenderable->GetIClientUnknown()->GetBaseEntity() : NULL;
-			if ( pEntity )
-			{
-				if ( pEntity->IsNPC() )
-				{
-					C_BaseAnimating *pba = assert_cast<C_BaseAnimating *>( pEntity );
-					arrRenderEntsNpcsFirst[ numNpcs ++ ] = *itEntity;
-					arrBoneSetupNpcsLast[ numOpaqueEnts - numNpcs ] = pba;
-					continue;
-				}
-				else if ( pEntity->GetBaseAnimating() )
-				{
-					C_BaseAnimating *pba = assert_cast<C_BaseAnimating *>( pEntity );
-					arrBoneSetupNpcsLast[ numNonNpcsAnimating ++ ] = pba;
-					// fall through
-				}
-			}
+			if ( pEntity && pEntity->IsNPC() )
+				arrRenderEntsNpcsFirst[ numNpcs++ ] = *itEntity;
 		}
-	}
-
-	if ( 0 && r_threaded_renderables.GetBool() )
-	{
-		ParallelProcess( "BoneSetupNpcsLast", arrBoneSetupNpcsLast.Base() + numOpaqueEnts - numNpcs, numNpcs, &SetupBonesOnBaseAnimating );
-		ParallelProcess( "BoneSetupNpcsLast NonNPCs", arrBoneSetupNpcsLast.Base(), numNonNpcsAnimating, &SetupBonesOnBaseAnimating );
 	}
 
 
@@ -6641,19 +6615,68 @@ void ShadowMapDepthFootprint_t::AddQuad( const Vector v[4] )
 	AddTriangle(v[0],v[1],v[2]);
 	AddTriangle(v[0],v[2],v[3]);
 }
-static void AddShadowOverlayCasterBounds( ShadowMapDepthFootprint_t &footprint, const ShadowMapSceneCaster_t &caster )
+struct ShadowDrawCandidate_t
 {
-	if ( footprint.full ) return;
+	int index; // -1 when rejected
+	ShadowMapDepthFootprint_t bounds;
+};
+
+struct ShadowDrawBatch_t
+{
+	const ShadowMapDepthScene_t *scene;
+	const ShadowMapInfluenceVolume_t *volume;
+	ShadowDrawCandidate_t *output;
+	int first, end;
+};
+
+static void ClassifyShadowDrawBatch( ShadowDrawBatch_t &batch )
+{
+	// Only read the receiver's frozen bounds/layer snapshot. In particular,
+	// no virtual renderable calls, MDL cache locks, render context or shared
+	// append counters on workers. Each job owns a disjoint output interval.
+	const ShadowMapDepthScene_t &s = *batch.scene;
+	for ( int i = batch.first; i < batch.end; ++i )
+	{
+		int index = s.candidateIndices ? (*s.candidateIndices)[s.candidateFirst+i] : i;
+		const ShadowMapSceneCaster_t &caster = (*s.casters)[index];
+		ShadowDrawCandidate_t &out = batch.output[i];
+		out.index = -1;
+		if ( caster.immutable ? !s.drawStatic : !s.drawDynamic ) continue;
+		if ( !caster.immutable &&
+			( (s.dynamicLayer==SHADOWMAP_DYNAMIC_RIGID && !caster.rigid) ||
+			  (s.dynamicLayer==SHADOWMAP_DYNAMIC_OVERLAY && caster.rigid) ) ) continue;
+		if ( !ShadowMapScene_VolumeIntersectsBox(*batch.volume,caster.mins,caster.maxs) ) continue;
+		out.index = index;
+		if ( s.overlayFootprint )
+		{
+			out.bounds.Reset(s.overlayFootprint->matrix,s.overlayFootprint->size);
+			out.bounds.AddBounds(caster.mins,caster.maxs);
+		}
+	}
+}
+
+static bool BeginShadowOverlayCaster( ShadowMapDepthFootprint_t &footprint, const ShadowMapSceneCaster_t &caster,
+	const ShadowMapDepthFootprint_t &projected )
+{
+	if ( footprint.full ) return false;
 	IClientUnknown *unknown=caster.renderable->GetIClientUnknown();
 	C_BaseEntity *entity=unknown ? unknown->GetBaseEntity() : NULL;
 	// Ropes report the generated mesh through their deferred draw, not the node
 	// AABB (which does not include spline overshoot or view-dependent width).
-	if ( entity && dynamic_cast<C_RopeKeyframe *>(entity) ) return;
-	if ( !caster.staticProp && !entity ) { footprint.SetFull(SHADOWMAP_FOOTPRINT_CUSTOM_DRAW); return; }
-	footprint.AddBounds(caster.mins,caster.maxs);
+	if ( entity && dynamic_cast<C_RopeKeyframe *>(entity) ) return false;
+	if ( !caster.staticProp && !entity ) { footprint.SetFull(SHADOWMAP_FOOTPRINT_CUSTOM_DRAW); return false; }
+	if ( projected.full ) { footprint.SetFull(projected.reasons); return false; }
+	footprint.x0=MIN(footprint.x0,projected.x0); footprint.x1=MAX(footprint.x1,projected.x1);
+	footprint.y0=MIN(footprint.y0,projected.y0); footprint.y1=MAX(footprint.y1,projected.y1);
+	return true;
+}
+
+static void AddChangedShadowBounds( ShadowMapDepthFootprint_t &footprint, const ShadowMapSceneCaster_t &caster )
+{
+	if ( footprint.full ) return;
 	Vector mins,maxs;
 	caster.renderable->GetRenderBoundsWorldspace(mins,maxs);
-	footprint.AddBounds(mins,maxs);
+	if ( mins != caster.mins || maxs != caster.maxs ) footprint.AddBounds(mins,maxs);
 }
 
 // The ordinary flashlight view above retains its engine textures and camera
@@ -6773,20 +6796,31 @@ public:
 			RopeManager()->ResetRenderCache();
 			g_pParticleSystemMgr->ResetRenderCache();
 			int candidateCount = s.candidateIndices ? s.candidateCount : s.casters->Count();
+			m_Candidates.SetCount(candidateCount);
+			const int batchSize = 64;
+			int batches = (candidateCount + batchSize - 1) / batchSize;
+			m_Batches.SetCount(batches);
+			for ( int b = 0; b < batches; ++b )
+			{
+				ShadowDrawBatch_t &job = m_Batches[b];
+				job.scene=&s; job.volume=&volume; job.output=m_Candidates.Base();
+				job.first=b*batchSize; job.end=MIN(job.first+batchSize,candidateCount);
+			}
+			if ( batches >= 4 && r_threaded_renderables.GetBool() )
+				ParallelProcess("ShadowDraw.Classify",m_Batches.Base(),batches,&ClassifyShadowDrawBatch,NULL,NULL,3);
+			else
+				for ( int b=0;b<batches;++b ) ClassifyShadowDrawBatch(m_Batches[b]);
+			// Workers have joined. Keep original index order, batching, and all
+			// entity/rope/particle/material callbacks on the rendering caller.
 			for ( int i = 0; i < candidateCount; ++i )
 			{
-				int casterIndex = s.candidateIndices ? (*s.candidateIndices)[s.candidateFirst+i] : i;
+				int casterIndex = m_Candidates[i].index;
+				if ( casterIndex < 0 ) continue;
 				const ShadowMapSceneCaster_t &caster = (*s.casters)[casterIndex];
-				if ( caster.immutable ? !s.drawStatic : !s.drawDynamic ) continue;
-				if ( !caster.immutable &&
-					( (s.dynamicLayer==SHADOWMAP_DYNAMIC_RIGID && !caster.rigid) ||
-					  (s.dynamicLayer==SHADOWMAP_DYNAMIC_OVERLAY && caster.rigid) ) ) continue;
-				if ( !ShadowMapScene_VolumeIntersectsBox(volume,caster.mins,caster.maxs) ) continue;
 				if ( !caster.immutable && s.overlayCasterDraws ) ++*s.overlayCasterDraws;
-				if ( s.overlayFootprint )
-				{
-					AddShadowOverlayCasterBounds(*s.overlayFootprint,caster);
-				}
+				const bool sampleBounds = s.overlayFootprint &&
+					BeginShadowOverlayCaster(*s.overlayFootprint,caster,m_Candidates[i].bounds);
+				if ( sampleBounds ) AddChangedShadowBounds(*s.overlayFootprint,caster);
 				if ( caster.staticProp )
 				{
 					const bool skyExempt = s.skyClip && caster.skyRegion >= 0 && caster.skyRegion == s.skyRegion;
@@ -6804,7 +6838,7 @@ public:
 					if ( s.skyClip ) s.lighting->SetShadowCasterSkyClipExempt( modelCaster && caster.skyRegion >= 0 && caster.skyRegion == s.skyRegion );
 					DrawOpaqueRenderable( caster.renderable, modelinfo->IsTranslucentTwoPass(caster.renderable->GetModel()), DEPTH_MODE_SHADOW );
 					// SetupBones/custom draw callbacks can refresh bounds during drawing.
-					if ( s.overlayFootprint ) AddShadowOverlayCasterBounds(*s.overlayFootprint,caster);
+					if ( sampleBounds ) AddChangedShadowBounds(*s.overlayFootprint,caster);
 				}
 			}
 			drawStaticBatch( statics, count, false );
@@ -6849,6 +6883,8 @@ public:
 		}
 	}
 private:
+	CUtlVector<ShadowDrawBatch_t> m_Batches;
+	CUtlVector<ShadowDrawCandidate_t> m_Candidates;
 	struct WorldScratch_t { IWorldRenderList *list; ClientWorldListInfo_t *info; };
 	CUtlVector<WorldScratch_t> m_WorldScratch;
 	void CopyViewSetup( const CViewSetup &viewSetup )
