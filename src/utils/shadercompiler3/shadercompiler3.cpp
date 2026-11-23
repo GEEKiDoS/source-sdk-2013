@@ -698,8 +698,8 @@ public:
 	TreeIncludeHandler( const SourceTree &tree, IDxcUtils *utils ) : m_Tree( tree ), m_Utils( utils ) {}
 	HRESULT STDMETHODCALLTYPE LoadSource( LPCWSTR pFilename, IDxcBlob **ppIncludeSource ) override
 	{
-		std::wstring wide( pFilename );
-		std::string name( wide.begin(), wide.end() );
+		std::string name;
+		for ( const wchar_t *c = pFilename; *c; ++c ) name.push_back( char( *c ) );
 		const auto *file = m_Tree.Find( name );
 		if ( !file ) { *ppIncludeSource = nullptr; return E_FAIL; }
 		ComPtr<IDxcBlobEncoding> blob;
@@ -895,7 +895,7 @@ public:
 					for ( size_t i; ( i = next++ ) < tasks.size(); )
 					{
 						ShaderWork &shader = work[tasks[i].first];
-						CompileCombo( utils.Get(), compiler.Get(), &includes, shader, shader.combos[tasks[i].second] );
+						CompileCombo( compiler.Get(), &includes, shader, shader.combos[tasks[i].second] );
 						const size_t finished = ++done;
 						if ( finished % 1000 == 0 || finished == tasks.size() )
 						{
@@ -917,7 +917,7 @@ public:
 	}
 
 private:
-	void CompileCombo( IDxcUtils *utils, IDxcCompiler3 *compiler, TreeIncludeHandler *includes, ShaderWork &shader, ShaderWork::Combo &combo )
+	void CompileCombo( IDxcCompiler3 *compiler, TreeIncludeHandler *includes, ShaderWork &shader, ShaderWork::Combo &combo )
 	{
 		{
 			std::lock_guard<std::mutex> lock( m_Mutex );

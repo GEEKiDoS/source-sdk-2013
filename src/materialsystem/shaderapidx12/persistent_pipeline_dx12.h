@@ -70,7 +70,7 @@ public:
 					if ( size > 0 && size <= kMaxBytes && !_fseeki64( file, start, SEEK_SET ) )
 					{
 						m_Backing.resize( size );
-						if ( fread( m_Backing.data(), 1, size, file ) == size && SUCCEEDED( device1->CreatePipelineLibrary( m_Backing.data(), size, IID_PPV_ARGS( &m_Library ) ) ) )
+						if ( fread( m_Backing.data(), 1, m_Backing.size(), file ) == m_Backing.size() && SUCCEEDED( device1->CreatePipelineLibrary( m_Backing.data(), m_Backing.size(), IID_PPV_ARGS( &m_Library ) ) ) )
 							m_Keys.insert( keys.begin(), keys.end() );
 					}
 				}

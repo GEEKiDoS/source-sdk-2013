@@ -60,6 +60,9 @@ $Configuration
 
 		$DisableSpecificWarnings	"$BASE;4355" [$AT_LEAST_VS2015]
 
+		// warning C4819: the file contains a character that cannot be represented in the current code page
+		$DisableSpecificWarnings	"$BASE;4819"
+
 		// Started appearning now since compiler updates... We have warnings as errors on Win32, so disable this there.
 		$DisableSpecificWarnings	"$BASE;4101" [$WIN32 && $AT_LEAST_VS2022] // 'Start': unreferenced local variable
 

@@ -5355,7 +5355,9 @@ bool CGameMovement::CanUnDuckJump( trace_t &trace )
 void CGameMovement::Duck( void )
 {
 	int buttonsChanged	= ( mv->m_nOldButtons ^ mv->m_nButtons );	// These buttons have changed this frame
+#if !defined( CLIENT_DLL ) || !defined( L4D2 )
 	int buttonsPressed	=  buttonsChanged & mv->m_nButtons;			// The changed ones still down are "pressed"
+#endif
 	int buttonsReleased	=  buttonsChanged & mv->m_nOldButtons;		// The changed ones which were previously down are "released"
 
 	// Check to see if we are in the air.

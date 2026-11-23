@@ -793,7 +793,7 @@ void validateScreenSpaceResources(ID3D12ShaderReflection *reflection, const D3D1
 		} else if (b.Type == D3D_SIT_TEXTURE && b.BindPoint < 8 && textureNames[b.BindPoint] && !strcmp(b.Name, textureNames[b.BindPoint])) {
 			const bool multisampled = b.BindPoint == 3;
 			const bool colour = b.BindPoint == 5;
-			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && ((b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == (colour ? D3D_SIF_TEXTURE_COMPONENTS : 0)) &&
+			valid = valid && b.ReturnType == D3D_RETURN_TYPE_FLOAT && ((b.uFlags & D3D_SIF_TEXTURE_COMPONENTS) == (colour ? D3D_SIF_TEXTURE_COMPONENTS : 0u)) &&
 				b.Dimension == (multisampled ? D3D_SRV_DIMENSION_TEXTURE2DMS : D3D_SRV_DIMENSION_TEXTURE2D);
 			slot = b.BindPoint;
 		} else valid = false;

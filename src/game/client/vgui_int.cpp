@@ -20,7 +20,7 @@
 #if defined( L4D2 )
 #include <vgui/ILocalize.h>
 #if defined( _WIN32 ) && defined( PLATFORM_64BITS )
-#include <windows.h>
+#include "winlite.h"
 #endif
 #endif // L4D2
 #include "tier0/vprof.h"
