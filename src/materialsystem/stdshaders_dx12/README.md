@@ -135,8 +135,6 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   remained. A separate `mat_queue_mode 0` smoke run rendered after a mode change and a transition to `c5m3_cemetery`.
   These results cover this demo and settings, not unseen combinations or every campaign.
 
-  ![Cold map load, showing the localized Compiling Shaders status at 101 of 355](pso-precache-loading.jpg)
-
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
 - Eligible native mono main views shade the 3D sky after opaque geometry and motion vectors, before GTAO/SSR.
