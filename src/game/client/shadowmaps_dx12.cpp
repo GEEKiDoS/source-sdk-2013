@@ -328,6 +328,10 @@ struct CasterSkyRegion_t
 	CasterSkyRegion_t() : region(-1), mapCounter(0) {}
 };
 CUtlMap<IClientRenderable *, CasterSkyRegion_t, int> g_CasterSkyRegions( DefLessFunc(IClientRenderable *) );
+// Unregistered props still use the pointer map. Its indices survive rotations;
+// validate the key on every hit since both handles and nodes recycle.
+struct SkyRegionSlot_t { SkyRegionSlot_t() : index(-1) {} int index; };
+CUtlVector<SkyRegionSlot_t> g_SkyRegionSlots;
 CUtlMap<int, int, int> g_DetailLeafSkyRegions( DefLessFunc(int) );
 uint32 g_StaticPropModelGeneration = 1;
 bool g_StaticPropRegistrationComplete = false;
@@ -667,6 +671,7 @@ void ResetMapState()
 	memset(&g_State.manifest,0,sizeof(g_State.manifest)); g_State.rshdBytes.RemoveAll();
 	g_BakedBeams=NULL; g_BakedBeamCount=0; g_SpotlightBeamBytes.RemoveAll(); g_BakedLightToLocal.RemoveAll();
 	g_CameraPvs.Clear(); g_SunSky.Clear(); g_CasterSkyRegions.Purge(); g_DetailLeafSkyRegions.Purge(); g_FreeSlotSeconds.Purge();
+	g_SkyRegionSlots.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 	g_RequestedResLevel=-1;
 }
@@ -886,11 +891,29 @@ int SunSkyRegionForPoint( const Vector &point )
 	const SunSkyLeaf_t &leaf=g_SunSky.leaves[-1-node];
 	return leaf.solid ? -1 : g_SunSky.Region(leaf.area);
 }
+int CasterSkyIndex( IClientRenderable *renderable, bool create )
+{
+	const ClientRenderHandle_t handle=renderable->RenderHandle();
+	const bool registered=handle!=INVALID_CLIENT_RENDER_HANDLE && handle!=DETAIL_PROP_RENDER_HANDLE;
+	if ( registered && handle<g_SkyRegionSlots.Count() )
+	{
+		int i=g_SkyRegionSlots[handle].index;
+		if ( i>=0 && g_CasterSkyRegions.IsValidIndex(i) && g_CasterSkyRegions.Key(i)==renderable ) return i;
+	}
+	int i=g_CasterSkyRegions.Find(renderable);
+	if ( create && i==g_CasterSkyRegions.InvalidIndex() ) i=g_CasterSkyRegions.Insert(renderable);
+	if ( registered && i!=g_CasterSkyRegions.InvalidIndex() )
+	{
+		if ( handle>=g_SkyRegionSlots.Count() ) g_SkyRegionSlots.SetCountNonDestructively(handle+1);
+		g_SkyRegionSlots[handle].index=i;
+	}
+	return i;
+}
+
 int CacheCasterSkyRegion( IClientRenderable *renderable, const Vector &origin )
 {
 	if ( !renderable || !origin.IsValid() ) return -1;
-	int index = g_CasterSkyRegions.Find( renderable );
-	if ( index == g_CasterSkyRegions.InvalidIndex() ) index = g_CasterSkyRegions.Insert( renderable );
+	int index = CasterSkyIndex(renderable,true);
 	CasterSkyRegion_t &cached = g_CasterSkyRegions[index];
 	if ( cached.mapCounter != g_MapCounter || cached.origin != origin )
 	{
@@ -1124,6 +1147,7 @@ public:
 	CUtlVector<ShadowLightRank_t> lightRanks;
 	CUtlVector<uint32> casterRanges;
 	CUtlVector<int> casterIndices;
+	CUtlVector<int> sunDepthOutliers;
 	int drawCandidateFirst, drawCandidateCount;
 	CUtlVector<CHandle<C_Beam>> suppressedBeams; // §9 paired beams this main bracket replaces with the volume (empty for other kinds)
 	SunCascadeFit_t cascadeFits[4];
@@ -1475,6 +1499,31 @@ template<class T> void AppendRigidKey( CUtlVector<unsigned char> &bytes, const T
 	int first=bytes.AddMultipleToTail(sizeof(key));
 	memcpy(bytes.Base()+first,&key,sizeof(key));
 }
+enum RigidDrawClass_t { RIGID_OTHER, RIGID_STUDIO, RIGID_PHYSICS, RIGID_BRUSH };
+
+RigidDrawClass_t RigidDrawClass( const std::type_info &type )
+{
+	// MSVC compares RTTI names for equality. Class identity, unlike draw
+	// state, is constant for the lifetime of a type descriptor in client.dll.
+	struct Entry { const std::type_info *type; RigidDrawClass_t result; };
+	static Entry entries[128];
+	Entry &entry=entries[(reinterpret_cast<uintp>(&type)>>4)%ARRAYSIZE(entries)];
+	if ( entry.type!=&type )
+	{
+		entry.type=&type;
+		if ( type==typeid(C_BaseAnimating) || type==typeid(C_BreakableProp) ||
+			type==typeid(C_DynamicProp) || type==typeid(CShadowMapFixtureRenderable) ) entry.result=RIGID_STUDIO;
+		else if ( type==typeid(C_PhysicsProp) ) entry.result=RIGID_PHYSICS;
+		else if ( type==typeid(C_BaseEntity) || type==typeid(C_BaseDoor)
+#if defined( L4D2 )
+			|| type==typeid(C_FuncBrush)
+#endif
+			) entry.result=RIGID_BRUSH;
+		else entry.result=RIGID_OTHER;
+	}
+	return entry.result;
+}
+
 bool BuildRigidCasterContent( CUtlVector<unsigned char> &content, const ShadowMapSceneCaster_t &caster )
 {
 	IClientRenderable *renderable=caster.renderable;
@@ -1495,16 +1544,15 @@ bool BuildRigidCasterContent( CUtlVector<unsigned char> &content, const ShadowMa
 	if ( entityHandle.Get()!=entity ) return false;
 	static ConVarRef collisionWireframe("vcollide_wireframe"), materialWireframe("mat_wireframe"), renderBoxes("r_drawrenderboxes");
 	if ( collisionWireframe.GetBool() || materialWireframe.GetInt() || renderBoxes.GetInt() ) return false;
-	const std::type_info &type=typeid(*entity);
+	const RigidDrawClass_t drawClass=RigidDrawClass(typeid(*entity));
+	if ( drawClass==RIGID_OTHER ) return false;
 	int modelType=modelinfo->GetModelType(model);
 	C_BaseAnimating *animating=NULL;
 	if ( modelType==mod_studio )
 	{
 		// Exact runtime types, never an inherited opt-in: derived flex/ragdoll,
 		// custom DrawModel/SetupBones/OnInternalDrawModel implementations fail.
-		if ( type!=typeid(C_BaseAnimating) && type!=typeid(C_BreakableProp) &&
-			type!=typeid(C_DynamicProp) && type!=typeid(C_PhysicsProp) &&
-			type!=typeid(CShadowMapFixtureRenderable) ) return false;
+		if ( drawClass!=RIGID_STUDIO && drawClass!=RIGID_PHYSICS ) return false;
 		animating=static_cast<C_BaseAnimating *>(entity);
 		CStudioHdr *drawStudio=animating->GetModelPtr();
 		if ( !drawStudio || !drawStudio->SequencesAvailable() || animating->IsDynamicModelLoading() ) return false;
@@ -1516,14 +1564,10 @@ bool BuildRigidCasterContent( CUtlVector<unsigned char> &content, const ShadowMa
 			animating->IsRagdoll() || animating->IsAboutToRagdoll() || animating->GetModelScale()!=1.0f ) return false;
 		// This one audited OnInternalDrawModel override changes lighting only,
 		// except its sleep transition can reject the draw; never certify it then.
-		if ( type==typeid(C_PhysicsProp) && !static_cast<C_PhysicsProp *>(entity)->CanReuseRigidShadowDepth() ) return false;
+		if ( drawClass==RIGID_PHYSICS && !static_cast<C_PhysicsProp *>(entity)->CanReuseRigidShadowDepth() ) return false;
 	}
 	// C_FuncBrush (L4D2) adds only physics-shadow updates to C_BaseEntity; its brush draw is the base draw.
-	else if ( modelType!=mod_brush || (type!=typeid(C_BaseEntity) && type!=typeid(C_BaseDoor)
-#if defined( L4D2 )
-		&& type!=typeid(C_FuncBrush)
-#endif
-		) )
+	else if ( modelType!=mod_brush || drawClass!=RIGID_BRUSH )
 		return false;
 
 	ShadowRigidEntityKey_t key;
@@ -3026,6 +3070,17 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		}
 		return true;
 	}
+	// Every cascade starts at the static/world box. A caster contained by
+	// that box cannot enlarge it, irrespective of the cascade square.
+	CUtlVector<int> &outliers=data.sunDepthOutliers;
+	outliers.RemoveAll();
+	for ( int c=0;c<data.casters.Count();++c )
+	{
+		const ShadowMapSceneCaster_t &caster=data.casters[c];
+		if ( !caster.immutable && !(caster.mins.x>=staticMins.x && caster.mins.y>=staticMins.y && caster.mins.z>=staticMins.z &&
+			caster.maxs.x<=staticMaxs.x && caster.maxs.y<=staticMaxs.y && caster.maxs.z<=staticMaxs.z) )
+			outliers.AddToTail(c);
+	}
 	for ( int i=0;i<4;++i ) constants.cCascadeSplits[i]=splits[i+1];
 	for ( int i=0;i<3;++i ) constants.cCascadeBlend[i]=blend[i];
 	if ( !CreateSunTarget(cascade.clean,kCascadeTargetNames[cascadeOwner][0],atlasSize) || !CreateSunTarget(cascade.work,kCascadeTargetNames[cascadeOwner][1],atlasSize) )
@@ -3059,10 +3114,10 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 		auto depthBounds=[&]( const Vector &center, Vector &mins, Vector &maxs )
 		{
 			mins=staticMins; maxs=staticMaxs;
-			for ( int c=0;c<data.casters.Count();++c )
+			for ( int c=0;c<outliers.Count();++c )
 			{
-				const ShadowMapSceneCaster_t &caster=data.casters[c];
-				if ( !caster.immutable && SunBoxOverlapsSquare(caster,center,halfExtent,basisX,basisY) ) AddBounds(mins,maxs,caster.mins,caster.maxs);
+				const ShadowMapSceneCaster_t &caster=data.casters[outliers[c]];
+				if ( SunBoxOverlapsSquare(caster,center,halfExtent,basisX,basisY) ) AddBounds(mins,maxs,caster.mins,caster.maxs);
 			}
 			// The eye sphere's own box, not the slice corners inside it: the depth range must not depend on the view direction either.
 			const Vector sphereExtent(sphereRadius,sphereRadius,sphereRadius);
@@ -4728,7 +4783,7 @@ void ShadowMapsDX12_InvalidateStatic()
 int ShadowMapsDX12_CasterSkyRegion( IClientRenderable *renderable )
 {
 	if ( !renderable ) return -1;
-	int index = g_CasterSkyRegions.Find( renderable );
+	int index = CasterSkyIndex(renderable,false);
 	if ( index != g_CasterSkyRegions.InvalidIndex() && g_CasterSkyRegions[index].mapCounter == g_MapCounter )
 		return g_CasterSkyRegions[index].region;
 	IClientUnknown *unknown = renderable->GetIClientUnknown();
