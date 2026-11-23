@@ -51,10 +51,10 @@ void ShadowMapScene_BuildOrtho( float halfWidth, float halfHeight, float zNear, 
 
 //-----------------------------------------------------------------------------
 // Cascades (plan step 6): n > 0, f = min(viewFar, r_csm_distance). s0 = n, s4 = f,
-// si = 0.6*n*pow(f/n, i/4) + 0.4*(n + (f-n)*i/4); interior wi = 0.05*min(si-s(i-1), s(i+1)-si).
+// si = w*n*pow(f/n, i/4) + (1-w)*(n + (f-n)*i/4) for log weight w; interior wi = 0.05*min(si-s(i-1), s(i+1)-si).
 // Returns false when f <= n (CSM disabled: static sun visibility only).
 //-----------------------------------------------------------------------------
-bool ShadowMapScene_CascadeSplits( float n, float f, float splits[DX12_SHADOW_CSM_CASCADES + 1], float blend[DX12_SHADOW_CSM_CASCADES - 1] );
+bool ShadowMapScene_CascadeSplits( float n, float f, float logWeight, float splits[DX12_SHADOW_CSM_CASCADES + 1], float blend[DX12_SHADOW_CSM_CASCADES - 1] );
 
 // Stable light-space basis for a sun travel direction (basisX/basisY orthonormal, independent of the camera).
 void ShadowMapScene_SunBasis( const Vector &travel, Vector &basisX, Vector &basisY );
