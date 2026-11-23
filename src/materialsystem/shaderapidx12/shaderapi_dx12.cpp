@@ -5787,6 +5787,8 @@ void CShaderAPIDX12::BeginFrame()
 	m_nFrameDrawCount = 0;
 	m_nFrameFlushCount = 0;
 	m_nFrameStartFence = m_pDevice ? m_pDevice->NextFenceValue() : 0;
+	static ConVarRef queueMode( "mat_queue_mode" );
+	m_Pipeline.DeferNativeCbvs( queueMode.GetInt() == 0 );
 	m_bDepthPrepassResolved = false;
 	m_nFrameSyncCount = 0;
 	m_bFrameActive = true;
