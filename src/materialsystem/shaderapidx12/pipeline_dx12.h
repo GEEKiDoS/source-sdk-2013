@@ -11,7 +11,7 @@
 #include "resources_dx12.h"
 #include "bindings_dx12.h"
 #include "command_recorder_dx12.h"
-#include "persistent_pipeline_dx12.h"
+#include "pipeline_recipes_dx12.h"
 #include "tier1/utlhashtable.h"
 #include "tier1/utlvector.h"
 #include <d3d12.h>
@@ -79,6 +79,7 @@ class CPipelineCacheDX12
 public:
 	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
+	void WarmRecipes( unsigned budget, unsigned &done, unsigned &total );
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 
 	D3D12_CPU_DESCRIPTOR_HANDLE NullShaderResourceView() const { return m_NullSrv; }
@@ -384,6 +385,7 @@ private:
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CPersistentPipelineDX12 m_Library;
+	CPipelineRecipesDX12 m_Recipes;
 	CBindingCacheDX12 m_Bindings;
 	CUtlVector<UploadPage> m_UploadPages;
 	int m_nUploadPageHint = 0;

@@ -91,6 +91,20 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   variant is missing still rejects the map, since its lighting would otherwise be wrong for the whole map.
 - `shader_precache <logical> [static] [dynamic] | all` (cheat) validates/reflects published VCS payloads on the render
   thread; it never writes VCS files.
+- Map-load **Compiling Shaders** replays observed material-draw graphics pipelines, not the Cartesian product of
+  VCS records. Two draws with identical VS/PS can require different PSOs (e.g. depth-only vs mixed-format MRT,
+  vertex declaration, MSAA, independent blend or root ABI). A material snapshot cannot predict all of those.
+  The renderer interns the *resolved* VS/PS/GS bytes, including translated shaders, and records the final descriptor.
+  On subsequent loads it holds the resulting PSOs on the device, independent of transient shader handles.
+- For seed capture use the release shader pack, play representative campaign sections at the supported quality/MSAA
+  settings, and quit normally. The global `%LOCALAPPDATA%/SourceDX12/graphics-v1-<pack>.recipes` accumulates the
+  union across sessions using that pack. Install the capture as a **loose** `shaders/pso/graphics-v1.recipes` in
+  the mod. Do not distribute `pipeline-v1-*.bin`: it is an adapter/driver-specific acceleration library.
+  Regenerate the seed with shader/root changes. Unseen states still take the normal draw-time path. This does not
+  precache independent compute pipelines or feature-specific pipelines outside the material graphics cache.
+- For an A/B, `-dx12noprecache` disables both recipe collection and replay without disabling the existing driver
+  library. `-dx12psotrace` logs each draw-path `CreateGraphicsPipelineState` start (absolute QPC milliseconds) and
+  duration for correlation with PresentMon. A present interval overlapping creation is not necessarily CPU-bound.
 - Legacy VCS centroid masks are carried into deferred translation. SM2 shaders declare centroid TEXCOORDs in
   the VCS header rather than bytecode DCLs; dropping that mask makes MSAA edge inputs differ from native shaders.
 - Eligible native mono main views shade the 3D sky after opaque geometry and motion vectors, before GTAO/SSR.

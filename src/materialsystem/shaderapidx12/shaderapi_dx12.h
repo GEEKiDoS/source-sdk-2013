@@ -846,6 +846,7 @@ private:
 	bool GetGpuTiming( ShaderAPIDX12GpuTiming_t &timing ) override;
 	int AdapterPerformanceTier() override;
 	bool GetVideoMemory( uint64 &nUsage, uint64 &nBudget, uint64 &nDedicated ) override;
+	void WarmPipelineBatch( unsigned budget, unsigned &done, unsigned &total ) override { m_Pipeline.WarmRecipes( budget, done, total ); }
 	bool Dispatch( const ShaderAPIDX12ComputeDispatch_t &dispatch ) override;
 	int SceneSampleCount() override;
 	void SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, int nWidth, int nHeight, bool bPacked, bool bViewModel ) override;

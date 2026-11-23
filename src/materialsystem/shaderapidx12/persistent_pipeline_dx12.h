@@ -42,6 +42,7 @@ public:
 		uint64_t pack;
 		if ( FAILED( adapter->GetDesc( &desc ) ) || !filesystem || !PackIdentity( *filesystem, pack ) )
 			return;
+		swprintf_s( m_RecipePath, L"%s\\graphics-v1-%016llx.recipes", dir, pack );
 		swprintf_s( m_Prefix, L"%s\\pipeline-v1-%04x-%04x-%08x-", dir, desc.VendorId, desc.DeviceId, desc.SubSysId );
 		swprintf_s( m_Path, L"%s%016llx-%016llx.bin", m_Prefix, driver.QuadPart, pack );
 		// A legacy name can only be attributed to this adapter for its current LUID.
@@ -119,8 +120,10 @@ public:
 		std::vector<unsigned char>().swap( m_Backing );
 		m_Keys.clear();
 		m_Dirty = false;
+		m_RecipePath[0] = L'\0';
 	}
 
+	const wchar_t *RecipePath() const { return m_RecipePath; }
 	bool Enabled() const { return m_Library != nullptr; }
 	uint64_t Key( D3D12_GRAPHICS_PIPELINE_STATE_DESC desc, unsigned root ) const
 	{
@@ -241,6 +244,7 @@ private:
 	}
 	static constexpr size_t kMaxEntries = 65536, kMaxBytes = 256u * 1024 * 1024;
 	wchar_t m_Path[MAX_PATH]{};
+	wchar_t m_RecipePath[MAX_PATH]{};
 	wchar_t m_Prefix[MAX_PATH]{}, m_LegacyPrefix[MAX_PATH]{};
 	bool m_DiscardDisk = false;
 	std::set<uint64_t> m_Keys;

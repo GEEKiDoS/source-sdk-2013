@@ -274,6 +274,16 @@ void UpdateTerrorLoadingScreenProgress( float fraction, const char *statusText )
 {
 	if ( s_pTerrorLoadingScreen ) s_pTerrorLoadingScreen->SetProgress( fraction, statusText );
 }
+void SetTerrorShaderLoadingStatus( float fraction, const wchar_t *text )
+{
+	if ( !s_pTerrorLoadingScreen ) return;
+	s_pTerrorLoadingScreen->SetProgress( fraction, NULL );
+	s_pTerrorLoadingScreen->m_pLoadingText->SetText( text );
+}
+void CTransitionStatsPanel::SetLoadingStatus( const wchar_t *text )
+{
+	if ( m_pLoadingText ) m_pLoadingText->SetText( text );
+}
 void SetTerrorLoadingScreenVisible( bool state )
 {
 	if ( state )

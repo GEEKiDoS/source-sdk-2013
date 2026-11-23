@@ -22,7 +22,8 @@
 
 // _004: frame generation, reflex, HDR output, adapter performance tier and runtime GPU timing.
 // _005: GetVideoMemory.
-#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_005"
+// _006: loading-owner graphics pipeline precompile.
+#define SHADERAPIDX12_INTERFACE_VERSION "ShaderAPIDX12_006"
 
 static constexpr int SHADERAPIDX12_GPU_TIMING_MAX_EVENTS = 16;
 static constexpr int SHADERAPIDX12_GPU_TIMING_NAME_LENGTH = 64;
@@ -212,6 +213,8 @@ public:
 	// This process's use of the adapter's local video memory and the OS budget for it (DXGI QueryVideoMemoryInfo),
 	// and the adapter's dedicated video memory, in bytes. False when unavailable. Callable from any thread.
 	virtual bool GetVideoMemory( uint64 &nUsage, uint64 &nBudget, uint64 &nDedicated ) = 0;
+	// Caller holds the material lock; workers join before returning. Zero budget queries progress.
+	virtual void WarmPipelineBatch( unsigned budget, unsigned &done, unsigned &total ) = 0;
 
 };
 abstract_class IShaderAPIDX12Compute
