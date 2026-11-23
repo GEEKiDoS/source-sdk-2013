@@ -1,79 +1,107 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 //
-// First-person legs. See c_terror_fp_legs.h.
+// First-person body. See c_terror_fp_legs.h.
 //
 //=============================================================================//
 #include "cbase.h"
 #include "l4d2/player/c_terror_fp_legs.h"
 #include "l4d2/player/c_terrorplayer.h"
+#include "l4d2/player/terror_playeranimstate.h"
+#include "l4d2/weapons/weapon_csbase.h"
+#include "shadowmaps_dx12.h"
 #include "bone_setup.h"
 #include "model_types.h"
 #include "tier0/memdbgon.h"
 
 ConVar cl_fp_legs( "cl_fp_legs", "1", FCVAR_ARCHIVE, "Show your survivor's legs when looking down in first person." );
+ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
+	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
 static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "16", FCVAR_ARCHIVE,
-	"Units the first-person legs sit behind the camera along the view's facing, so the upper-body cut stays out of view." );
+	"Units the first-person legs and their shadow sit behind the camera along the view's facing, so the upper-body cut stays out of view." );
 static int s_nCutBoneGeneration = 0;
 static void CutBoneChanged( IConVar *, const char *, float ) { ++s_nCutBoneGeneration; }
 static ConVar cl_fp_legs_cut_bone( "cl_fp_legs_cut_bone", "ValveBiped.Bip01_Spine2", 0,
 	"Bone collapsed with all of its descendants (chest, arms, head) on the first-person legs.", CutBoneChanged );
 
-C_TerrorFirstPersonLegs *C_TerrorFirstPersonLegs::Create( C_TerrorPlayer *player )
+static bool InFeatureShadowDraw( int flags )
+{
+	return ( flags & STUDIO_SHADOWDEPTHTEXTURE ) && ShadowMapsDX12_InFeatureDepthView();
+}
+
+bool C_TerrorFirstPersonBody::LegsPose( C_TerrorPlayer *player )
+{
+	return player->GetTeamNumber() == TEAM_SURVIVOR && !player->IsIncapacitated() && !player->IsHangingFromLedge() &&
+		!player->IsDominated() && player->GetMoveType() != MOVETYPE_LADDER;
+}
+
+bool C_TerrorFirstPersonBody::CastsSelfShadow( C_TerrorPlayer *player )
+{
+	// A ledge-hanging local body draws itself in first person (C_CSPlayer::DrawModel) and casts its own shadow.
+	return cl_fp_self_shadow.GetBool() && ShadowMapsDX12_ShadowsEnabled() && player->IsFirstPersonLocalBody() &&
+		!player->IsHangingFromLedge();
+}
+
+C_TerrorFirstPersonBody *C_TerrorFirstPersonBody::Create( C_TerrorPlayer *player, Role role )
 {
 	const model_t *model = player->GetModel();
 	if ( !model )
 		return NULL;
-	C_TerrorFirstPersonLegs *legs = new C_TerrorFirstPersonLegs( player );
-	if ( !legs->InitializeAsClientEntity( modelinfo->GetModelName( model ), false ) )
+	C_TerrorFirstPersonBody *body = new C_TerrorFirstPersonBody( player, role );
+	if ( !body->InitializeAsClientEntity( modelinfo->GetModelName( model ), false ) )
 	{
-		legs->Release();
+		body->Release();
 		return NULL;
 	}
-	legs->AddEffects( EF_NOSHADOW );
-	legs->SetNextClientThink( CLIENT_THINK_ALWAYS );
-	legs->SyncFromPlayer();
-	return legs;
+	// The legs never cast (the shadow copy casts the whole silhouette); EF_NOSHADOW would make the shadow copy ineligible.
+	if ( role == ROLE_LEGS )
+		body->AddEffects( EF_NOSHADOW );
+	body->SetNextClientThink( CLIENT_THINK_ALWAYS );
+	body->SyncFromPlayer();
+	return body;
 }
 
-C_TerrorFirstPersonLegs::C_TerrorFirstPersonLegs( C_TerrorPlayer *player ) :
-	m_hPlayer( player ), m_nSyncFrame( -1 ), m_nCutBone( -1 ), m_nCutBoneGeneration( s_nCutBoneGeneration )
+C_TerrorFirstPersonBody::C_TerrorFirstPersonBody( C_TerrorPlayer *player, Role role ) :
+	m_hPlayer( player ), m_Role( role ), m_nSyncFrame( -1 ), m_nCutBone( -1 ), m_nCutBoneGeneration( s_nCutBoneGeneration )
 {
 }
 
-bool C_TerrorFirstPersonLegs::ShouldDraw()
+bool C_TerrorFirstPersonBody::ShouldDraw()
 {
 	C_TerrorPlayer *player = m_hPlayer.Get();
-	if ( !cl_fp_legs.GetBool() || !player || !player->IsFirstPersonLocalBody() )
-		return false;
-	// Poses whose lower body does not match the first-person camera: crawling, hanging, pinned, climbing.
-	if ( player->GetTeamNumber() != TEAM_SURVIVOR || player->IsIncapacitated() || player->IsHangingFromLedge() ||
-		player->IsDominated() || player->GetMoveType() == MOVETYPE_LADDER )
+	if ( m_Role != ROLE_LEGS || !cl_fp_legs.GetBool() || !player || !player->IsFirstPersonLocalBody() || !LegsPose( player ) )
 		return false;
 	return BaseClass::ShouldDraw();
 }
 
-void C_TerrorFirstPersonLegs::ClientThink()
+bool C_TerrorFirstPersonBody::ShouldCastShadowWhileHidden()
+{
+	C_TerrorPlayer *player = m_hPlayer.Get();
+	return m_Role == ROLE_SHADOW && player && CastsSelfShadow( player );
+}
+
+void C_TerrorFirstPersonBody::ClientThink()
 {
 	// Keeps the leaf-system placement current; the draw and bone setup sync again for the frame they run in.
 	SyncFromPlayer();
 }
 
-int C_TerrorFirstPersonLegs::DrawModel( int flags )
+int C_TerrorFirstPersonBody::DrawModel( int flags )
 {
-	// Never a shadow caster (EF_NOSHADOW); the hidden real body casts the full silhouette instead.
-	if ( flags & STUDIO_SHADOWDEPTHTEXTURE )
+	// Legs: the local main view only. Shadow copy: native shadowmaps only, never the flashlight's projected depth
+	// (that view's lists skip it anyway: its local draw bit is clear).
+	if ( m_Role == ROLE_LEGS ? ( flags & STUDIO_SHADOWDEPTHTEXTURE ) != 0 : !( InFeatureShadowDraw( flags ) && ShouldCastShadowWhileHidden() ) )
 		return 0;
 	SyncFromPlayer();
 	return BaseClass::DrawModel( flags );
 }
 
-bool C_TerrorFirstPersonLegs::SetupBones( matrix3x4_t *bones, int maximum, int mask, float time )
+bool C_TerrorFirstPersonBody::SetupBones( matrix3x4_t *bones, int maximum, int mask, float time )
 {
 	SyncFromPlayer();
 	return BaseClass::SetupBones( bones, maximum, mask, time );
 }
 
-void C_TerrorFirstPersonLegs::SyncFromPlayer()
+void C_TerrorFirstPersonBody::SyncFromPlayer()
 {
 	if ( m_nSyncFrame == gpGlobals->framecount )
 		return;
@@ -90,7 +118,7 @@ void C_TerrorFirstPersonLegs::SyncFromPlayer()
 	CStudioHdr *source = player->GetModelPtr();
 	if ( !studio || !source )
 		return;
-	if ( m_nCutBoneGeneration != s_nCutBoneGeneration )
+	if ( m_Role == ROLE_LEGS && m_nCutBoneGeneration != s_nCutBoneGeneration )
 	{
 		m_nCutBoneGeneration = s_nCutBoneGeneration;
 		FindHiddenBones();
@@ -111,25 +139,30 @@ void C_TerrorFirstPersonLegs::SyncFromPlayer()
 
 	// The model faces the body yaw (the render angles follow the feet, lagging the view while standing). It backs off
 	// along the view yaw instead, so the collapsed upper body stays behind the camera whichever way the body faces.
+	// Both copies use the same offset while the legs show, so the shadow starts at the visible feet.
 	const QAngle angles( 0.0f, player->GetRenderAngles().y, 0.0f );
+	const float offset = cl_fp_legs.GetBool() && LegsPose( player ) ? cl_fp_legs_offset.GetFloat() : 0.0f;
 	Vector viewForward;
 	AngleVectors( QAngle( 0.0f, player->EyeAngles().y, 0.0f ), &viewForward );
-	SetAbsOrigin( player->GetRenderOrigin() - viewForward * cl_fp_legs_offset.GetFloat() );
+	SetAbsOrigin( player->GetRenderOrigin() - viewForward * offset );
 	SetAbsAngles( angles );
 }
 
-CStudioHdr *C_TerrorFirstPersonLegs::OnNewModel()
+CStudioHdr *C_TerrorFirstPersonBody::OnNewModel()
 {
 	CStudioHdr *studio = BaseClass::OnNewModel();
 	FindHiddenBones();
 	return studio;
 }
 
-void C_TerrorFirstPersonLegs::FindHiddenBones()
+void C_TerrorFirstPersonBody::FindHiddenBones()
 {
 	m_HiddenBones.ClearAll();
+	m_nCutBone = -1;
 	CStudioHdr *studio = GetModelPtr();
-	m_nCutBone = studio ? Studio_BoneIndexByName( studio, cl_fp_legs_cut_bone.GetString() ) : -1;
+	if ( m_Role != ROLE_LEGS || !studio )
+		return;
+	m_nCutBone = Studio_BoneIndexByName( studio, cl_fp_legs_cut_bone.GetString() );
 	if ( m_nCutBone < 0 )
 		return;
 	// Studio bones are ordered parent before child.
@@ -141,7 +174,7 @@ void C_TerrorFirstPersonLegs::FindHiddenBones()
 	}
 }
 
-void C_TerrorFirstPersonLegs::BuildTransformations( CStudioHdr *studio, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform,
+void C_TerrorFirstPersonBody::BuildTransformations( CStudioHdr *studio, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform,
 	int boneMask, CBoneBitList &computed )
 {
 	BaseClass::BuildTransformations( studio, pos, q, cameraTransform, boneMask, computed );
@@ -160,4 +193,54 @@ void C_TerrorFirstPersonLegs::BuildTransformations( CStudioHdr *studio, Vector *
 		MatrixScaleByZero( bone );
 		MatrixSetColumn( collapse, 3, bone );
 	}
+}
+
+void C_TerrorFirstPersonShadowWeapon::Maintain( CHandle< C_TerrorFirstPersonShadowWeapon > &handle, C_TerrorPlayer *player, C_TerrorFirstPersonBody *body )
+{
+	// Same visibility rules as the third-person C_ShadowWeapon (C_CSPlayer::UpdateShadowWeapon).
+	CWeaponCSBase *weapon = static_cast< CWeaponCSBase * >( player->GetActiveWeapon() );
+	int modelIndex = -1;
+	if ( body && weapon && weapon->IsWeaponVisible() && weapon->m_iWorldModelIndex != 0 && player->GetTeamNumber() != TEAM_INFECTED &&
+		!player->GetTerrorAnimState()->IsGrenadeProjectilePresentationActive() &&
+		!player->GetTerrorAnimState()->IsGrenadePresentationSuppressed() )
+		modelIndex = modelinfo->GetModelIndex( weapon->GetWorldModel() );
+
+	C_TerrorFirstPersonShadowWeapon *current = handle.Get();
+	if ( current && ( current->m_nWorldModelIndex != modelIndex || current->GetMoveParent() != body ) )
+	{
+		current->Release();
+		current = NULL;
+		handle.Term();
+	}
+	if ( current || modelIndex < 0 )
+	{
+		if ( current )
+			current->SetSkin( weapon->GetSkin() );
+		return;
+	}
+	current = new C_TerrorFirstPersonShadowWeapon( player );
+	if ( !current->InitializeAsClientEntity( weapon->GetWorldModel(), false ) )
+	{
+		current->Release();
+		return;
+	}
+	current->m_nWorldModelIndex = modelIndex;
+	current->FollowEntity( body, true );
+	current->SetSkin( weapon->GetSkin() );
+	current->SetSolid( SOLID_NONE );
+	current->RemoveEFlags( EFL_USE_PARTITION_WHEN_NOT_SOLID );
+	handle = current;
+}
+
+bool C_TerrorFirstPersonShadowWeapon::ShouldCastShadowWhileHidden()
+{
+	C_TerrorPlayer *player = m_hPlayer.Get();
+	return player && C_TerrorFirstPersonBody::CastsSelfShadow( player ) && !IsEffectActive( EF_NODRAW );
+}
+
+int C_TerrorFirstPersonShadowWeapon::DrawModel( int flags )
+{
+	if ( !InFeatureShadowDraw( flags ) || !ShouldCastShadowWhileHidden() )
+		return 0;
+	return BaseClass::DrawModel( flags );
 }
