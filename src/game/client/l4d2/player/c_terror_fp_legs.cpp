@@ -19,7 +19,7 @@ ConVar cl_fp_self_shadow( "cl_fp_self_shadow", "1", FCVAR_ARCHIVE,
 	"In first person, your full body and weapon cast native shadowmap shadows (never into your own flashlight)." );
 static ConVar cl_fp_legs_offset( "cl_fp_legs_offset", "0", 0,
 	"Units the first-person legs and their shadow sit behind the camera along the view's facing." );
-static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "90", 0,
+static ConVar cl_fp_legs_lean( "cl_fp_legs_lean", "15", 0,
 	"Degrees the first-person legs' upper body leans back from cl_fp_legs_lean_bone, moving the collapsed waist behind the camera." );
 static ConVar cl_fp_legs_tilt( "cl_fp_legs_tilt", "20", 0,
 	"Degrees the first-person legs tip back about the feet when looking straight down (ramping in from cl_fp_legs_tilt_start), "
@@ -27,13 +27,13 @@ static ConVar cl_fp_legs_tilt( "cl_fp_legs_tilt", "20", 0,
 static ConVar cl_fp_legs_tilt_start( "cl_fp_legs_tilt_start", "30", 0, "View pitch (degrees down) where cl_fp_legs_tilt starts ramping in." );
 // Crouched values blend in with the eye height between the standing and crouched view heights.
 static ConVar cl_fp_legs_duck_offset( "cl_fp_legs_duck_offset", "8", 0, "cl_fp_legs_offset while crouched." );
-static ConVar cl_fp_legs_duck_lean( "cl_fp_legs_duck_lean", "90", 0, "cl_fp_legs_lean while crouched." );
+static ConVar cl_fp_legs_duck_lean( "cl_fp_legs_duck_lean", "45", 0, "cl_fp_legs_lean while crouched." );
 static ConVar cl_fp_legs_duck_tilt( "cl_fp_legs_duck_tilt", "35", 0, "cl_fp_legs_tilt while crouched." );
 static int s_nBoneNamesGeneration = 0;
 static void BoneNameChanged( IConVar *, const char *, float ) { ++s_nBoneNamesGeneration; }
-static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Spine1", 0,
-	"Space-separated bones collapsed with all of their descendants on the first-person legs. Spine1: chest, arms and head; "
-	"\"ValveBiped.Bip01_Neck1 ValveBiped.Bip01_L_Clavicle ValveBiped.Bip01_R_Clavicle\": head and arms only.", BoneNameChanged );
+static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_Neck1 ValveBiped.Bip01_L_Clavicle ValveBiped.Bip01_R_Clavicle", 0,
+	"Space-separated bones collapsed with all of their descendants on the first-person legs. Default: head and arms "
+	"(the chest stays); \"ValveBiped.Bip01_Spine1\": chest, arms and head.", BoneNameChanged );
 static ConVar cl_fp_legs_lean_bone( "cl_fp_legs_lean_bone", "ValveBiped.Bip01_Spine", 0,
 	"Bone the first-person legs' upper body leans back from (cl_fp_legs_lean).", BoneNameChanged );
 
