@@ -864,8 +864,8 @@ private:
 	void DrawVolumetrics() override;
 	void DrawBounce() override;
 	void DrawViewModelBounce() override;
-	void BeginDepthPrepass() override;
-	void EndDepthPrepass() override;
+	bool BeginDepthPrepass( bool allowSingleSubmit ) override;
+	void EndDepthPrepass( bool resolvedScene ) override;
 	void BeginSkybox() override;
 	void EndSkybox() override;
 	void BeginViewModelContacts( bool reuseMainDepth ) override;
@@ -879,7 +879,7 @@ private:
 	void ReplayEndContactDepth();
 	void ReplayScreenSpaceEndView();
 	void ReleaseScreenSpaceResources();
-	void ReplayDepthPrepass( bool bBegin );
+	void ReplayDepthPrepass( bool bBegin, bool resolvedScene );
 	bool m_bDepthPrepass = false; // ordered normal-geometry replay into scene depth; independent of SSR/contact enable
 	// From the end of that prepass to the main view's screen-space EndView: alpha-tested opaque scene draws test depth read-only.
 	bool m_bDepthPrepassResolved = false;

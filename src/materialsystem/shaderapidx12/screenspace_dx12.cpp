@@ -165,8 +165,8 @@ void CShaderAPIDX12::ExecuteScreenSpacePacket( ScreenSpacePacketDX12 *pPacket )
 	case ScreenSpaceEndView: ReplayScreenSpaceEndView(); break;
 	case ScreenSpaceBeginVolumetrics: ReplayBeginVolumetrics( pPacket->settings ); break;
 	case ScreenSpaceDrawVolumetrics: ReplayDrawVolumetrics(); break;
-	case ScreenSpaceBeginDepthPrepass: ReplayDepthPrepass( true ); break;
-	case ScreenSpaceEndDepthPrepass: ReplayDepthPrepass( false ); break;
+	case ScreenSpaceBeginDepthPrepass: ReplayDepthPrepass( true, false ); break;
+	case ScreenSpaceEndDepthPrepass: ReplayDepthPrepass( false, pPacket->flag ); break;
 	case ScreenSpaceBeginSkybox: ReplaySkybox( true ); break;
 	case ScreenSpaceEndSkybox: ReplaySkybox( false ); break;
 	case ScreenSpaceBeginViewModelContacts: ReplayBeginViewModelContacts( pPacket->flag ); break;
@@ -241,22 +241,25 @@ void CShaderAPIDX12::DrawVolumetrics()
 	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceDrawVolumetrics ) );
 }
 
-void CShaderAPIDX12::BeginDepthPrepass()
+bool CShaderAPIDX12::BeginDepthPrepass( bool allowSingleSubmit )
 {
 	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceBeginDepthPrepass ) );
+	return !allowSingleSubmit || !m_pDevice->HasFrameHeadroom();
 }
 
-void CShaderAPIDX12::EndDepthPrepass()
+void CShaderAPIDX12::EndDepthPrepass( bool resolvedScene )
 {
-	EnqueueScreenSpacePacket( ScreenSpacePacket( ScreenSpaceEndDepthPrepass ) );
+	auto *packet = ScreenSpacePacket( ScreenSpaceEndDepthPrepass );
+	packet->flag = resolvedScene;
+	EnqueueScreenSpacePacket( packet );
 }
 
-void CShaderAPIDX12::ReplayDepthPrepass( bool bBegin )
+void CShaderAPIDX12::ReplayDepthPrepass( bool bBegin, bool resolvedScene )
 {
 	// The preceding buffered draws belong to the old pass, including at END.
 	FlushBufferedPrimitives();
 	m_bDepthPrepass = bBegin;
-	m_bDepthPrepassResolved = !bBegin;
+	m_bDepthPrepassResolved = resolvedScene;
 	// Coverage twins use a different native material block binding; restore ordinary PS metadata on the
 	// first draw of the next pass even when the last material/dynamic index happens to be unchanged.
 	m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();

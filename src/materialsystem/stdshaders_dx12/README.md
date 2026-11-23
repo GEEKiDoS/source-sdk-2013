@@ -1013,6 +1013,12 @@ shadow-texture path: color and prepass keep the same LOD, skinning, flex, vertex
 epilogue/jitter, culling and raster bias. Fixed-coverage color draws retain their ordinary nearer-or-equal depth
 comparison; the prepass adds no compensating depth bias.
 
+With immediate submission (`mat_queue_mode 0` and no material call queue), the prepass can retain just the viewmodels.
+When the previous-frame fence keeps completing before the CPU reaches frame sync, and contacts, contact debug, SSR
+and the volumetric scope do not need early scene depth, world geometry and models submit once in the ordinary opaque
+pass. That pass keeps its normal alpha/coverage shader and writes depth; it never uses the resolved-depth `EQUAL`
+shortcut for an omitted prepass. Queued rendering and sustained GPU back-pressure retain the full replay.
+
 Alpha-tested and A2C opaque depth writers into the scene depth, between the end of the prepass and the main view's
 screen-space `EndView`, draw color with an `EQUAL`, read-only depth test, and `pbr_model_ps51` is bound in its
 `ALPHATEST=0` combo (kill compiled away). The prepass already resolved their coverage: at a cutout hole it stored the
