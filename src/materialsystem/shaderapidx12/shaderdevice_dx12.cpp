@@ -1417,10 +1417,14 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 	ID3D12GraphicsCommandList2 *list2 = nullptr; // queried on the first breadcrumb of this replay
 	DrawBindings bound{};
 	uint64_t binds[BindCounterCount]{};
+	ID3D12PipelineState *drawPipeline = nullptr;
+	UINT drawStencil = UINT_MAX;
 	while ( offset < size )
 	{
 		Header header;
 		memcpy( &header, data + offset, sizeof( header ) );
+		if ( header.op == Op::ExternalCommand || header.op == Op::SetPipelineState ) drawPipeline = nullptr;
+		if ( header.op == Op::ExternalCommand || header.op == Op::OMSetStencilRef ) drawStencil = UINT_MAX;
 		const unsigned char *p = data + offset + sizeof( Header );
 		offset += header.size;
 		const auto get = [&]( auto &value )
@@ -1600,6 +1604,20 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			D3D12_PRIMITIVE_TOPOLOGY topology;
 			get( topology );
 			list->IASetPrimitiveTopology( topology );
+			break;
+		}
+		case Op::PipelineDraw:
+		{
+			RecordedPipelineDX12 *request;
+			UINT stencil, indexed, count, instances, first;
+			get( request ); get( stencil ); get( indexed ); get( count ); get( instances ); get( first );
+			ID3D12PipelineState *pso = request->Resolve();
+			if ( !pso ) break; // A refusal drops this draw, never uses the preceding PSO.
+			if ( drawPipeline != pso ) { list->SetPipelineState( pso ); ++binds[Pipelines]; }
+			if ( drawStencil != stencil ) list->OMSetStencilRef( stencil );
+			drawPipeline = pso; drawStencil = stencil;
+			if ( indexed ) list->DrawIndexedInstanced( count, instances, first, 0, 0 );
+			else list->DrawInstanced( count, instances, first, 0 );
 			break;
 		}
 		case Op::DrawInstanced:

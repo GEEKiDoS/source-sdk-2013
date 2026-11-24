@@ -317,7 +317,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	key.colorWrites = key.alphaWrites = true;
 	key.stencil = false;
 	const D3D12_INPUT_LAYOUT_DESC layout{};
-	ID3D12PipelineState *marchPso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), ps->Bytecode(), D3D12_SHADER_BYTECODE{}, layout, fence );
+	ID3D12PipelineState *marchPso = m_Pipeline.CapturePipeline( key, vs->Bytecode(), ps->Bytecode(), {}, layout, fence )->Resolve();
 	if ( !marchPso )
 		return warn( "march pipeline state unavailable" );
 
@@ -333,7 +333,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	key.sampleQuality = 0;
 	key.blend = 0;
 	key.alphaWrites = true;
-	ID3D12PipelineState *temporalPso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), temporal->Bytecode(), D3D12_SHADER_BYTECODE{}, layout, fence );
+	ID3D12PipelineState *temporalPso = m_Pipeline.CapturePipeline( key, vs->Bytecode(), temporal->Bytecode(), {}, layout, fence )->Resolve();
 	if ( !temporalPso )
 		return warn( "temporal accumulation pipeline state unavailable" );
 
@@ -351,7 +351,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	key.blendDestination = SHADER_BLEND_ONE;
 	key.blendOperation = SHADER_BLEND_OP_ADD;
 	key.alphaWrites = false;
-	ID3D12PipelineState *upsamplePso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), upsample->Bytecode(), D3D12_SHADER_BYTECODE{}, layout, fence );
+	ID3D12PipelineState *upsamplePso = m_Pipeline.CapturePipeline( key, vs->Bytecode(), upsample->Bytecode(), {}, layout, fence )->Resolve();
 	if ( !upsamplePso )
 		return warn( "upsample pipeline state unavailable" );
 

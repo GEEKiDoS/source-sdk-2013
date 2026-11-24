@@ -17,6 +17,10 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <mutex>
+#include <memory>
+#include <string>
+#include <vector>
 class IFileSystem;
 
 namespace shaderapidx12
@@ -80,14 +84,16 @@ public:
 	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void WarmRecipes( unsigned budget, unsigned &done, unsigned &total );
-	bool ObservedShader( const unsigned char *data, size_t bytes ) const { return m_Recipes.ObservedShader( data, bytes ); }
+	bool ObservedShader( const unsigned char *data, size_t bytes ) const { std::lock_guard<std::mutex> lock( m_RecipeMutex ); return m_Recipes.ObservedShader( data, bytes ); }
 	void WarmMaterialLayouts()
 	{
+		std::lock_guard<std::mutex> lock( m_RecipeMutex );
 		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
 		m_Recipes.WarmLayouts( m_pDevice, roots, m_Library );
 	}
 	void WarmPixelVariant( D3D12_SHADER_BYTECODE from, D3D12_SHADER_BYTECODE to, bool readOnlyDepth )
 	{
+		std::lock_guard<std::mutex> lock( m_RecipeMutex );
 		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
 		m_Recipes.WarmPixelVariant( from, to, readOnlyDepth, m_pDevice, roots, m_Library );
 	}
@@ -345,21 +351,44 @@ public:
 	D3D12_CPU_DESCRIPTOR_HANDLE AcquireResourceDescriptor( uint64_t nLastUseFence );
 	void ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE descriptor, uint64_t nRetireFence );
 	void NotifyShaderDestroyed( uint64_t nShaderIdentity );
-	ID3D12PipelineState *GetOrCreate( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence );
+	RecordedPipelineDX12 *CapturePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence );
+	void InvalidateDirectPipeline() { m_pBoundPipeline = nullptr; }
 	// Memo indices are valid only while PipelineEpoch matches. Reuse is a new GPU use, not just a CPU lookup.
 	int LastPipelineIndex() const { return m_nLastPipelineIndex; }
-	ID3D12PipelineState *UseCachedPipeline( int index, uint64_t nRetireFence )
+	RecordedPipelineDX12 *UseCachedPipeline( int index, uint64_t nRetireFence )
 	{
 		Entry &entry = m_Entries[index];
 		entry.lastUseFence = nRetireFence;
-		return entry.pso.Get();
+		return entry.request.get();
 	}
 
+private:
+	struct PipelineRequest final : RecordedPipelineDX12
+	{
+		CPipelineCacheDX12 *owner;
+		PipelineKeyDX12 key;
+		struct Source
+		{
+			std::vector<unsigned char> stages[3];
+			std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+			std::vector<std::string> semantics;
+		};
+		std::unique_ptr<Source> source;
+		std::once_flag once;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		ID3D12PipelineState *Resolve() override;
+	};
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> ResolvePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs,
+		const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout );
+	mutable std::mutex m_RecipeMutex; // Portable recipe/library publication; never taken on a realized draw.
+	std::atomic<uint64_t> m_ReplayCreates{0};
+public:
+	uint64_t TakeCreatedPipelines() { return m_ReplayCreates.exchange( 0, std::memory_order_relaxed ); }
 private:
 	struct Entry
 	{
 		PipelineKeyDX12 key;
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		std::shared_ptr<PipelineRequest> request;
 		uint64_t lastUseFence = 0;
 		bool destroyed = false;
 	};

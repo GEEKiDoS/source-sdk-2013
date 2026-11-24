@@ -323,6 +323,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned &total )
 {
+	std::lock_guard<std::mutex> lock( m_RecipeMutex );
 	total = m_Recipes.Total();
 	if ( !budget || m_Recipes.Next() == total ) { done = m_Recipes.Next(); return; }
 	const double start = Plat_FloatTime();
@@ -1366,7 +1367,7 @@ static D3D12_COMPARISON_FUNC StencilFunctionDX12( uint32_t nFunc )
 //-----------------------------------------------------------------------------
 // Purpose: Returns the cached PSO for key, creating it on a miss
 //-----------------------------------------------------------------------------
-ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence )
+RecordedPipelineDX12 *CPipelineCacheDX12::CapturePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence )
 {
 	if ( m_nLastPipelineIndex >= 0 )
 	{
@@ -1374,7 +1375,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		if ( !entry.destroyed && entry.key == key )
 		{
 			entry.lastUseFence = nRetireFence;
-			return entry.pso.Get();
+			return entry.request.get();
 		}
 	}
 	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull ) ^ ( key.nonEnvmapSsrPayload ? 0xD6E8FEB86659FD93ull : 0ull ) ^ ( key.relightPayload ? 0xA0761D6478BD642Full : 0ull );
@@ -1387,7 +1388,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		{
 			m_nLastPipelineIndex = index;
 			entry.lastUseFence = nRetireFence;
-			return entry.pso.Get();
+			return entry.request.get();
 		}
 	}
 	{
@@ -1400,10 +1401,57 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 				m_nLastPipelineIndex = i;
 				m_PipelineHints[hint] = static_cast<uint32_t>( i ) + 1;
 				entry.lastUseFence = nRetireFence;
-				return entry.pso.Get();
+				return entry.request.get();
 			}
 		}
 	}
+	// Only a new key needs to pin its bytecode and semantic names. A shader
+	// record may switch variants or be deleted before the lane reaches it.
+	auto request = std::make_shared<PipelineRequest>();
+	request->owner = this;
+	request->key = key;
+	request->source = std::make_unique<PipelineRequest::Source>();
+	auto &source = *request->source;
+	const D3D12_SHADER_BYTECODE stages[] = { vs, ps, gs };
+	for ( unsigned i = 0; i < ARRAYSIZE( stages ); ++i )
+		if ( stages[i].BytecodeLength )
+		{
+			auto *bytes = static_cast<const unsigned char *>( stages[i].pShaderBytecode );
+			source.stages[i].assign( bytes, bytes + stages[i].BytecodeLength );
+		}
+	if ( layout.NumElements )
+	{
+		source.elements.assign( layout.pInputElementDescs, layout.pInputElementDescs + layout.NumElements );
+		source.semantics.resize( layout.NumElements );
+		for ( UINT i = 0; i < layout.NumElements; ++i )
+		{
+			source.semantics[i] = source.elements[i].SemanticName;
+			source.elements[i].SemanticName = source.semantics[i].c_str();
+		}
+	}
+	Entry &entry = *m_Entries.AddToTailGetPtr();
+	entry.key = key;
+	entry.request = std::move( request );
+	entry.lastUseFence = nRetireFence;
+	m_nLastPipelineIndex = m_Entries.Count() - 1;
+	m_PipelineHints[hint] = static_cast<uint32_t>( m_Entries.Count() );
+	return entry.request.get();
+}
+
+ID3D12PipelineState *CPipelineCacheDX12::PipelineRequest::Resolve()
+{
+	std::call_once( once, [this] {
+		auto bytes = [this]( unsigned i ) -> D3D12_SHADER_BYTECODE { const auto &b = source->stages[i]; return { b.empty() ? nullptr : b.data(), b.size() }; };
+		pso = owner->ResolvePipeline( key, bytes(0), bytes(1), bytes(2), { source->elements.data(), UINT( source->elements.size() ) } );
+		source.reset();
+	} );
+	return pso.Get();
+}
+
+Microsoft::WRL::ComPtr<ID3D12PipelineState> CPipelineCacheDX12::ResolvePipeline( const PipelineKeyDX12 &key,
+	const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs,
+	const D3D12_INPUT_LAYOUT_DESC &layout )
+{
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 PSOCreateMiss", DX12_ZONES_ACTIVE );
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = key.highresAbi ? m_pHighresRoot.Get() : key.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
@@ -1466,6 +1514,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	const UINT root = key.highresAbi ? 2 : key.lightingAbi ? 1 : 0;
+	std::lock_guard<std::mutex> lock( m_RecipeMutex );
 	const uint64_t diskKey = m_Library.Key( desc, root );
 	HRESULT hr = S_OK;
 	pso = m_Recipes.Find( diskKey );
@@ -1486,7 +1535,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
 				begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
 		}
-		++m_Stats.pipelinesCreated;
+		m_ReplayCreates.fetch_add( 1, std::memory_order_relaxed );
 		++g_FirstUse.creates;
 		if ( SUCCEEDED( hr ) )
 			m_Library.Store( diskKey, pso.Get() );
@@ -1495,13 +1544,6 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		m_Recipes.Record( diskKey, root, desc, pso.Get() );
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
-	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.
-	Entry &entry = *m_Entries.AddToTailGetPtr();
-	entry.key = key;
-	entry.pso = std::move( pso );
-	entry.lastUseFence = nRetireFence;
-	m_nLastPipelineIndex = m_Entries.Count() - 1;
-	m_PipelineHints[hint] = static_cast<uint32_t>( m_Entries.Count() );
-	return entry.pso.Get();
+	return pso;
 }
 } // namespace shaderapidx12

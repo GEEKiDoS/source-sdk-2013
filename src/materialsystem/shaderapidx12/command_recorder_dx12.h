@@ -21,6 +21,13 @@ namespace shaderapidx12
 // recording-thread container. `payload` points at the bytes copied at record time.
 typedef void ( *ExternalFnDX12 )( ID3D12GraphicsCommandList *, ID3D12Device *, const void * ) noexcept;
 
+// Fence-retained by the pipeline cache; workers never dereference shader API state.
+struct RecordedPipelineDX12
+{
+	virtual ID3D12PipelineState *Resolve() = 0;
+	virtual ~RecordedPipelineDX12() = default;
+};
+
 // Chunk provider: returns a buffer of kChunkBytes.
 typedef unsigned char *( *AcquireChunkFnDX12 )( void *pContext );
 // Hands off [pChunk, pChunk + nBytes) for replay.
@@ -56,6 +63,7 @@ public:
 		IASetPrimitiveTopology,
 		DrawInstanced,
 		DrawIndexedInstanced,
+		PipelineDraw,
 		ResourceBarrier,
 		CopyBufferRegion,
 		CopyTextureRegion,
@@ -98,7 +106,7 @@ public:
 		packet.used = 0;
 		return packet;
 	}
-	enum BindCounter { Root, Heaps, Tables, Cbvs, Srvs, BindCounterCount };
+	enum BindCounter { Root, Heaps, Tables, Cbvs, Srvs, Pipelines, BindCounterCount };
 	uint64_t TakeBindCount( BindCounter counter ) { return m_BindCounts[counter].exchange( 0, std::memory_order_relaxed ); }
 
 	void Flush()
@@ -232,6 +240,12 @@ public:
 	{
 		unsigned char *p = Begin( Op::IASetPrimitiveTopology, sizeof( topology ) );
 		Put( p, topology );
+	}
+
+	void PipelineDraw( RecordedPipelineDX12 *pipeline, UINT stencil, bool indexed, UINT count, UINT instances, UINT first )
+	{
+		auto *p = Begin( Op::PipelineDraw, sizeof( pipeline ) + 5 * sizeof( UINT ) );
+		Put( p, pipeline ); Put( p, stencil ); Put( p, UINT( indexed ) ); Put( p, count ); Put( p, instances ); Put( p, first );
 	}
 
 	void DrawInstanced( UINT vertices, UINT instances, UINT startVertex, UINT startInstance )

@@ -3043,10 +3043,11 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const D3D12_PRIMITIVE_TOPOLOGY iaTopology = primitive == MATERIAL_POINTS ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST : ( primitive == MATERIAL_LINES ? D3D_PRIMITIVE_TOPOLOGY_LINELIST : ( primitive == MATERIAL_LINE_STRIP ? D3D_PRIMITIVE_TOPOLOGY_LINESTRIP : ( primitive == MATERIAL_TRIANGLE_STRIP ? D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST ) ) );
 	const UINT instanceCount = bindings[0].repetitions;
 	const int stencilReference = skyboxDraw ? kSkyboxStencilBit : ( gbufferStencil ? ( gbufferTargets ? kGBufferStencilBit : 0 ) : ( m_bStencilEnabled ? m_nStencilRef : m_ActiveSnapshot.stencilReference ) );
+	RecordedPipelineDX12 *drawPipeline = nullptr;
 	if ( memoHit )
 	{
 		++m_DrawStats.memoHits;
-		m_Pipeline.BindPipelineState( list, m_Pipeline.UseCachedPipeline( memoSlot->pipelineIndex, retireFence ), stencilReference, retireFence );
+		drawPipeline = m_Pipeline.UseCachedPipeline( memoSlot->pipelineIndex, retireFence );
 		pipelineBound = true;
 	}
 	else if ( vsRecord && ( psRecord || depthOnly ) )
@@ -3353,15 +3354,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			key.colorWrites = key.alphaWrites = false;
 			key.stencilWriteMask = 0;
 		}
-		ID3D12PipelineState *pso = nullptr;
+		RecordedPipelineDX12 *pso = nullptr;
 		{
 			ZoneNamedN( ___tracy_scoped_zone, "DX12 GetOrCreatePSO", DX12_DRAW_ZONES_ACTIVE );
-			pso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), ps ? ps->Bytecode() : D3D12_SHADER_BYTECODE{}, geometryCode, input, retireFence );
+			pso = m_Pipeline.CapturePipeline( key, vs->Bytecode(), ps ? ps->Bytecode() : D3D12_SHADER_BYTECODE{}, geometryCode, input, retireFence );
 		}
 		pipelineCreationFailed = !pso;
 		if ( pso )
 		{
-			m_Pipeline.BindPipelineState( list, pso, stencilReference, retireFence );
+			drawPipeline = pso;
 			pipelineBound = true;
 			if ( memoSlot )
 			{
@@ -3487,13 +3488,15 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			const D3D12_INDEX_BUFFER_VIEW view{ address + indexOffset, static_cast<UINT>( indexBytes - indexOffset ), indices->IndexFormat() == MATERIAL_INDEX_FORMAT_32BIT ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT };
 			m_Pipeline.BindIndexBuffer( list, &view, retireFence );
 			m_pDevice->GpuReceiverDraw( !depthOnly && bindingInput.lightingAbi && bindingInput.lightingViewTable.count != 0 );
-			list->DrawIndexedInstanced( indexCount, m_CasterEmit.active ? m_CasterEmit.instances : instanceCount, firstIndex, 0, 0 );
+			m_Pipeline.InvalidateDirectPipeline();
+			list->PipelineDraw( drawPipeline, stencilReference, true, indexCount, m_CasterEmit.active ? m_CasterEmit.instances : instanceCount, firstIndex );
 		}
 		else
 		{
 			m_Pipeline.BindIndexBuffer( list, nullptr, retireFence );
 			m_pDevice->GpuReceiverDraw( !depthOnly && bindingInput.lightingAbi && bindingInput.lightingViewTable.count != 0 );
-			list->DrawInstanced( indexCount, instanceCount, firstIndex, 0 );
+			m_Pipeline.InvalidateDirectPipeline();
+			list->PipelineDraw( drawPipeline, stencilReference, false, indexCount, instanceCount, firstIndex );
 		}
 		m_pDevice->GpuBreadcrumbEnd( nBreadcrumb );
 	}
@@ -6021,10 +6024,10 @@ void CShaderAPIDX12::EndFrame()
 			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, binds( CCommandRecorderDX12::Cbvs ) / n, binds( CCommandRecorderDX12::Tables ) / n, binds( CCommandRecorderDX12::Srvs ) / n,
 			    m_DrawStats.shadowDraws / n, m_DrawStats.casterInstances / n, m_DrawStats.casterInstancedDraws / n );
 			Msg( "ShaderAPIDX12 frame sync/frame: submits %.2f (max %llu) psoCreates %.2f textureUploadMiB %.2f prepassReadOnlyDraws %.1f prepassNullPS %.1f prepassShaded %.1f motionStaticSkips %.1f psoBinds %.1f rootSigBinds %.1f heapBinds %.1f\n",
-			    m_DrawStats.submits / n, static_cast<unsigned long long>( m_DrawStats.maxFrameSubmits ), p.pipelinesCreated / n,
+			    m_DrawStats.submits / n, static_cast<unsigned long long>( m_DrawStats.maxFrameSubmits ), m_Pipeline.TakeCreatedPipelines() / n,
 			    m_DrawStats.textureUploadBytes / n / ( 1024.0 * 1024.0 ), m_DrawStats.prepassReadOnlyDraws / n,
 			    m_DrawStats.prepassNullPSDraws / n, m_DrawStats.prepassShadedDraws / n, m_DrawStats.motionStaticSkips / n,
-			    p.pipelineBinds / n, binds( CCommandRecorderDX12::Root ) / n, binds( CCommandRecorderDX12::Heaps ) / n );
+			    ( p.pipelineBinds + binds( CCommandRecorderDX12::Pipelines ) ) / n, binds( CCommandRecorderDX12::Root ) / n, binds( CCommandRecorderDX12::Heaps ) / n );
 			Msg( "ShaderAPIDX12 upload pool: pages %llu capacityBytes %llu bufferBytes %llu | window allocations %llu alignedBytes %llu peakFrameAlignedBytes %llu newPages %llu trimmedPages %llu trimmedBufferBytes %llu | newestFrame allocations %llu alignedBytes %llu newPages %llu\n",
 			    static_cast<unsigned long long>( p.uploadPoolPages ), static_cast<unsigned long long>( p.uploadPoolCapacityBytes ), static_cast<unsigned long long>( p.uploadPoolBufferBytes ),
 			    static_cast<unsigned long long>( p.uploadAllocations ), static_cast<unsigned long long>( p.uploadBytes ), static_cast<unsigned long long>( p.uploadPeakFrameBytes ),

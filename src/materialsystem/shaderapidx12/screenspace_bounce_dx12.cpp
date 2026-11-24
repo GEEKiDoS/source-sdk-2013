@@ -173,7 +173,7 @@ void CShaderAPIDX12::ApplyBounce( bool viewModel )
 	key.colorWrites = true;
 	key.alphaWrites = false;
 	const D3D12_INPUT_LAYOUT_DESC layout{};
-	auto *pso = m_Pipeline.GetOrCreate( key, vs->Bytecode(), ps->Bytecode(), {}, layout, fence );
+	auto *pso = m_Pipeline.CapturePipeline( key, vs->Bytecode(), ps->Bytecode(), {}, layout, fence )->Resolve();
 	CPipelineCacheDX12::BindingInputDX12 input( m_Pipeline.NullShaderResourceView() );
 	if ( !pso || !m_Pipeline.UploadTransient( &camera, sizeof( camera ), 256, 256, fence, input.screenSpaceView ) )
 		return;
