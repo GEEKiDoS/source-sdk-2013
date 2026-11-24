@@ -52,9 +52,11 @@ def light_record(index, sun, hdr=False, style=0):
 
 def fixture(*, sun=0, locals_count=3, world=False,
             lit_second=False, baked_styles=(0,), light_styles=None, unbaked_faces=(), unbaked_light_indices=(),
-            prop_direct=False, prop_palette=(0, 32, 33, 34), removed_worldlights=()):
+            prop_direct=False, prop_palette=(0, 32, 33, 34), removed_worldlights=(), native_lighting_bytes=None):
     """Canonical v5 byte fixture (one HDR mode), including inline prop direct and all prop LODs."""
     light_styles = light_styles or {}
+    lighting_bytes = native_lighting_bytes if native_lighting_bytes is not None else (4 if world else 0)
+    lighting_crc = 0x55667788 if lighting_bytes else 0
     light_count = locals_count+(sun >= 0)
     local_indices = [i for i in range(light_count) if i != sun]
     mode_count = set_count = 1
@@ -71,7 +73,6 @@ def fixture(*, sun=0, locals_count=3, world=False,
 
     for mi in range(mode_count):
         face_lump, lighting_lump = 58, 53
-        lighting_bytes, lighting_crc = (4, 0x55667788) if world else (0, 0)
         identities = bytearray()
         for lump in sorted((*GEOMETRY, face_lump, lighting_lump)):
             length = 112 if lump == face_lump else lighting_bytes if lump == lighting_lump else 0
@@ -190,7 +191,7 @@ def fixture(*, sun=0, locals_count=3, world=False,
     manifest[144:144+len(path)] = path
     struct.pack_into('<i', manifest, 16+36, -1)
     struct.pack_into('<9Ii6I', manifest, 16+64, 58, 53, 54,
-                     4 if world else 0, 0x55667788 if world else 0, 0x11223344, 0,
+                     lighting_bytes, lighting_crc, 0x11223344, 0,
                      400, light_count, sun, 0, 400+len(selected[0]), len(removed_worldlights), 0, 0, 0)
     manifest.extend(selected[0])
     manifest.extend(removed)
@@ -266,7 +267,7 @@ def source_contract_checks():
     for token in ('bitfieldReverse( sampleIndex ) >> 27u', 'radius * sqrt( u )',
                   'source.w == 0.0 ? 1u : 32u', 'segmentLength - RESTIR_DIST_EPSILON',
                   'RESTIR_RAY_MASK_STATIC_SUN, skipHitId', 'source.w < 0.0',
-                  'query.selectedLightIndex = pc.pass', 'sunVisibilityOrigins[luxel]',
+                  'query.selectedLightIndex = pc.pass', 'sunVisibilityOrigins[LuxelAddress( luxel )]',
                   'query.flags & RESTIR_VISIBILITY_NO_SELF_SHADOW'):
         require(token in kernel, 'source-contract-only kernel wiring: '+token)
     require('radiance' not in kernel[kernel.index('float ComputeVisibility'):kernel.index('void main')],
@@ -372,6 +373,11 @@ def main():
 
         base = fixture()
         run('hdr_sun_props_all_lods', base, inspect=inspect_fixture(base))
+        # Only the sidecar identities carry the native size; the lighting bytes are not embedded here.
+        run('native_hdr_lighting_above_vrad_write_budget', fixture(native_lighting_bytes=(16 << 20) + 4))
+        run('native_hdr_lighting_at_signed_aligned_limit', fixture(native_lighting_bytes=(1 << 31) - 4))
+        run('native_hdr_lighting_over_signed_limit', fixture(native_lighting_bytes=1 << 31),
+            (False, False, False), 'mode identity/count mismatch')
         for name, kwargs in [('no_sun_locals', dict(sun=-1)), ('zero_selected_lights', dict(sun=-1, locals_count=0)),
                              ('sun_only', dict(locals_count=0)), ('removed_worldlights', dict(removed_worldlights=(0, 2, 5)))]:
             f = fixture(**kwargs)

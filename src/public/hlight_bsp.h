@@ -22,6 +22,8 @@ static const uint32 kDefaultDensity = 4;
 static const uint32 kDefaultPageSize = 2048;
 static const uint32 kMaxPageSize = 16384;
 static const uint32 kMaxFileBytes = 0x7fffffffu; // BSP/IZip signed buffer-size contract
+// Native lighting is only referenced by sidecar identities, but its decoded BSP size must fit a signed int.
+static const uint32 kMaxNativeLightingBytes = kMaxFileBytes;
 static const uint32 kMaxStyles = 4;
 static const uint32 kLightstyleCount = 64; // native engine LightStyleValue domain
 static const uint32 kPlaneSlots = 4;
@@ -375,7 +377,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
         if (!AssetPair(m.faceLump, m.lightingLump) || m.faceVersion != LUMP_FACES_VERSION ||
             m.lightingVersion != LUMP_LIGHTING_VERSION || !m.faceCount || m.faceCount > MAX_MAP_FACES ||
             !m.modelCount || m.modelCount > MAX_MAP_MODELS || m.faceBytes != uint64(m.faceCount) * sizeof(dface_t) ||
-            (!m.lightingBytes && m.tileCount) || m.lightingBytes > MAX_MAP_LIGHTING || (m.lightingBytes & 3) ||
+            (!m.lightingBytes && m.tileCount) || m.lightingBytes > kMaxNativeLightingBytes || (m.lightingBytes & 3) ||
             m.identityCount != ARRAYSIZE(geometry) + 2 || m.reserved || m.reserved2 ||
             m.visibilitySetIndex || !ZeroBytes(m.reserved3,sizeof(m.reserved3)))
             return ValidationError(error, errorBytes, "mode identity/count mismatch");
@@ -826,7 +828,7 @@ inline bool ValidateManifest(const void *bytes, uint32 count, uint32 levelFlags,
             continue;
         }
         if (!AssetPair(m.faceLump,m.lightingLump) || m.worldlightsLump != uint32(LUMP_WORLDLIGHTS_HDR) ||
-            m.lightingBytes > MAX_MAP_LIGHTING || (m.lightingBytes & 3) || (!m.lightingBytes && m.lightingCRC32) ||
+            m.lightingBytes > kMaxNativeLightingBytes || (m.lightingBytes & 3) || (!m.lightingBytes && m.lightingCRC32) ||
             m.lightCount > MAX_MAP_WORLDLIGHTS || m.assetMode ||
             (m.sunLightIndex != -1 && (m.sunLightIndex != 0 || !m.lightCount)) || !ZeroBytes(m.reserved,sizeof(m.reserved)) ||
             m.lightsOffset != cursor || uint64(m.lightCount)*sizeof(ShadowMapLightDisk) > count-cursor)

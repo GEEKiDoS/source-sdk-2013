@@ -163,7 +163,7 @@ namespace
 			const uint32 worldlightRecord = worldlights.version == 1 ? 100u : (uint32)sizeof( dworldlight_t );
 			if ( faces.version != LUMP_FACES_VERSION || lighting.version != LUMP_LIGHTING_VERSION ||
 				!faceBytes || faceBytes % sizeof( dface_t ) || faceBytes / sizeof( dface_t ) > MAX_MAP_FACES ||
-				lightingBytes != mode.lightingBytes || lightingBytes > MAX_MAP_LIGHTING || ( lightingBytes & 3 ) ||
+				lightingBytes != mode.lightingBytes || lightingBytes > hlight::kMaxNativeLightingBytes || ( lightingBytes & 3 ) ||
 				worldlightBytes % worldlightRecord || worldlightBytes / worldlightRecord > MAX_MAP_WORLDLIGHTS )
 			{
 				V_snprintf( error, errorBytes, "BSP lump version/size does not match the .light" );

@@ -217,7 +217,7 @@ bool ValidateReceiverSpans( const DX12LightingMapDesc &map )
 		if ( ( f.lightingOffset & 3u ) || f.lightingOffset < f.numStyles * 4u ||
 		     f.lightingOffset - f.numStyles * 4u < previousLightingEnd ) return false;
 		previousLightingEnd = uint64_t( f.lightingOffset ) + uint64_t( f.luxelW ) * f.luxelH * f.numChannels * f.numStyles * 4;
-		if ( previousLightingEnd > MAX_MAP_LIGHTING ) return false;
+		if ( previousLightingEnd > INT_MAX ) return false;
 		scalar += uint64_t( f.luxelW ) * f.luxelH; triangle += f.triangleCount;
 		if ( scalar > map.sunVisibilityCount || triangle > map.receiverTriangleCount ) return false;
 		double norm = 0;

@@ -238,7 +238,7 @@ inline bool ValidateFile(const void *bytes, uint32 count, FileView &out, char *e
     for (uint32 mi = 0; mi < h.modeCount; ++mi)
     {
         const ModeDisk &m = modes[mi];
-        if (!hlight::AssetPair(m.faceLump, m.lightingLump) || m.lightingBytes > MAX_MAP_LIGHTING ||
+        if (!hlight::AssetPair(m.faceLump, m.lightingLump) || m.lightingBytes > hlight::kMaxNativeLightingBytes ||
             !hlight::ZeroBytes(m.reserved, sizeof(m.reserved)))
             return ValidationError(error, errorBytes, "mode identity mismatch");
         ModeView &v = candidate.mode[mi]; v.record = &m;
