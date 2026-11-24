@@ -69,6 +69,14 @@ void BumpedHook(void *, void *, const float *, float, float, const float *, cons
 void DisplacementHook(void *, void *, uint32);
 void *LumpHook(void *, uint32);
 void QueuedMeshLockHook(void *, int, int, MeshDesc_t &);
+struct DecalSortKey { uintptr_t materialPage; int lightmapPage; };
+static_assert(offsetof(DecalSortKey,lightmapPage)==8);
+bool DecalSortLess(const DecalSortKey *a, const DecalSortKey *b)
+{
+    // -1 is a real fullbright surface page for a lit decal. Unlit decal
+    // keys already all contain -1; no wildcard comparison is necessary.
+    return a->materialPage != b->materialPage ? a->materialPage < b->materialPage : a->lightmapPage < b->lightmapPage;
+}
 bool QueuedCallArenaInitHook(QueuedCallArena *, uint32, uint32, uint32, uint32);
 Hook g_Hooks[] = {
     {0x101850, "405355565741544155415641574881ec98010000488b0de5626a00bb07000000", reinterpret_cast<void *>(&FaceLoadHook)},
@@ -81,6 +89,7 @@ Hook g_Hooks[] = {
     {0xC30B0, "40555741574883ec204883b9f001000000418bf84c8bfa488be9747348897424", reinterpret_cast<void *>(&DisplacementHook)},
     {0xFC790, "405356415641574883ec384863f2488bd983fe3f761441b83f000000488d0d65", reinterpret_cast<void *>(&LumpHook)},
     {0x2CC70, "48895c240848896c24104889742418574883ec2033ed8bc248396970498bd941", reinterpret_cast<void *>(&QueuedMeshLockHook), true},
+    {0x1156D0, "448b41084183f8ff74178b420883f8ff740f4c8b094c3b0a750d443bc00f9cc0", reinterpret_cast<void *>(&DecalSortLess)},
     {0x772D0, "48895c24084889742410574883ec508b842480000000418bf183c00389512083", reinterpret_cast<void *>(&QueuedCallArenaInitHook), true}
 };
 Hook &g_QueuedCallArenaInit = g_Hooks[ARRAYSIZE(g_Hooks) - 1];
@@ -245,7 +254,7 @@ bool CreateExpandedCallArena(QueuedCallArena &arena)
 
 bool QueuedCallArenaInitHook(QueuedCallArena *arena, uint32 capacity, uint32 commitStep, uint32 initialCommit, uint32 alignment)
 {
-    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&QueuedCallArenaInitHook)>(g_Hooks[10].original)(arena, capacity, commitStep, initialCommit, alignment);
+    if (!g.supported.load(std::memory_order_acquire)) return reinterpret_cast<decltype(&QueuedCallArenaInitHook)>(g_QueuedCallArenaInit.original)(arena, capacity, commitStep, initialCommit, alignment);
     using Init = bool (*)(QueuedCallArena *, uint32, uint32, uint32, uint32);
     const Init init = reinterpret_cast<Init>(g_QueuedCallArenaInit.original);
     const uintptr_t address = reinterpret_cast<uintptr_t>(arena);

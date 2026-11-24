@@ -838,15 +838,27 @@ A known neutral `route.enabled=0` preserves native RGB/alpha, native normalizati
 gather; an invalid owner with `route.enabled=1` contributes neither baked RGB nor selected direct while
 the real GPU failure is reported. Neutral metadata-only maps are not mistaken for malformed owners.
 
+World decal batches use a strict `(material page, native lightmap page)` sort key.
+The stock engine treats `-1` as a wildcard: inserting a fullbright-surface decal first can collapse
+two different lit pages into the same bucket. The draw binds only its first surface's page.
+The verified engine bridge compares page IDs exactly; unlit materials still share their `-1` bucket.
+No owner lookup fallback or change to rejection policy is required.
+For the `test_3_2.dem` regression, start a fresh `c5m4_quarter` load with `mat_queue_mode -1`,
+`r_drawbatchdecals 1`, `mp_decals 4096`, `r_decals 4096`, and cheats enabled. Immediately after
+loading, before the first ordinary bullet decal, place `cl_test_world_decal_batches -1853.9688 -89.734131 557.06824`
+and `cl_test_world_decal_batches -1408.0312 -416.07996 620.36774`. These are real special-page
+impact locations. Repeat `cl_test_world_decal_batches` without arguments during playback to spray
+the same material onto the other visible surface pages. Insertion order is essential: a stress run
+that creates thousands of decals but seeds an ordinary page first need not reproduce this bug.
+
 The failure UAV now records nine uint32 words:
 `{flag, reason, page+1, cellX, cellY, face+1, UVbitsX, UVbitsY, detail}`.
 An atomic claim selects one complete failing invocation; other pixels cannot mix their payload into it.
 Reasons distinguish coordinate bounds, owner ID, tile index, page group and lightstyle failures.
 The renderer initializes/copies/maps all 36 bytes, using four-byte upload elements.
-The renderer prints the decoded rejection as a Warning and then executes `DebuggerBreak()` unconditionally (debugger or
-not), before the fatal error and before unmapping its readback: without a debugger the unhandled breakpoint reaches the
-process crash handler, which writes the minidump. The breaking frame (`BreakOnHighresFailure`) holds a `FailureDump`
-local with the nine-word record, UV, fence, the previous clean readback fence, map generation, the message, the distinct
+The renderer prints the rejection and recent candidate draw IDs, ranges and bound pages. An attached debugger
+or `-dx12highresbreak` also breaks before the readback is unmapped. The breaking frame (`BreakOnHighresFailure`)
+holds a `FailureDump` with the nine-word record, UV, fence, previous clean readback fence, message, distinct
 vertex/pixel shader pairs and the newest 16 draws (shader pair, mesh token, first index/count) that the failing page
 received between the previous clean readback and the failing one (recorded per draw in a 4096-entry ring, no
 allocation). The failure UAV names only a page and a command-list window, so these are the candidates, not an exact draw.
