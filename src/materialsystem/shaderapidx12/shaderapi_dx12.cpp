@@ -794,19 +794,6 @@ ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel
 	return m_NamedShaderFiles[hShaderFile];
 }
 
-// One worker owns an entire file's CPU cache. Filesystem and GPU calls stay
-// on the loading owner, and every worker joins before rendering resumes.
-static void WarmShaderFiles( ShaderVcsFile **files, int count, std::atomic<int> &next )
-{
-	CUtlString error;
-	for ( int i = next++; i < count; i = next++ )
-	{
-		uint32_t index;
-		for ( size_t n = 0; files[i]->StaticComboIndex( n, index ); ++n )
-			files[i]->LoadStaticCombo( index, error );
-	}
-}
-
 // Both the loading pass and the draw must address the same physical twin.
 static bool HighresShaderName( const char *name, bool pixel, char (&out)[256] )
 {
@@ -847,7 +834,7 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 	ConVarRef motion( "r_motionvectors", true );
 	if ( motion.IsValid() && motion.GetBool() )
 		EnsureMotionShaders();
-	CUtlString error;
+	std::map<ShaderVcsFile *, std::vector<uint32_t>> statics;
 	CUtlHashtable<NamedShaderKey, ShaderVcsFile *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> requests;
 	const auto request = [&]( const char *name, bool pixel, int index ) -> ShaderVcsFile *
 	{
@@ -860,7 +847,10 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		{
 			const bool native = V_strnicmp( file->Path(), "shaders/fxc/", 12 ) != 0;
 			m_LevelShaderFiles.InsertOrReplace( file, native );
-			if ( !native ) file->LoadStaticCombo( uint32_t( index ), error );
+			ComboFoldProjectionDX12 projection{};
+			const auto *fold = file->ComboFold();
+			if ( !fold || ProjectComboFoldDX12( *fold, index, 0, projection ) )
+				statics[file].push_back( fold ? projection.staticIndex : uint32_t( index ) );
 		}
 		return file;
 	};
@@ -904,14 +894,16 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 	static const struct { const char *name; bool pixel; } effects[] =
 	{
 		{ "terror_post_prepare_ps20b", true }, { "terror_engine_post_ps20b", true },
-		{ "screenspaceeffect_vs20", false }, { "dx12_detailshadowlit_vs51", false },
-		{ "dx12_detailshadowlit_ps51", true }, { "pbr_model_depthprepass_ps51", true }
+		{ "screenspaceeffect_vs20", false }
 	};
 	for ( const auto &effect : effects )
 	{
 		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
-		if ( file )
-			m_LevelShaderFiles.InsertOrReplace( file, true );
+		if ( !file ) continue;
+		m_LevelShaderFiles.InsertOrReplace( file, true );
+		uint32_t index;
+		for ( size_t n = 0; file->StaticComboIndex( n, index ); ++n )
+			statics[file].push_back( index );
 	}
 	// These passes bind physical programs directly, without going through
 	// TakeSnapshot. Their small native, non-folded combo grids are bounded
@@ -935,19 +927,30 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 				request( pass.name, pass.pixel, int( index ) );
 		}
 	}
-	CUtlVector<ShaderVcsFile *> files;
-	FOR_EACH_MAP( m_LevelShaderFiles, it )
-		if ( m_LevelShaderFiles[it] )
-			files.AddToTail( m_LevelShaderFiles.Key( it ) );
+	// Each worker owns one file's cache. Only decode reachable physical statics.
+	std::vector<decltype( statics )::value_type *> files;
+	for ( auto &job : statics )
+	{
+		auto &indices = job.second;
+		std::sort( indices.begin(), indices.end() );
+		indices.erase( std::unique( indices.begin(), indices.end() ), indices.end() );
+		files.push_back( &job );
+	}
 	std::atomic<int> next{ 0 };
-	std::thread workers[2];
+	const auto work = [&] {
+		CUtlString error;
+		for ( size_t i = next++; i < files.size(); i = next++ )
+			for ( auto index : files[i]->second ) files[i]->first->LoadStaticCombo( index, error );
+	};
+	std::thread workers[5];
 	try
 	{
-		for ( int i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.Count(); ++i )
-			workers[i] = std::thread( WarmShaderFiles, files.Base(), files.Count(), std::ref( next ) );
+		const unsigned cores = std::thread::hardware_concurrency();
+		for ( unsigned i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.size() && i + 1 < cores; ++i )
+			workers[i] = std::thread( work );
 	}
 	catch ( const std::system_error & ) {} // Loading owner drains the remaining work.
-	WarmShaderFiles( files.Base(), files.Count(), next );
+	work();
 	for ( std::thread &worker : workers )
 		if ( worker.joinable() )
 			worker.join();
@@ -964,7 +967,8 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		{
 			ComboFoldProjectionDX12 p{};
 			if ( fold && !ProjectComboFoldDX12( *fold, key.staticIndex, d, p ) ) continue;
-			if ( !file->DynamicPayload( fold ? p.staticIndex : key.staticIndex, fold ? p.dynamicIndex : d ) ) continue;
+			auto *payload = file->DynamicPayload( fold ? p.staticIndex : key.staticIndex, fold ? p.dynamicIndex : d );
+			if ( !payload || ( file->TotalComboCount() > 16 && !m_Pipeline.ObservedShader( payload->tokens.Base(), payload->tokens.Count() ) ) ) continue;
 			if ( auto *record = ResolveNamedShader( key.name.String(), key.pixel, key.staticIndex, d ) )
 			{
 				ReflectNativeCBuffersDX12( record );

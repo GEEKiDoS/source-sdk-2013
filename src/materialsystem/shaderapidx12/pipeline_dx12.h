@@ -80,6 +80,7 @@ public:
 	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void WarmRecipes( unsigned budget, unsigned &done, unsigned &total );
+	bool ObservedShader( const unsigned char *data, size_t bytes ) const { return m_Recipes.ObservedShader( data, bytes ); }
 	void WarmMaterialLayouts()
 	{
 		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };

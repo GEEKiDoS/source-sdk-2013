@@ -1,6 +1,8 @@
 #pragma once
 #include "persistent_pipeline_dx12.h"
 #include <algorithm>
+#include <array>
+#include <set>
 #include <map>
 
 namespace shaderapidx12
@@ -28,6 +30,8 @@ class CPipelineRecipesDX12
 	};
 	struct Recipe { State state; std::vector<Element> layout; };
 	std::map<uint64_t, Bytes> m_Blobs;
+	using Digest = std::array<unsigned char, 16>;
+	std::set<Digest> m_ObservedShaders;
 	std::map<uint64_t, Recipe> m_Recipes;
 	std::map<uint64_t, Microsoft::WRL::ComPtr<ID3D12PipelineState>> m_Resident;
 	std::vector<uint64_t> m_Pending;
@@ -179,6 +183,14 @@ private:
 		m_Resident.emplace( key, std::move( pso ) );
 	}
 public:
+	// Only a warm-work selection hint, never a shader identity.
+	bool ObservedShader( const unsigned char *data, size_t bytes ) const
+	{
+		if ( bytes < 20 || memcmp( data, "DXBC", 4 ) ) return false;
+		Digest digest;
+		memcpy( digest.data(), data + 4, digest.size() );
+		return m_ObservedShaders.count( digest ) != 0;
+	}
 	// The same material pass can arrive through different mesh streams. A
 	// declaration observed with the identical VS is already signature-compatible;
 	// don't wait for that declaration *and* this material to be drawn together.
@@ -186,6 +198,14 @@ public:
 	{
 		if ( m_ExpandedRecipes == m_Recipes.size() ) return;
 		m_ExpandedRecipes = m_Recipes.size();
+		for ( const auto &entry : m_Blobs )
+		{
+			const auto &bytes = entry.second;
+			if ( bytes.size() < 20 || memcmp( bytes.data(), "DXBC", 4 ) ) continue;
+			Digest digest;
+			memcpy( digest.data(), bytes.data() + 4, digest.size() );
+			m_ObservedShaders.insert( digest );
+		}
 		using Layout = std::vector<Element>;
 		std::map<uint64_t, std::vector<const Layout *>> layouts;
 		const auto same = []( const Layout &a, const Layout &b ) {
