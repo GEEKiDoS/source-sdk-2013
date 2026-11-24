@@ -708,7 +708,9 @@ near-degenerate triangles (collinear T-junction fan triangles in BSP world meshe
 and extrapolates the UV far outside the triangle, which previously addressed unowned cells and produced the
 "unowned native lightmap cell" rejections (`reason=owner ID`, `face=0`; also the earlier `ep2_outland_06` `coordinate bounds`
 capture whose UV `1.00039` lay past the page edge).
-It is not specific to the PBR shaders. Unknown owners are still rejected, now at the provoking vertex.
+It is not specific to the PBR shaders. Unknown owners are still detected, now at the provoking vertex. A runtime report
+is logged once per map (the shader latches the first failure record) and highres lighting continues; it no longer rejects
+the map or disconnects. `-dx12highresbreak` or an attached debugger still breaks with the draw window for diagnosis.
 Native brush overlays are an exception at generation time: the engine clips in the
 decal plane and projects back to the surface, then clamps UVs to the atlas page,
 not the parent face. Before publishing the atlas, the bridge checks any escaped UV

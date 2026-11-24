@@ -48,10 +48,10 @@ struct FailureDump
     struct { char vertexShader[48], pixelShader[48]; uint32 draws; } pairs[kDumpPairs]; // distinct shader pairs of those draws
     struct { char vertexShader[48], pixelShader[48]; uint64 meshToken; uint32 firstIndex, indexCount; } draws[kDumpDraws]; // newest first
 };
-// The single place a rejection breaks: under a debugger, or with -dx12highresbreak so that the unhandled breakpoint reaches
-// the process crash handler and writes a minidump. `dump` holds the decoded record and the failing page's draws between the
-// previous clean readback and the failing one; the break stays live through the volatile read. Otherwise the existing
-// rejection runs alone (a release build must not die on a validation report).
+// The single place a validation report breaks: under a debugger, or with -dx12highresbreak so that the unhandled breakpoint
+// reaches the process crash handler and writes a minidump. `dump` holds the decoded record and the failing page's draws
+// between the previous clean readback and the failing one; the break stays live through the volatile read. Otherwise the
+// report is only logged and highres lighting continues (a release build must not die on a validation report).
 __declspec(noinline) void BreakOnHighresFailure(const char *message, const uint32 *record, uint64 fence, uint64 windowAfterFence,
     uint64 mapGeneration, const DrawNote *ring, uint64 ringCount)
 {
@@ -494,6 +494,7 @@ struct CHighresLightmapsDX12::Impl
     // Recent highres receiver draws, oldest overwritten first; a rejection is attributed to those of its window (BreakOnHighresFailure).
     std::array<DrawNote,kDrawRing> draws = {};
     uint64 drawCount = 0, cleanFence = 0; // cleanFence: the newest readback that carried no failure
+    bool failureLogged = false; // the shader latches its first failure, so each map reports once
     void NoteDraw(const DrawIdentity &draw, uint64 fence, uint32 page)
     {
         draws[drawCount++ % kDrawRing] = {draw.vertexShader, draw.pixelShader, fence, draw.meshToken, page, draw.firstIndex, draw.indexCount};
@@ -543,7 +544,7 @@ struct CHighresLightmapsDX12::Impl
         spareReadback.Reset();
         visibilityFaces.clear(); visibilityMeshes.clear(); visibilityDescriptors.Reset(); visibilityRetainedFence=0;
         for (uint32 i=0;i<4;++i) { visibilityBuffers[i].Reset(); visibilityStates[i]=D3D12_RESOURCE_STATE_COPY_DEST; }
-        metadataUploaded = failureUsed = false;
+        metadataUploaded = failureUsed = failureLogged = false;
         commonRetainedFence = 0;
         faceState = tileState = failureState = D3D12_RESOURCE_STATE_COPY_DEST;
         status.gpuBytes = 0;
@@ -576,17 +577,20 @@ struct CHighresLightmapsDX12::Impl
             {
                 if (value[0] && domain && r.generation == domain->mapGeneration)
                 {
-                    const char *reasons[] = {"unknown", "coordinate bounds", "owner ID", "tile index", "tile page group", "lightstyle"};
-                    float uv[2]; memcpy(uv,value+6,sizeof(uv));
-                    char reason[512];
-                    V_snprintf(reason,sizeof(reason),
-                        "Highres lightmaps: shader sampled an unowned native lightmap cell "
-                        "(reason=%s page=%u cell=%d,%d face=%u UV=%.9g,%.9g detail=%u)",
-                        value[1]<ARRAYSIZE(reasons)?reasons[value[1]]:reasons[0],value[2],
-                        static_cast<int32>(value[3]),static_cast<int32>(value[4]),value[5],uv[0],uv[1],value[8]);
-                    Warning("%s\n",reason);
-                    BreakOnHighresFailure(reason,value,r.fence,cleanFence,r.generation,draws.data(),drawCount);
-                    Fail(reason);
+                    if (!failureLogged)
+                    {
+                        failureLogged = true;
+                        const char *reasons[] = {"unknown", "coordinate bounds", "owner ID", "tile index", "tile page group", "lightstyle"};
+                        float uv[2]; memcpy(uv,value+6,sizeof(uv));
+                        char reason[512];
+                        V_snprintf(reason,sizeof(reason),
+                            "Highres lightmaps: shader sampled an unowned native lightmap cell "
+                            "(reason=%s page=%u cell=%d,%d face=%u UV=%.9g,%.9g detail=%u); highres lighting continues",
+                            value[1]<ARRAYSIZE(reasons)?reasons[value[1]]:reasons[0],value[2],
+                            static_cast<int32>(value[3]),static_cast<int32>(value[4]),value[5],uv[0],uv[1],value[8]);
+                        Warning("%s\n",reason);
+                        BreakOnHighresFailure(reason,value,r.fence,cleanFence,r.generation,draws.data(),drawCount);
+                    }
                 }
                 else if (!value[0]) cleanFence = r.fence;
                 D3D12_RANGE written{0,0}; r.resource->Unmap(0,&written);
