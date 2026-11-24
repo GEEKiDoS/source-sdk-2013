@@ -31,12 +31,14 @@
 #include "model_types.h"
 #include "worldsize.h"
 #include "tier0/threadtools.h"
+#include "vstdlib/jobthread.h"
 #include "datacache/imdlcache.h"
 #include "engine/ICollideable.h"
 #include "gamebspfile.h"
 #include "optimize.h"
 #include "tier1/checksum_crc.h"
 #include "tier1/utlmap.h"
+#include "tier1/utlhashtable.h"
 #include "shaderapi/dx12staticpropvisibility.h"
 #include "tier0/vprof.h"
 #include "shadowmaps_dx12_selection.h"
@@ -148,6 +150,11 @@ struct ShadowChartCaster_t
 	bool certified, stableAtCommit, layerRigid;
 	int casterIndex, contentFirst, contentBytes;
 	uint64 notificationRevision, registrationRevision;
+};
+struct ShadowFaceCandidates_t
+{
+	CUtlVector<ShadowChartCaster_t> keys; // Identity order for exact cache comparison.
+	CUtlVector<int> drawOrder;            // Enumeration order for rasterization.
 };
 enum ShadowRigidChangeFlags_t
 {
@@ -319,8 +326,8 @@ struct StaticPropModelVisibility
 	bool valid;
 	CUtlVector<DX12StaticPropMeshIdentity> meshes;
 };
-CUtlMap<IClientRenderable *, StaticPropReceiverPose, int> g_StaticPropReceivers( DefLessFunc(IClientRenderable *) );
-CUtlMap<const model_t *, StaticPropModelVisibility *, int> g_StaticPropModels( DefLessFunc(const model_t *) );
+CUtlHashtable<IClientRenderable *, StaticPropReceiverPose, PointerHashFunctor> g_StaticPropReceivers;
+CUtlHashtable<const model_t *, StaticPropModelVisibility *, PointerHashFunctor> g_StaticPropModels;
 struct CasterSkyRegion_t
 {
 	Vector origin;
@@ -340,10 +347,10 @@ int g_StaticPropRegistrationRootLOD = -2147483647;
 
 void ClearStaticPropModelVisibility()
 {
-	FOR_EACH_MAP( g_StaticPropModels, i ) delete g_StaticPropModels[i];
+	FOR_EACH_HASHTABLE( g_StaticPropModels, i ) delete g_StaticPropModels[i];
 	g_StaticPropModels.Purge();
 	g_StaticPropRegistrationComplete = false;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop ) g_StaticPropReceivers[prop].publishedGeneration = 0;
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop ) g_StaticPropReceivers[prop].publishedGeneration = 0;
 	if ( g_Lighting ) { DX12ModelMeshMetadata empty = {}; g_Lighting->RegisterModelMeshMetadata(empty); }
 	if ( !++g_StaticPropModelGeneration ) ++g_StaticPropModelGeneration;
 }
@@ -365,7 +372,7 @@ const T *StaticPropVtxArray( const CUtlBuffer &bytes, const void *owner, int off
 void PublishModelMeshMetadata( const model_t *model, const studiohdr_t *hdr, const studiohwdata_t *hw )
 {
 	bool authoredStatic = false;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop )
 		if ( g_StaticPropReceivers.Key(prop)->GetModel() == model ) { authoredStatic = true; break; }
 	if ( !hw->m_pLODs ) return;
 	for ( int body = 0; body < hdr->numbodyparts; ++body )
@@ -1077,6 +1084,15 @@ bool BoxInVolume( const ShadowCasterVolume_t &volume, const Vector &mins, const 
 	return true;
 }
 
+struct ProjectedSkyMesh_t
+{
+	uint32 map = 0;
+	int region = -1;
+	Vector travel;
+	float matrix[16];
+	CUtlVector<float> positions;
+};
+
 // Backend calls copy arrays/acquire replay and GPU leases immediately. CPU pool
 // entries remain immutable until GetStatus says their EndView replay completed.
 // Poll only on the main thread: NEVER enqueue a client-DLL callback/functor.
@@ -1140,6 +1156,7 @@ public:
 	Vector selfReceiverMins, selfReceiverMaxs;		// World bounds of the viewmodel receivers (with selfCasters).
 	CUtlVector<ShadowChartCaster_t> localFaceCasters;
 	CUtlVector<int> dynamicFaceDrawOrder;
+	ShadowFaceCandidates_t cubeFaces[6];
 	CUtlVector<ShadowChartCaster_t> casterKeys;
 	CUtlVector<unsigned char> casterContent;
 	uint64 casterContentGeneration;
@@ -1149,13 +1166,16 @@ public:
 	CUtlVector<ShadowLightRank_t> lightRanks;
 	CUtlVector<uint32> casterRanges;
 	CUtlVector<int> casterIndices;
+	CUtlVector<int> dynamicIndices, immutableIndices, lightImmutableIndices;
+	const ShadowMapInfluenceVolume_t *cleanLight = NULL;
+	bool cleanLightCollected = false;
 	CUtlVector<int> sunDepthOutliers;
 	int drawCandidateFirst, drawCandidateCount;
 	CUtlVector<CHandle<C_Beam>> suppressedBeams; // §9 paired beams this main bracket replaces with the volume (empty for other kinds)
 	SunCascadeFit_t cascadeFits[4];
 	IDetailObjectSystem::ShadowReport_t detailReport;
 	int sunSkyRegion;				// Receiver's sealed region for the sun sky clip (BuildSun).
-	CUtlVector<float> sunSkyClip;	// Current sun chart's sky entry triangles in light clip space (RenderChart scratch).
+	ProjectedSkyMesh_t skyMesh[5]; // Four cascades and the static sun.
 };
 
 float HybridNonnegativeSetting( const char *text, float fallback )
@@ -1470,12 +1490,12 @@ struct ShadowModelImmutability_t
 	uint32 staticGeneration;
 	bool immutable;
 };
-CUtlMap<const model_t *, ShadowModelImmutability_t, int> g_ShadowModelImmutability( DefLessFunc(const model_t *) );
+CUtlHashtable<const model_t *, ShadowModelImmutability_t, PointerHashFunctor> g_ShadowModelImmutability;
 bool ShadowModelImmutable( const model_t *model )
 {
 	if ( !model ) return false;
-	int index=g_ShadowModelImmutability.Find(model);
-	if ( index!=g_ShadowModelImmutability.InvalidIndex() && g_ShadowModelImmutability[index].staticGeneration==g_StaticGeneration )
+	auto index=g_ShadowModelImmutability.Find(model);
+	if ( index!=g_ShadowModelImmutability.InvalidHandle() && g_ShadowModelImmutability[index].staticGeneration==g_StaticGeneration )
 		return g_ShadowModelImmutability[index].immutable;
 	studiohdr_t *studio=modelinfo->GetModelType(model)==mod_studio ? modelinfo->GetStudiomodel(model) : NULL;
 	bool immutable=studio && (studio->flags&STUDIOHDR_FLAGS_STATIC_PROP) && studio->numflexdesc==0 && !modelinfo->ModelHasMaterialProxy(model);
@@ -1492,7 +1512,7 @@ bool ShadowModelImmutable( const model_t *model )
 			if ( material->HasProxy() || (found && sway->GetIntValue()!=0) ) { immutable=false; break; }
 		}
 	}
-	if ( index==g_ShadowModelImmutability.InvalidIndex() ) index=g_ShadowModelImmutability.Insert(model);
+	if ( index==g_ShadowModelImmutability.InvalidHandle() ) index=g_ShadowModelImmutability.Insert(model);
 	g_ShadowModelImmutability[index].staticGeneration=g_StaticGeneration; g_ShadowModelImmutability[index].immutable=immutable;
 	return immutable;
 }
@@ -1686,6 +1706,68 @@ struct ShadowCasterSnapshot_t
 };
 ShadowCasterSnapshot_t g_CasterSnapshot;
 
+// World-volume sun queries all share one static input stream. Keep engine
+// props with mutable geometry, and initially rejected registrations, live.
+// Their handles retain the cold walk's order independently of moving actors.
+struct StaticCasterStream_t
+{
+	uint32 map=0, generation=0;
+	uint64 revision=0;
+	CUtlVector<ShadowMapSceneCaster_t> geometry;
+	CUtlVector<ClientRenderHandle_t> exceptions;
+};
+StaticCasterStream_t g_StaticCasterStream;
+
+void CollectSpatialCasters( CShadowViewData &data, const ShadowCasterVolume_t &query, bool validate )
+{
+	IClientLeafSystem *leaf=ClientLeafSystem();
+	const Vector worldMin(MIN_COORD_FLOAT,MIN_COORD_FLOAT,MIN_COORD_FLOAT);
+	const Vector worldMax(MAX_COORD_FLOAT,MAX_COORD_FLOAT,MAX_COORD_FLOAT);
+	const bool whole=!validate && !query.m_nPlaneCount && query.m_vecMins==worldMin && query.m_vecMaxs==worldMax;
+	const uint64 revision=leaf->StaticCasterRevision();
+	const uint32 generation=g_StaticGeneration;
+	StaticCasterStream_t &stream=g_StaticCasterStream;
+	CCollectCasters sink(data);
+	if ( whole && stream.map==g_MapGeneration && stream.generation==generation && stream.revision==revision )
+	{
+		leaf->EnumerateDynamicShadowCasters(query,sink,stream.exceptions);
+		// A callback can remove or reclassify a prop. Don't consume even a
+		// single retained pointer if the generation moved during collection.
+		bool valid=revision==leaf->StaticCasterRevision() && generation==g_StaticGeneration;
+		for ( int i=0;valid && i<data.casters.Count();++i ) valid=!data.casters[i].immutable;
+		if ( valid )
+		{
+			for ( int i=0;i<stream.geometry.Count();++i )
+			{
+				ShadowMapSceneCaster_t caster=stream.geometry[i];
+				CollectRigidCasterContent(data,caster);
+				data.casters.AddToTail(caster);
+			}
+			return;
+		}
+		data.casters.RemoveAll(); data.casterKeys.RemoveAll(); data.casterContent.RemoveAll();
+		data.stats.uncertifiedCasters=0; data.casterContentGeneration=g_CasterContentGeneration;
+	}
+	leaf->EnumerateShadowCasters(query,sink);
+	if ( !whole || generation!=g_StaticGeneration || revision!=leaf->StaticCasterRevision() ) return;
+	stream.geometry.RemoveAll();
+	CLargeVarBitVec retained;
+	retained.Resize(INVALID_CLIENT_RENDER_HANDLE+1,true);
+	for ( int i=0;i<data.casters.Count();++i )
+	{
+		const ShadowMapSceneCaster_t &caster=data.casters[i];
+		if ( !caster.immutable ) continue;
+		retained.Set(caster.renderable->RenderHandle());
+		stream.geometry.AddToTail(caster);
+	}
+	leaf->GetShadowPropCandidates(stream.exceptions);
+	int n=0;
+	for ( int i=0;i<stream.exceptions.Count();++i )
+		if ( !retained.Get(stream.exceptions[i]) ) stream.exceptions[n++]=stream.exceptions[i];
+	stream.exceptions.SetCount(n);
+	stream.map=g_MapGeneration; stream.generation=generation; stream.revision=revision;
+}
+
 void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &query )
 {
 	ShadowCasterSnapshot_t &snapshot=g_CasterSnapshot;
@@ -1711,7 +1793,7 @@ void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &
 	snapshot.frame=-1;
 	const uint64 registrationGeneration=g_CasterRegistrationGeneration;
 	const uint32 staticGeneration=g_StaticGeneration;
-	CCollectCasters sink(data); ClientLeafSystem()->EnumerateShadowCasters(query,sink);
+	CollectSpatialCasters(data,query,validateCasters.GetBool());
 	// Bounds callbacks can invalidate the proof during enumeration. Never
 	// publish a partial snapshot under the newer generation.
 	if ( data.casterContentGeneration!=g_CasterContentGeneration ||
@@ -1732,6 +1814,8 @@ bool DistributeCasters( CShadowViewData &data )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::DistributeCasters", "Shadowmaps" );
 	data.casterRanges.SetCount(data.relevant.Count()*2);
+	data.dynamicIndices.RemoveAll();
+	data.immutableIndices.RemoveAll();
 	// A plane-free influence containing the aggregate caster AABB accepts
 	// every caster using exactly the original per-axis intersection predicate.
 	Vector casterMins(FLT_MAX,FLT_MAX,FLT_MAX), casterMaxs(-FLT_MAX,-FLT_MAX,-FLT_MAX);
@@ -1739,6 +1823,12 @@ bool DistributeCasters( CShadowViewData &data )
 	for ( int c=0;c<data.casters.Count();++c )
 	{
 		const ShadowMapSceneCaster_t &caster=data.casters[c];
+		if ( caster.immutable )
+		{
+			data.immutableIndices.AddToTail(c);
+			continue;
+		}
+		data.dynamicIndices.AddToTail(c);
 		validBounds=validBounds && caster.mins.IsValid() && caster.maxs.IsValid();
 		for ( int a=0;a<3 && validBounds;++a ) validBounds=caster.mins[a]<=caster.maxs[a];
 		AddBounds(casterMins,casterMaxs,caster.mins,caster.maxs);
@@ -1757,18 +1847,13 @@ bool DistributeCasters( CShadowViewData &data )
 			complete=casterMins[a]>=volume.mins[a] && casterMaxs[a]<=volume.maxs[a];
 		if ( complete )
 		{
-			int count=data.casters.Count(), first=data.casterIndices.Count();
-			if ( count>INT_MAX-first ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-			data.casterIndices.AddMultipleToTail(count);
-			if ( count )
+			int count=data.dynamicIndices.Count(), first=completeFirst;
+			if ( first<0 )
 			{
-				if ( completeFirst>=0 )
-					memcpy(data.casterIndices.Base()+first,data.casterIndices.Base()+completeFirst,count*sizeof(int));
-				else
-				{
-					for ( int c=0;c<count;++c ) data.casterIndices[first+c]=c;
-					completeFirst=first;
-				}
+				first=completeFirst=data.casterIndices.Count();
+				if ( count>INT_MAX-first ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+				data.casterIndices.AddMultipleToTail(count);
+				if ( count ) memcpy(data.casterIndices.Base()+first,data.dynamicIndices.Base(),count*sizeof(int));
 			}
 			data.casterRanges[2*l]=first; data.casterRanges[2*l+1]=count;
 			continue;
@@ -1776,8 +1861,9 @@ bool DistributeCasters( CShadowViewData &data )
 		uint32 first=data.casterIndices.Count();
 		// Cube candidates are gathered once here, then classified into expanded
 		// face frusta by HasDynamic and the scene draw, not re-enumerated six times.
-		for ( int c=0;c<data.casters.Count();++c )
+		for ( int i=0;i<data.dynamicIndices.Count();++i )
 		{
+			int c=data.dynamicIndices[i];
 			const ShadowMapSceneCaster_t &caster=data.casters[c];
 			if ( !ShadowMapScene_VolumeIntersectsBox(volume,caster.mins,caster.maxs) ) continue;
 			if ( data.casterIndices.Count()==INT_MAX ) return Fail(SHADOWMAP_ERR_RESIDENCY);
@@ -2152,30 +2238,95 @@ int ChartCasterCompare( const ShadowChartCaster_t *a, const ShadowChartCaster_t 
 	if ( a->immutable!=b->immutable ) return a->immutable ? 1 : -1;
 	return a->staticProp==b->staticProp ? 0 : a->staticProp ? 1 : -1;
 }
-void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t &volume )
+struct ShadowFaceJob_t
 {
-	VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters", "Shadowmaps" );
-	// Retain scratch capacity across faces/views; canonical order compares the
-	// exact set, independent of leaf enumeration order, without hashes/copies.
-	data.localFaceCasters.RemoveAll();
-	data.dynamicFaceDrawOrder.RemoveAll();
-	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.casters.Count();
+	const CShadowViewData *data;
+	const ShadowCasterVolume_t *volume;
+	ShadowFaceCandidates_t *output;
+};
+
+void CollectFaceJob( ShadowFaceJob_t &job )
+{
+	const CShadowViewData &data=*job.data;
+	ShadowFaceCandidates_t &out=*job.output;
+	out.keys.RemoveAll();
+	out.drawOrder.RemoveAll();
+	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.dynamicIndices.Count();
 	bool ordered=true;
 	for ( int i=0;i<count;++i )
 	{
-		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : i;
+		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : data.dynamicIndices[i];
 		const ShadowMapSceneCaster_t &caster=data.casters[index];
-		if ( caster.immutable || !BoxInVolume(volume,caster.mins,caster.maxs) ) continue;
-		data.dynamicFaceDrawOrder.AddToTail(index);
+		if ( !BoxInVolume(*job.volume,caster.mins,caster.maxs) ) continue;
+		out.drawOrder.AddToTail(index);
 		const ShadowChartCaster_t &entry=data.casterKeys[index];
-		if ( data.localFaceCasters.Count() && ChartCasterCompare(&data.localFaceCasters.Tail(),&entry)>0 ) ordered=false;
-		data.localFaceCasters.AddToTail(entry);
+		if ( out.keys.Count() && ChartCasterCompare(&out.keys.Tail(),&entry)>0 ) ordered=false;
+		out.keys.AddToTail(entry);
 	}
-	if ( !ordered )
+	if ( !ordered ) out.keys.Sort(ChartCasterCompare);
+}
+
+void UseFaceCandidates( CShadowViewData &data, ShadowFaceCandidates_t &face )
+{
+	data.dynamicFaceDrawOrder.Swap(face.drawOrder);
+	data.localFaceCasters.Swap(face.keys);
+}
+
+void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t &volume )
+{
+	VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters", "Shadowmaps" );
+	ShadowFaceJob_t job={ &data, &volume, &data.cubeFaces[0] };
+	CollectFaceJob(job);
+	UseFaceCandidates(data,*job.output);
+}
+
+// Only the viewmodel bracket has an AABB enclosing *every* gather point.
+// Main-view detail cards can gather at a lighting origin outside the camera
+// frustum. Don't cull those cube faces based on screen visibility.
+unsigned ViewModelCubeFaceMask( const CShadowViewData &data, const Vector &origin, float planeToTexel )
+{
+	if ( data.kind!=SHADOWMAP_VIEW_VIEWMODEL || !data.selfCasters.Count() ) return 63;
+	Vector lo=data.selfReceiverMins-origin, hi=data.selfReceiverMaxs-origin;
+	if ( !lo.IsValid() || !hi.IsValid() || !(planeToTexel>0) ) return 63;
+	Vector extent;
+	for ( int a=0;a<3;++a )
 	{
-		VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters.Sort", "Shadowmaps" );
-		data.localFaceCasters.Sort(ChartCasterCompare);
+		if ( lo[a]>hi[a] ) return 63;
+		extent[a]=MAX(fabsf(lo[a]),fabsf(hi[a]));
 	}
+	// A biased point moves by 0.5*r/planeToTexel. A PCF seam tap adds
+	// at most two texels along each transverse face axis, scaled by the
+	// biased axial depth. Enclose both and leave slack for raster rounding.
+	const float pad=1.0f+8.0f*extent.Length()/planeToTexel;
+	lo-=Vector(pad,pad,pad); hi+=Vector(pad,pad,pad);
+	unsigned mask=0;
+	for ( int a=0;a<3;++a )
+	{
+		int b=(a+1)%3,c=(a+2)%3;
+		float transverse=MAX(0.0f,MAX(MAX(lo[b],-hi[b]),MAX(lo[c],-hi[c])));
+		if ( hi[a]>=transverse ) mask|=1u<<(2*a);
+		if ( -lo[a]>=transverse ) mask|=2u<<(2*a);
+	}
+	return mask;
+}
+
+bool CollectCachedCubeFaces( CShadowViewData &data, const LocalLight_t &local, unsigned mask )
+{
+	static ConVarRef threaded("r_threaded_renderables");
+	if ( local.faceCount!=6 || data.drawCandidateCount<64 || !threaded.GetBool() ) return false;
+	ShadowFaceJob_t jobs[6];
+	int n=0;
+	for ( int f=0;f<6;++f )
+	{
+		if ( !(mask&(1u<<f)) ) continue;
+		if ( !local.cache[f].valid ) return false;
+		jobs[n++]={ &data, &local.faceVolumes[f], &data.cubeFaces[f] };
+	}
+	// Each worker uses only frozen receiver bounds/keys and its own vectors.
+	// Join before any draw or target update; callbacks stay on the caller.
+	if ( n<2 ) return false;
+	ParallelProcess("ShadowMapsDX12::CubeFaces",jobs,n,&CollectFaceJob,NULL,NULL,3);
+	return true;
 }
 bool SameDetailOrientation( const ShadowMapDetailOrientation_t &a, const ShadowMapDetailOrientation_t &b )
 {
@@ -2302,18 +2453,16 @@ bool WritableSunTarget( CShadowViewData &data, DX12ShadowTarget_t &work, int siz
 	SpareSunTarget_t spare; spare.size=size; spare.target=previous; g_SunSpares.AddToTail(spare);
 	return true;
 }
-// Sun charts: the chart's sky entry triangles in light clip space (data.sunSkyClip) and the chart depth bias the
-// backend clips casters with; empty when the receiver region has no entry sky under this chart.
-bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, DX12ShadowSkyClip &skyClip )
+// The entry sky is map geometry. Dynamic caster movement requires another
+// depth pass, not another projection of the same triangles.
+void ProjectSunSkyMesh( ProjectedSkyMesh_t &mesh, const float matrix[16], int region )
 {
-	VPROF_BUDGET( "ShadowMapsDX12::BuildSunSkyClip", "Shadowmaps" );
-	data.sunSkyClip.RemoveAll();
-	if ( data.sunSkyRegion==kSunSkyClipOff ) return false;
-	VMatrix clip; memcpy(&clip[0][0],cache.pendingMatrix,sizeof(cache.pendingMatrix));
+	mesh.positions.RemoveAll();
+	VMatrix clip; memcpy(&clip[0][0],matrix,sizeof(mesh.matrix));
 	for ( int e=0;e<g_SunSky.entryFaces.Count();++e )
 	{
 		const SunSkyFace_t &face=g_SunSky.faces[g_SunSky.entryFaces[e]];
-		if ( data.sunSkyRegion>=0 && face.region!=data.sunSkyRegion ) continue;
+		if ( region>=0 && face.region!=region ) continue;
 		const Vector *polygon=&g_SunSky.vertices[face.firstVertex];
 		for ( int v=1;v+1<face.vertexCount;++v )
 		{
@@ -2321,14 +2470,25 @@ bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, DX12Sha
 			for ( int c=0;c<3;++c )
 			{
 				Vector4D position; Vector4DMultiplyPosition(clip,*corners[c],position);
-				const int first=data.sunSkyClip.AddMultipleToTail(4);
-				data.sunSkyClip[first]=position.x; data.sunSkyClip[first+1]=position.y; data.sunSkyClip[first+2]=position.z; data.sunSkyClip[first+3]=position.w;
+				const int first=mesh.positions.AddMultipleToTail(4);
+				memcpy(mesh.positions.Base()+first,position.Base(),4*sizeof(float));
 			}
 		}
 	}
-	if ( !data.sunSkyClip.Count() ) return false;
+	memcpy(mesh.matrix,matrix,sizeof(mesh.matrix));
+	mesh.map=g_MapCounter; mesh.region=region; mesh.travel=g_SunSky.travel;
+}
+bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, int chartLight, DX12ShadowSkyClip &skyClip )
+{
+	VPROF_BUDGET( "ShadowMapsDX12::BuildSunSkyClip", "Shadowmaps" );
+	if ( data.sunSkyRegion==kSunSkyClipOff ) return false;
+	ProjectedSkyMesh_t &mesh=data.skyMesh[~uint32(chartLight) % ARRAYSIZE(data.skyMesh)];
+	if ( mesh.map!=g_MapCounter || mesh.region!=data.sunSkyRegion || mesh.travel!=g_SunSky.travel ||
+		memcmp(mesh.matrix,cache.pendingMatrix,sizeof(mesh.matrix)) )
+		ProjectSunSkyMesh(mesh,cache.pendingMatrix,data.sunSkyRegion);
+	if ( !mesh.positions.Count() ) return false;
 	if ( !CreateSunTarget(g_SunSkyTarget,"shadow_sun_sky_clip",MAX(g_ShadowRes.csm,g_ShadowRes.sun)) || !data.Lease(g_SunSkyTarget) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-	skyClip.target=g_SunSkyTarget; skyClip.clipPositions=data.sunSkyClip.Base(); skyClip.vertexCount=data.sunSkyClip.Count()/4;
+	skyClip.target=g_SunSkyTarget; skyClip.clipPositions=mesh.positions.Base(); skyClip.vertexCount=mesh.positions.Count()/4;
 	skyClip.depthBias=kSunSkyClipBiasUnits/(cache.pendingDepth[1]-cache.pendingDepth[0]);
 	return true;
 }
@@ -2344,15 +2504,33 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	ShadowMapDepthScene_t scene;
 	scene.lightView=lightView; scene.receiverView=data.receiver; scene.volume=volume; scene.detail=data.detail; scene.detail.m_nShadowSkyRegion=skyClip ? data.sunSkyRegion : -1;
 	scene.casters=&data.casters; scene.lighting=g_Lighting; scene.target=target;
-	scene.candidateIndices=data.drawCandidateFirst>=0 ? &data.casterIndices : NULL;
-	scene.candidateFirst=data.drawCandidateFirst; scene.candidateCount=data.drawCandidateCount;
-	// Certification sorts localFaceCasters by identity. Rasterization must instead
-	// consume the same face membership in the original engine draw order.
-	if ( dynamic && !immutable )
+	// Clean depth already retains the static world/props across frames. Don't
+	// distribute those props to every moving overlay; gather them on a clean
+	// miss only. All faces of a local share its ordered influence candidates.
+	Assert( !immutable || !dynamic );
+	scene.candidateIndices=&data.dynamicFaceDrawOrder;
+	if ( immutable )
 	{
-		scene.candidateIndices=&data.dynamicFaceDrawOrder;
-		scene.candidateFirst=0; scene.candidateCount=data.dynamicFaceDrawOrder.Count();
+		scene.candidateIndices=&data.immutableIndices;
+		if ( data.cleanLight )
+		{
+			if ( !data.cleanLightCollected )
+			{
+				data.lightImmutableIndices.RemoveAll();
+				for ( int i=0;i<data.immutableIndices.Count();++i )
+				{
+					int index=data.immutableIndices[i];
+					const ShadowMapSceneCaster_t &caster=data.casters[index];
+					if ( ShadowMapScene_VolumeIntersectsBox(*data.cleanLight,caster.mins,caster.maxs) )
+						data.lightImmutableIndices.AddToTail(index);
+				}
+				data.cleanLightCollected=true;
+			}
+			scene.candidateIndices=&data.lightImmutableIndices;
+		}
 	}
+	scene.candidateFirst=0;
+	scene.candidateCount=(immutable || dynamic) ? scene.candidateIndices->Count() : 0;
 	scene.x=x; scene.y=y; scene.size=size; scene.clear=clear;
 	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail; scene.instanceCasters=r_shadowmap_instancing.GetBool();
 	scene.dynamicLayer=dynamicLayer;
@@ -2499,7 +2677,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	bool baseRebuilt=!cache.pendingClean;
 	// Every caster pass of a sun chart (clean, rigid, overlay) is clipped by the same sky map.
 	DX12ShadowSkyClip skyClip, *sunSkyClip=NULL;
-	if ( chartLight<0 && BuildSunSkyClip(data,cache,skyClip) ) sunSkyClip=&skyClip;
+	if ( chartLight<0 && BuildSunSkyClip(data,cache,chartLight,skyClip) ) sunSkyClip=&skyClip;
 	if ( g_Error[0] ) return false;
 	// Required work is synchronous; no throttling or deferred visible updates.
 	if ( !cache.pendingClean )
@@ -2706,6 +2884,8 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( data.shadowsEnabled && data.realtimeLocals[relevantIndex] )
 	{
 		data.drawCandidateFirst=data.casterRanges[relevantIndex*2]; data.drawCandidateCount=data.casterRanges[relevantIndex*2+1];
+		data.cleanLight=&local.influence;
+		data.cleanLightCollected=false;
 	}
 	RuntimeShadowLightGpu &gpu=data.lights[data.lights.AddToTail()]; memset(&gpu,0,sizeof(gpu));
 	const DX12LightingSelectedLight &light=local.selected;
@@ -2745,8 +2925,19 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( !data.shadowsEnabled || !data.realtimeLocals[relevantIndex] ) return true;
 	AddReportVolume(data,(int)light.lightId,CasterVolume(local.influence));
 	const bool projectionChanged=local.projectionNear!=gpu.shadowNear || local.projectionFar!=gpu.shadowFar;
+	unsigned updateMask=63;
+	if ( local.faceCount==6 && !projectionChanged )
+		updateMask=ViewModelCubeFaceMask(data,local.world.origin,gpu.planeToTexel);
+	// A new face, page generation, or interrupted transaction still initializes
+	// synchronously. Skipping a warm, unsampled face does not advance its proof.
+	for ( int f=0;f<local.faceCount;++f )
+		if ( !local.cache[f].valid || local.cache[f].pending ||
+			local.cache[f].slotGeneration!=g_Pages[local.page[f]].generation )
+			updateMask|=1u<<f;
+	const bool haveCubeFaces=!projectionChanged && CollectCachedCubeFaces(data,local,updateMask);
 	for ( int f=0;f<local.faceCount;++f )
 	{
+		if ( !(updateMask&(1u<<f)) ) continue;
 		ShadowCache_t &cache=local.cache[f];
 		int pageIndex=local.page[f], slot=local.slot[f], x=(slot%g_ShadowRes.slots)*g_ShadowRes.local, y=(slot/g_ShadowRes.slots)*g_ShadowRes.local;
 		LocalPage_t &page=g_Pages[pageIndex];
@@ -2773,7 +2964,8 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 			VPROF_BUDGET( "ShadowMapsDX12::BuildLocal.ReuseChecks", "Shadowmaps" );
 			const ShadowCasterVolume_t &volume=local.faceVolumes[f];
 			bool billboards=DetailObjectSystem()->HasShadowCasters(volume,true);
-			CollectLocalFaceCasters(data,volume);
+			if ( haveCubeFaces ) UseFaceCandidates(data,data.cubeFaces[f]);
+			else CollectLocalFaceCasters(data,volume);
 			bool dynamic=data.localFaceCasters.Count()!=0;
 			uint32 detailGeneration=billboards ? data.detail.m_nGeneration : 0;
 			bool rebuild=cache.staticGeneration!=g_StaticGeneration || cache.slotGeneration!=page.generation;
@@ -2955,6 +3147,7 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 {
 	VPROF_BUDGET( "ShadowMapsDX12::BuildSun", "Shadowmaps" );
 	data.drawCandidateFirst=-1; data.drawCandidateCount=0;
+	data.cleanLight=NULL;
 	if ( g_Sun<0 ) return true;
 	const ShadowMapClientMapState &map=ShadowMapsDX12_MapState();
 	const DX12LightingSelectedLight &sun=g_Selected[g_Sun];
@@ -4208,15 +4401,14 @@ void ShadowMapsDX12_RegisterStaticPropReceiver( uint32 ordinal, ICollideable *pr
 	record.ordinal = ordinal; record.authored = authored;
 	CacheCasterSkyRegion( renderable, authored.m_Origin );
 	g_StaticPropRegistrationComplete = false;
-	const int found = g_StaticPropReceivers.Find(renderable);
-	if ( found == g_StaticPropReceivers.InvalidIndex() ) g_StaticPropReceivers.Insert(renderable,record);
+	const auto found = g_StaticPropReceivers.Find(renderable);
+	if ( found == g_StaticPropReceivers.InvalidHandle() ) g_StaticPropReceivers.Insert(renderable,record);
 	else g_StaticPropReceivers[found] = record;
 }
 
 void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 {
 	if ( !ShadowMapsDX12_Active() || !g_Lighting || !renderable ) return;
-	const int propIndex = g_StaticPropReceivers.Find(renderable);
 	const model_t *model = renderable->GetModel();
 	if ( !model || modelinfo->GetModelType(model) != mod_studio ) return;
 	MDLCACHE_CRITICAL_SECTION();
@@ -4225,13 +4417,13 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 	const studiohwdata_t *hw = handle != MDLHANDLE_INVALID ? mdlcache->GetHardwareData(handle) : NULL;
 	if ( !hdr || !hw || !hw->m_pLODs || hw->m_NumLODs <= 0 ||
 		hw->m_RootLOD < 0 || hw->m_RootLOD >= hw->m_NumLODs ) return;
-	int cacheIndex = g_StaticPropModels.Find(model);
-	StaticPropModelVisibility *cached = cacheIndex != g_StaticPropModels.InvalidIndex() ? g_StaticPropModels[cacheIndex] : NULL;
+	const auto cacheIndex = g_StaticPropModels.Find(model);
+	StaticPropModelVisibility *cached = cacheIndex != g_StaticPropModels.InvalidHandle() ? g_StaticPropModels[cacheIndex] : NULL;
 	if ( !cached || cached->header != hdr || cached->hardware != hw || cached->checksum != uint32(hdr->checksum) ||
 		cached->hardwareLODs != hw->m_pLODs || cached->rootLOD != hw->m_RootLOD ||
 		cached->lodCount != hw->m_NumLODs || cached->studioMeshCount != hw->m_NumStudioMeshes )
 	{
-		if ( cached ) { delete cached; g_StaticPropModels.RemoveAt(cacheIndex); }
+		if ( cached ) { delete cached; g_StaticPropModels.RemoveByHandle(cacheIndex); }
 		cached = new StaticPropModelVisibility;
 		cached->header = hdr; cached->hardware = hw; cached->checksum = hdr->checksum;
 		cached->hardwareLODs = hw->m_pLODs; cached->rootLOD = hw->m_RootLOD;
@@ -4243,7 +4435,8 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 		g_StaticPropModels.Insert(model,cached);
 		PublishModelMeshMetadata(model,hdr,hw);
 	}
-	if ( propIndex == g_StaticPropReceivers.InvalidIndex() ) return;
+	const auto propIndex = g_StaticPropReceivers.Find(renderable);
+	if ( propIndex == g_StaticPropReceivers.InvalidHandle() ) return;
 	StaticPropReceiverPose &prop = g_StaticPropReceivers[propIndex];
 	if ( prop.publishedGeneration == cached->generation ) return;
 	DX12StaticPropReceiver receiver = {};
@@ -4271,7 +4464,7 @@ void ShadowMapsDX12_PrepareStaticPropReceivers()
 	}
 	if ( g_StaticPropRegistrationComplete ) return;
 	g_StaticPropRegistrationComplete = true;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop )
 	{
 		ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
 		if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;

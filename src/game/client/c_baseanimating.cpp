@@ -3631,35 +3631,18 @@ int C_BaseAnimating::DrawModel( int flags )
 	ValidateModelIndex();
 #endif
 
-	if ( r_drawothermodels.GetInt() )
+	const int drawOtherModels = r_drawothermodels.GetInt();
+	if ( drawOtherModels )
 	{
 		MDLCACHE_CRITICAL_SECTION();
 
-		int extraFlags = 0;
-		if ( r_drawothermodels.GetInt() == 2 )
-		{
+		int extraFlags = flags & ( STUDIO_SHADOWDEPTHTEXTURE | STUDIO_SSAODEPTHTEXTURE | STUDIO_NO_OVERRIDE_FOR_ATTACH );
+		if ( drawOtherModels == 2 )
 			extraFlags |= STUDIO_WIREFRAME;
-		}
-
-		if ( flags & STUDIO_SHADOWDEPTHTEXTURE )
-		{
-			extraFlags |= STUDIO_SHADOWDEPTHTEXTURE;
-		}
-
-		if ( flags & STUDIO_SSAODEPTHTEXTURE )
-		{
-			extraFlags |= STUDIO_SSAODEPTHTEXTURE;
-		}
-
 		if ( ( flags & ( STUDIO_SSAODEPTHTEXTURE | STUDIO_SHADOWDEPTHTEXTURE ) ) == 0 &&
 			g_pStudioStatsEntity != NULL && g_pStudioStatsEntity == GetClientRenderable() )
 		{
 			extraFlags |= STUDIO_GENERATE_STATS;
-		}
-
-		if ( flags & ( STUDIO_NO_OVERRIDE_FOR_ATTACH ) ) 
-		{
-			extraFlags |= STUDIO_NO_OVERRIDE_FOR_ATTACH;
 		}
 
 		// Necessary for lighting blending
@@ -3881,12 +3864,13 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 	}
 #endif
 
-	if ( !GetModel() )
+	const model_t *model = GetModel();
+	if ( !model )
 		return 0;
 
 	// This should never happen, but if the server class hierarchy has bmodel entities derived from CBaseAnimating or does a
 	//  SetModel with the wrong type of model, this could occur.
-	if ( modelinfo->GetModelType( GetModel() ) != mod_studio )
+	if ( modelinfo->GetModelType( model ) != mod_studio )
 	{
 		return BaseClass::DrawModel( flags );
 	}
@@ -3920,8 +3904,8 @@ int C_BaseAnimating::InternalDrawModel( int flags )
 
 #if defined( L4D2 )
 	bool nativeEntityStencil = false;
-	if ( !IsPlayer() && !TerrorModel_SkipEntityStencil() &&
-		( flags & STUDIO_RENDER ) && !( flags & 0x40000000 ) )
+	if ( ( flags & STUDIO_RENDER ) && !( flags & 0x40000000 ) &&
+		!IsPlayer() && !TerrorModel_SkipEntityStencil() )
 	{
 		ShaderStencilState_t state;
 		nativeEntityStencil = GetStencilState( state );
