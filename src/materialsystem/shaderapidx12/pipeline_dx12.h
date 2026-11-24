@@ -17,6 +17,10 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <mutex>
+#include <memory>
+#include <string>
+#include <vector>
 class IFileSystem;
 
 namespace shaderapidx12
@@ -80,14 +84,16 @@ public:
 	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void WarmRecipes( unsigned budget, unsigned &done, unsigned &total );
-	bool ObservedShader( const unsigned char *data, size_t bytes ) const { return m_Recipes.ObservedShader( data, bytes ); }
+	bool ObservedShader( const unsigned char *data, size_t bytes ) const { std::lock_guard<std::mutex> lock( m_RecipeMutex ); return m_Recipes.ObservedShader( data, bytes ); }
 	void WarmMaterialLayouts()
 	{
+		std::lock_guard<std::mutex> lock( m_RecipeMutex );
 		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
 		m_Recipes.WarmLayouts( m_pDevice, roots, m_Library );
 	}
 	void WarmPixelVariant( D3D12_SHADER_BYTECODE from, D3D12_SHADER_BYTECODE to, bool readOnlyDepth )
 	{
+		std::lock_guard<std::mutex> lock( m_RecipeMutex );
 		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
 		m_Recipes.WarmPixelVariant( from, to, readOnlyDepth, m_pDevice, roots, m_Library );
 	}
@@ -132,6 +138,8 @@ public:
 		uint64_t constantShaderIds[6] = {};
 		uint32_t consumedRegisters[6] = {};
 		// Native space-1 CBVs: slots 0-7 VS b0-b7, 8-15 PS b0-b7; only stages flagged in nativeStage are bound.
+		DrawModelRowsDX12 *rows = nullptr;
+		UINT rowsOffset = 0, rowsMask = 0;
 		const void *nativeData[16] = {};
 		uint32_t nativeSizes[16] = {};
 		uint64_t nativeVersions[16] = {};
@@ -176,7 +184,7 @@ public:
 	};
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
-	void DeferNativeCbvs( bool defer ) { m_bDeferNativeCbvs = defer; }
+	void BeginNativeCapture() { m_bLastSrvTableIsPrevious = false; m_nCaptureRemaining = 0; memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) ); memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) ); }
 
 	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
 	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
@@ -345,21 +353,44 @@ public:
 	D3D12_CPU_DESCRIPTOR_HANDLE AcquireResourceDescriptor( uint64_t nLastUseFence );
 	void ReleaseResourceDescriptor( D3D12_CPU_DESCRIPTOR_HANDLE descriptor, uint64_t nRetireFence );
 	void NotifyShaderDestroyed( uint64_t nShaderIdentity );
-	ID3D12PipelineState *GetOrCreate( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence );
+	RecordedPipelineDX12 *CapturePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence );
+	void InvalidateDirectPipeline() { m_pBoundPipeline = nullptr; }
 	// Memo indices are valid only while PipelineEpoch matches. Reuse is a new GPU use, not just a CPU lookup.
 	int LastPipelineIndex() const { return m_nLastPipelineIndex; }
-	ID3D12PipelineState *UseCachedPipeline( int index, uint64_t nRetireFence )
+	RecordedPipelineDX12 *UseCachedPipeline( int index, uint64_t nRetireFence )
 	{
 		Entry &entry = m_Entries[index];
 		entry.lastUseFence = nRetireFence;
-		return entry.pso.Get();
+		return entry.request.get();
 	}
 
+private:
+	struct PipelineRequest final : RecordedPipelineDX12
+	{
+		CPipelineCacheDX12 *owner;
+		PipelineKeyDX12 key;
+		struct Source
+		{
+			std::vector<unsigned char> stages[3];
+			std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+			std::vector<std::string> semantics;
+		};
+		std::unique_ptr<Source> source;
+		std::once_flag once;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		ID3D12PipelineState *Resolve() override;
+	};
+	Microsoft::WRL::ComPtr<ID3D12PipelineState> ResolvePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs,
+		const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout );
+	mutable std::mutex m_RecipeMutex; // Portable recipe/library publication; never taken on a realized draw.
+	std::atomic<uint64_t> m_ReplayCreates{0};
+public:
+	uint64_t TakeCreatedPipelines() { return m_ReplayCreates.exchange( 0, std::memory_order_relaxed ); }
 private:
 	struct Entry
 	{
 		PipelineKeyDX12 key;
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		std::shared_ptr<PipelineRequest> request;
 		uint64_t lastUseFence = 0;
 		bool destroyed = false;
 	};
@@ -395,6 +426,9 @@ private:
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
+	bool CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence, const BindingInputDX12 &input );
+	uint64_t m_nCaptureFence = 0;
+	UINT m_nCaptureRemaining = 0;
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CPersistentPipelineDX12 m_Library;
 	CPipelineRecipesDX12 m_Recipes;
@@ -422,8 +456,6 @@ private:
 		uint64_t fence = 0, heapGeneration = 0, descriptorEpoch = 0;
 	};
 
-	bool m_bDeferNativeCbvs = false;
-	CachedSrvTable m_SrvTables[512];
 	uint64_t m_nSrvDescriptorEpoch = 1;
 	CachedSrvTable m_LastSrvTable{};
 
@@ -455,8 +487,7 @@ private:
 
 	struct NativeTableCache
 	{
-		D3D12_GPU_VIRTUAL_ADDRESS addresses[8] = {};
-		UINT sizes[8] = {};
+		uint8_t live = 0;
 		D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
 		uint64_t fence = 0, heapGeneration = 0;
 	};

@@ -56,8 +56,12 @@ struct DX12ConstantStaging
 	// Set only by an admitted receiver or an explicitly non-lighting auxiliary pass;
 	// consumed/reset at Draw so an earlier pass cannot admit an unknown later one.
 	bool shadowmapPassAdmitted;
+	IShaderDynamicAPI *modelRowsApi = nullptr;
+	uint32_t modelRowsMask = 0;
 };
 extern DX12ConstantStaging g_DX12Constants;
+int DX12StageModelRows( IShaderDynamicAPI *api, int limit );
+uint32_t DX12ModelRowsOffset( uint32_t stage, uint64_t layout );
 
 // Same signatures and register semantics as the IShaderDynamicAPI setters they replace in material code.
 void DX12SetVertexShaderConstant( int reg, const float *data, int count = 1, bool force = false );
@@ -95,7 +99,8 @@ template< class CB > void DX12WriteNativeCBuffer( IShaderDynamicAPI *api, const 
 		"Material cbuffer register is reserved or out of range" );
 	const dx12native::NativeCBufferWriteDX12 write = {
 		dx12native::kDX12NativeCBufferWriteMagic, dx12native::kDX12NativeCBufferVersion,
-		CB::kStage, 1, CB::kRegister, CB::kSize, CB::kLayoutHash, &block, &map
+		CB::kStage, 1, CB::kRegister, CB::kSize, CB::kLayoutHash, &block, &map,
+		DX12ModelRowsOffset( CB::kStage, CB::kLayoutHash ), CB::kStage == dx12native::kStagePixel ? g_DX12Constants.modelRowsMask : 0u
 	};
 	if ( CB::kStage == dx12native::kStageVertex )
 		api->SetVertexShaderConstant( dx12native::kDX12NativeCBufferPointerVar, reinterpret_cast< const float * >( &write ), 1, true );

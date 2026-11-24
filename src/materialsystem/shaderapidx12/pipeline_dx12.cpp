@@ -41,9 +41,9 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	memset( m_LastConstantSlots, 0, sizeof( m_LastConstantSlots ) );
 	memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) );
 	memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) );
-	memset( m_SrvTables, 0, sizeof( m_SrvTables ) );
 	memset( m_RecentConstants, 0, sizeof( m_RecentConstants ) );
 	m_nUploadPageHint = 0;
+	m_nCaptureRemaining = 0;
 	// Upload pages carry per-draw constants, dynamic geometry, instance rows and the per-view light records that every
 	// lit pixel reads. Cached (write-back) CPU pages suit cache-coherent UMA only; on a discrete adapter they are snooped
 	// system memory read across PCIe, which a large GPU L2 (Ada: 48 MB) can hide but older parts (Pascal: 2 MB, often
@@ -322,6 +322,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 //-----------------------------------------------------------------------------
 void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned &total )
 {
+	std::lock_guard<std::mutex> lock( m_RecipeMutex );
 	total = m_Recipes.Total();
 	if ( !budget || m_Recipes.Next() == total ) { done = m_Recipes.Next(); return; }
 	const double start = Plat_FloatTime();
@@ -801,6 +802,26 @@ void CPipelineCacheDX12::BindDrawState( CCommandRecorderDX12 *pList, const D3D12
 // Purpose: Uploads constants and binds descriptor heaps, SRV/sampler tables and
 //          root CBVs for one draw, skipping state already bound in this recording
 //-----------------------------------------------------------------------------
+bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence, const BindingInputDX12 &input )
+{
+	const UINT padded = ( static_cast<UINT>( bytes ) + 255 ) & ~255u;
+	// Carve immutable output slices from one owner-side page reservation.
+	// Replay fills them before the frame's (ordered, single-fence) Execute.
+	if ( m_nCaptureFence != fence || m_nCaptureRemaining < padded )
+	{
+		const UINT grant = MAX( 65536u, padded );
+		D3D12_GPU_VIRTUAL_ADDRESS base; unsigned char *mapped;
+		if ( !AllocateUploadLocked( nullptr, grant, grant, 256, fence, base, nullptr, nullptr, nullptr, 0, 0, &mapped ) )
+			return false;
+		list->ConstantArena( mapped, base );
+		m_nCaptureRemaining = grant;
+		m_nCaptureFence = fence;
+	}
+	list->UploadConstant( slot, source, static_cast<UINT>( bytes ), slot == 9 ? input.rows : nullptr, input.rowsOffset, input.rowsMask );
+	m_nCaptureRemaining -= padded;
+	return true;
+}
+
 bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input )
 {
 	if ( !pList )
@@ -907,36 +928,33 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	{
 		if ( !input.nativeStage[stage] )
 			continue;
-		D3D12_GPU_VIRTUAL_ADDRESS addresses[8];
-		UINT sizes[8];
+		uint8_t live = 0;
+		bool changed = false;
 		for ( unsigned slot = 0; slot < 8; ++slot )
 		{
 			const unsigned i = stage * 8 + slot;
 			const size_t nBytes = ( input.nativeCBufferMask[stage] & ( 1u << slot ) ) ? input.nativeSizes[i] : 0;
-			sizes[slot] = nBytes ? static_cast<UINT>( ( nBytes + 255 ) & ~size_t( 255 ) ) : 256u;
-			if ( !nBytes )
-			{
-				addresses[slot] = m_nZeroConstantAddress;
-				continue;
-			}
+			if ( !nBytes ) continue;
+			live |= uint8_t( 1u << slot );
 			if ( !input.nativeData[i] || nBytes > kConstantBufferMaxBytes || ( nBytes & 15 ) )
 				return false;
 			const uint64_t version = input.nativeVersions[i];
 			LastConstantSlot &last = m_LastNativeSlots[i];
 			if ( version && last.fence == input.retireFence && last.version == version && last.bytes == nBytes )
 			{
-				addresses[slot] = last.address;
 				++m_Stats.constantHits;
 				continue;
 			}
-			if ( !AllocateUploadLocked( input.nativeData[i], nBytes, sizes[slot], 256, input.retireFence, addresses[slot], nullptr, nullptr, nullptr, 0, 0 ) )
+			m_NativeTableCache[stage].fence = 0; // A later allocation may abort this draw after changing a slot.
+			if ( !CaptureConstant( pList, i, input.nativeData[i], nBytes, input.retireFence, input ) )
 				return false;
 			++m_Stats.constantUploads;
-			last = { input.retireFence, version, 0, nBytes, addresses[slot] };
+			last = { input.retireFence, version, 0, nBytes, 0 };
+			changed = true;
 		}
 		// An unchanged address set within this fence reuses the previous table.
 		NativeTableCache &cached = m_NativeTableCache[stage];
-		if ( cached.fence == input.retireFence && cached.heapGeneration == m_Bindings.ResourceHeap().Generation() && !memcmp( cached.addresses, addresses, sizeof( addresses ) ) && !memcmp( cached.sizes, sizes, sizeof( sizes ) ) )
+		if ( !changed && cached.live == live && cached.fence == input.retireFence && cached.heapGeneration == ResourceHeapGeneration() )
 		{
 			nativeTables[stage] = cached.gpu;
 			continue;
@@ -944,142 +962,35 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const DescriptorRangeDX12 table = m_Bindings.AllocateDescriptors( 8, input.retireFence );
 		if ( table.count != 8 )
 			return false;
-		// In queued mode recording is already off the main thread. Don't put
-		// extra descriptor work ahead of ExecuteCommandLists on the submit worker.
-		if ( m_bDeferNativeCbvs )
-			pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>(resourceStride), addresses, sizes );
-		else
-		{
-			auto cpu = table.cpu;
-			for ( unsigned slot = 0; slot < 8; ++slot, cpu.ptr += resourceStride )
-			{
-				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
-				m_pDevice->CreateConstantBufferView( &view, cpu );
-			}
-		}
-		memcpy( cached.addresses, addresses, sizeof( addresses ) );
-		memcpy( cached.sizes, sizes, sizeof( sizes ) );
+		pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>( resourceStride ), stage, live, m_nZeroConstantAddress );
+		cached.live = live;
 		cached.gpu = table.gpu;
 		cached.fence = input.retireFence;
 		cached.heapGeneration = table.generation;
 		nativeTables[stage] = table.gpu;
 	}
-	D3D12_GPU_DESCRIPTOR_HANDLE srvs{};
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 SRVBindings", DX12_DRAW_ZONES_ACTIVE );
-		// Complete-source tables are reusable within their recording fence and heap generation; a CPU source slot
-		// can be rewritten for another texture copy, so resources are compared as well as handles.
-		const uint64_t generation = m_Bindings.ResourceHeap().Generation();
-		const auto sameTable = [&]( const CachedSrvTable &cached )
+		const auto heap = ResourceHeapGeneration();
+		if ( input.texturesUnchanged && m_bLastSrvTableIsPrevious && m_LastSrvTable.fence == input.retireFence &&
+			m_LastSrvTable.heapGeneration == heap && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch )
+			++m_Stats.srvTableHits;
+		else
 		{
-			return cached.fence == input.retireFence && cached.heapGeneration == generation && cached.descriptorEpoch == m_nSrvDescriptorEpoch &&
-			    !memcmp( cached.sources, input.srvSources, sizeof( input.srvSources ) ) &&
-			    !memcmp( cached.resources, input.textures, sizeof( input.textures ) );
-		};
-		CachedSrvTable *slot = nullptr;
-		const bool previousValid = m_bLastSrvTableIsPrevious;
-		// An unchanged texture set reuses the previous draw's table (whose sources were complete) without scanning
-		// or comparing the 32 handles.
-		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable.fence == input.retireFence && m_LastSrvTable.heapGeneration == generation && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch;
-		const bool sourcesComplete = reusePrevious || [&]
-		{
-			SIZE_T nZeroMask = 0;
-			for ( int i = 0; i < ARRAYSIZE( input.srvSources ); ++i )
-				nZeroMask |= input.srvSources[i].ptr == 0;
-			return nZeroMask == 0;
-		}();
-		m_bLastSrvTableIsPrevious = false;
-		if ( sourcesComplete )
-		{
-			if ( reusePrevious )
+			auto table = m_Bindings.AllocateDescriptors( 32, input.retireFence );
+			if ( table.count != 32 ) return false;
+			UINT missing = 0;
+			for ( unsigned i = 0; i < 32; ++i ) if ( !input.srvSources[i].ptr )
 			{
-				srvs = m_LastSrvTable.gpu;
-				++m_Stats.srvTableHits;
+				missing |= 1u << i;
+				if ( input.textures[i] ) RetainExternalResource( input.textures[i], input.retireFence );
 			}
-			else if ( sameTable( m_LastSrvTable ) )
-			{
-				srvs = m_LastSrvTable.gpu;
-				++m_Stats.srvTableHits;
-			}
-			else
-			{
-				// Highres world materials can share t0..t2 and differ at the
-				// lightmap or detail slots. Equality still checks the full table.
-				uint64_t identity = 0;
-				for ( unsigned i = 0; i < 16; ++i )
-					identity = ( identity ^ input.srvSources[i].ptr ) * 1099511628211ull;
-				slot = &m_SrvTables[Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & ( ARRAYSIZE( m_SrvTables ) - 1 )];
-				if ( sameTable( *slot ) )
-				{
-					srvs = slot->gpu;
-					m_LastSrvTable = *slot;
-					++m_Stats.srvTableHits;
-					slot = nullptr;
-				}
-			}
-			m_bLastSrvTableIsPrevious = srvs.ptr != 0;
-		}
-		if ( !srvs.ptr )
-		{
-			DescriptorRangeDX12 table;
-			{
-				ZoneNamedN( ___tracy_scoped_zone, "DX12 ResourceDescriptorAllocation", DX12_DRAW_ZONES_ACTIVE );
-				table = m_Bindings.AllocateDescriptors( 32, input.retireFence );
-			}
-			if ( table.count != 32 )
-				return false;
-			srvs = table.gpu;
-			if ( sourcesComplete )
-			{
-				// The submission worker performs the copy at replay; source slots are fence-retired (ReleaseResourceDescriptor).
-				pList->CopyDescriptorTable( table.cpu, 32, input.srvSources );
-				++m_Stats.srvTableCopies;
-				CachedSrvTable &fresh = m_LastSrvTable;
-				memcpy( fresh.sources, input.srvSources, sizeof( fresh.sources ) );
-				memcpy( fresh.resources, input.textures, sizeof( fresh.resources ) );
-				fresh.gpu = srvs;
-				fresh.fence = input.retireFence;
-				fresh.heapGeneration = table.generation;
-				fresh.descriptorEpoch = m_nSrvDescriptorEpoch;
-				if ( slot )
-					*slot = fresh;
-				m_bLastSrvTableIsPrevious = true;
-			}
-			else
-			{
-				D3D12_CPU_DESCRIPTOR_HANDLE destinations[32], sources[32];
-				UINT copyCount = 0;
-				for ( unsigned i = 0; i < 32; ++i )
-				{
-					D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
-					cpu.ptr += i * resourceStride;
-					D3D12_CPU_DESCRIPTOR_HANDLE source = input.srvSources[i];
-					if ( !source.ptr )
-					{
-						D3D12_SHADER_RESOURCE_VIEW_DESC srv = input.srvDescs[i];
-						if ( !srv.Shader4ComponentMapping )
-							srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-						if ( !srv.ViewDimension )
-							srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-						if ( srv.Format == DXGI_FORMAT_UNKNOWN )
-							srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-						if ( srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D && !srv.Texture2D.MipLevels )
-							srv.Texture2D.MipLevels = 1;
-						if ( !input.textures[i] && !memcmp( &srv, &m_NullSrvDesc, sizeof( srv ) ) )
-							source = m_NullSrv;
-						else
-						{
-							m_pDevice->CreateShaderResourceView( input.textures[i], &srv, cpu );
-							continue;
-						}
-					}
-					destinations[copyCount] = cpu;
-					sources[copyCount] = source;
-					++copyCount;
-				}
-				if ( copyCount )
-					m_pDevice->CopyDescriptors( copyCount, destinations, nullptr, copyCount, sources, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-			}
+			pList->ResolveSrvTable( input.srvSources, input.textures, input.srvDescs, missing, UINT( resourceStride ),
+				table.cpu, table.gpu, input.retireFence, heap, m_nSrvDescriptorEpoch );
+			m_bLastSrvTableIsPrevious = !missing;
+			m_LastSrvTable.fence = input.retireFence;
+			m_LastSrvTable.heapGeneration = heap;
+			m_LastSrvTable.descriptorEpoch = m_nSrvDescriptorEpoch;
 		}
 	}
 	// The lighting view table precedes ordinary draw tables; a missing reservation must not bind a stale handle.
@@ -1092,217 +1003,59 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		return false;
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 RootTables", DX12_DRAW_ZONES_ACTIVE );
-		ID3D12RootSignature *root = input.highresAbi ? m_pHighresRoot.Get() : input.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
-		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundRoot != root )
-		{
-			pList->SetGraphicsRootSignature( root );
-			++m_Stats.rootSignatureBinds;
-			m_pBoundRoot = root;
-			// SetGraphicsRootSignature invalidates every root argument, including ordinary ones.
-			m_bGraphicsBindingsValid = false;
-		}
-		ID3D12DescriptorHeap *resourceHeap = m_Bindings.ResourceHeap().Heap(), *samplerHeap = m_Bindings.SamplerHeap().Heap();
-		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundResourceHeap != resourceHeap || m_pBoundSamplerHeap != samplerHeap )
-		{
-			ID3D12DescriptorHeap *heaps[] = { resourceHeap, samplerHeap };
-			pList->SetDescriptorHeaps( 2, heaps );
-			++m_Stats.descriptorHeapBinds;
-			m_bGraphicsBindingsValid = false;
-			// Draws without space 4/5, a native space-1 stage, a receiver-visibility table or caster instance rows skip
-			// those binds (also after a root change or in a new list), which leaves the parameter unset there. Their
-			// cached handles must not survive it: a later draw naming the same handle again would not bind it.
-			m_BoundPbrSpots = {};
-			m_BoundProbeTable = {};
-			m_nBoundProbeConstants = 0;
-			m_BoundNativeTables[0] = m_BoundNativeTables[1] = {};
-			m_BoundLightingVisibilityTable = {};
-			// The highres root can first be used by a baked-only world pass, which skips space 2.
-			// Its following realtime pass must bind these even if their values match the previous root's.
-			m_BoundLightingViewTable = {};
-			m_nBoundLightingViewConstants = 0;
-			m_BoundPropDraw = m_BoundPropTriangles = 0;
-			m_BoundInstanceTransforms = 0;
-			m_BoundScreenSpaceTable = {};
-			m_nBoundScreenSpaceView = m_nBoundVolumetricConstants = 0;
-			m_pBoundResourceHeap = resourceHeap;
-			m_pBoundSamplerHeap = samplerHeap;
-		}
-		D3D12_GPU_DESCRIPTOR_HANDLE vertexSrvs = srvs;
-		vertexSrvs.ptr += 16 * resourceStride;
-		const D3D12_GPU_DESCRIPTOR_HANDLE rootTables[] = { srvs, input.samplerTables.pixel.gpu, vertexSrvs, input.samplerTables.vertex.gpu };
-		// Parameters a draw's shaders never read may stay stale; *Current_ records whether they match this draw.
-		if ( !m_bGraphicsBindingsValid )
-		{
-			m_bVertexTablesCurrent = false;
-			m_bGeometryConstantsCurrent = false;
-		}
-		const UINT tableCount = input.vertexTextures ? 4u : 2u;
-		for ( UINT i = 0; i < tableCount; ++i )
-			if ( !m_bGraphicsBindingsValid || ( i >= 2 && !m_bVertexTablesCurrent ) || m_BoundRootTables[i].ptr != rootTables[i].ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( i, rootTables[i] );
-				m_BoundRootTables[i] = rootTables[i];
-			}
+		// Capture desired root arguments, not differences against the last draw
+		// on this thread. Binding state belongs to the worker's native list.
+		static_assert( kHighresRootParameterCount == 36, "draw bindings packet layout" );
+		auto &packet = pList->CaptureBindings();
+		packet.root = input.highresAbi ? m_pHighresRoot.Get() : input.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
+		packet.heaps[0] = m_Bindings.ResourceHeap().Heap();
+		packet.heaps[1] = m_Bindings.SamplerHeap().Heap();
+		constexpr auto bit = []( UINT i ) { return uint64_t( 1 ) << i; };
+		packet.tables = 15 | bit( kRootNativeVertex ) | bit( kRootNativePixel ) | bit( kRootPbrSpots ) | bit( kRootScreenSpaceTable ) |
+			bit( kRootLightingView ) | bit( kRootLightingVisibility ) | bit( kRootProbeTable ) | bit( kRootHighresTable );
+		packet.srvs = bit( kRootInstanceTransforms ) | bit( kRootPropTriangles );
+		packet.uavs = bit( kRootHighresFailure );
+		packet.Set( 0, 0 ); // The worker resolves both views of the captured SRV set.
+		packet.Set( 1, input.samplerTables.pixel.gpu.ptr );
 		if ( input.vertexTextures )
-			m_bVertexTablesCurrent = true;
-		else if ( m_BoundRootTables[2].ptr != vertexSrvs.ptr || m_BoundRootTables[3].ptr != input.samplerTables.vertex.gpu.ptr )
-			m_bVertexTablesCurrent = false;
-		for ( unsigned stage = 0; stage < 2; ++stage )
-			if ( input.nativeStage[stage] )
-			{
-				const UINT root = stage ? kRootNativePixel : kRootNativeVertex;
-				D3D12_GPU_DESCRIPTOR_HANDLE &bound = m_BoundNativeTables[stage];
-				if ( !m_bGraphicsBindingsValid || bound.ptr != nativeTables[stage].ptr )
-				{
-					++m_Stats.rootTableSets;
-					pList->SetGraphicsRootDescriptorTable( root, nativeTables[stage] );
-					bound = nativeTables[stage];
-				}
-			}
-		// Space-5 projected lights exist on every root, so the cache is only meaningful for the root it was bound to.
-		if ( input.pbrSpotsTable.count && ( !m_bGraphicsBindingsValid || m_BoundPbrSpots.ptr != input.pbrSpotsTable.gpu.ptr ) )
 		{
-			++m_Stats.rootTableSets;
-			pList->SetGraphicsRootDescriptorTable( kRootPbrSpots, input.pbrSpotsTable.gpu );
-			m_BoundPbrSpots = input.pbrSpotsTable.gpu;
+			packet.Set( 2, 0 );
+			packet.Set( 3, input.samplerTables.vertex.gpu.ptr );
 		}
-		// Space-4 ambient probes (lighting and highres roots): the nine-descriptor table and its constants travel together.
+		packet.used |= ( ( bit( ARRAYSIZE( constantAddresses ) ) - 1 ) << kRootVertexConstants );
+		memcpy( packet.values + kRootVertexConstants, constantAddresses, sizeof( constantAddresses ) );
+		if ( input.geometryStage )
+		{
+			packet.used |= uint64_t( 15 ) << kRootGeometryConstants;
+			memcpy( packet.values + kRootGeometryConstants, constantAddresses, 4 * sizeof( constantAddresses[0] ) );
+		}
+		if ( input.nativeStage[0] ) packet.Set( kRootNativeVertex, nativeTables[0].ptr );
+		if ( input.nativeStage[1] ) packet.Set( kRootNativePixel, nativeTables[1].ptr );
+		if ( input.pbrSpotsTable.count ) packet.Set( kRootPbrSpots, input.pbrSpotsTable.gpu.ptr );
 		if ( input.probeAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundProbeTable.ptr != input.probeTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootProbeTable, input.probeTable.gpu );
-				m_BoundProbeTable = input.probeTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundProbeConstants != input.probeConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootProbeConstants, input.probeConstants );
-				m_nBoundProbeConstants = input.probeConstants;
-			}
+			packet.Set( kRootProbeTable, input.probeTable.gpu.ptr );
+			packet.Set( kRootProbeConstants, input.probeConstants );
 		}
-		// Space-6 screen-space inputs are bound on every root; a zero input means the neutral table / zero constants.
-		{
-			const D3D12_GPU_DESCRIPTOR_HANDLE screenTable = input.screenSpaceTable.count ? input.screenSpaceTable.gpu : m_ScreenSpaceNullTable.gpu;
-			const D3D12_GPU_VIRTUAL_ADDRESS screenView = input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress;
-			const D3D12_GPU_VIRTUAL_ADDRESS volumetric = input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress;
-			const D3D12_GPU_VIRTUAL_ADDRESS skyClip = input.shadowSkyClipConstants ? input.shadowSkyClipConstants : m_nZeroConstantAddress;
-			if ( !m_bGraphicsBindingsValid || m_BoundScreenSpaceTable.ptr != screenTable.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootScreenSpaceTable, screenTable );
-				m_BoundScreenSpaceTable = screenTable;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundScreenSpaceView != screenView )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootScreenSpaceView, screenView );
-				m_nBoundScreenSpaceView = screenView;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundVolumetricConstants != volumetric )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootVolumetricConstants, volumetric );
-				m_nBoundVolumetricConstants = volumetric;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundShadowSkyClipConstants != skyClip )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootShadowSkyClipConstants, skyClip );
-				m_nBoundShadowSkyClipConstants = skyClip;
-			}
-		}
-		if ( input.instanceTransforms && ( !m_bGraphicsBindingsValid || m_BoundInstanceTransforms != input.instanceTransforms ) )
-		{
-			++m_Stats.rootSrvSets;
-			pList->SetGraphicsRootShaderResourceView( kRootInstanceTransforms, input.instanceTransforms );
-			m_BoundInstanceTransforms = input.instanceTransforms;
-		}
-		// Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
-		for ( UINT slot = 0; slot < 10; ++slot )
-		{
-			const UINT root = slot < 4 ? kRootVertexConstants + slot : kRootPixelConstants + ( slot - 4 );
-			if ( !m_bGraphicsBindingsValid || m_BoundRootConstants[root - kRootVertexConstants] != constantAddresses[slot] )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( root, constantAddresses[slot] );
-				m_BoundRootConstants[root - kRootVertexConstants] = constantAddresses[slot];
-			}
-			if ( slot < 4 && input.geometryStage )
-			{
-				const UINT geometry = kRootGeometryConstants + slot;
-				if ( !m_bGraphicsBindingsValid || !m_bGeometryConstantsCurrent || m_BoundRootConstants[geometry - kRootVertexConstants] != constantAddresses[slot] )
-				{
-					++m_Stats.rootCbvSets;
-					pList->SetGraphicsRootConstantBufferView( geometry, constantAddresses[slot] );
-					m_BoundRootConstants[geometry - kRootVertexConstants] = constantAddresses[slot];
-				}
-			}
-		}
-		if ( input.geometryStage )
-			m_bGeometryConstantsCurrent = true;
-		else
-			for ( UINT slot = 0; slot < 4; ++slot )
-				if ( m_BoundRootConstants[kRootGeometryConstants + slot - kRootVertexConstants] != constantAddresses[slot] )
-					m_bGeometryConstantsCurrent = false;
+		packet.Set( kRootScreenSpaceTable, input.screenSpaceTable.count ? input.screenSpaceTable.gpu.ptr : m_ScreenSpaceNullTable.gpu.ptr );
+		packet.Set( kRootScreenSpaceView, input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress );
+		packet.Set( kRootVolumetricConstants, input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress );
+		packet.Set( kRootShadowSkyClipConstants, input.shadowSkyClipConstants ? input.shadowSkyClipConstants : m_nZeroConstantAddress );
+		if ( input.instanceTransforms ) packet.Set( kRootInstanceTransforms, input.instanceTransforms );
 		if ( input.lightingAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundLightingViewTable.ptr != input.lightingViewTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootLightingView, input.lightingViewTable.gpu );
-				m_BoundLightingViewTable = input.lightingViewTable.gpu;
-			}
-			if ( input.lightingVisibilityTable.count &&
-			     ( !m_bGraphicsBindingsValid || m_BoundLightingVisibilityTable.ptr != input.lightingVisibilityTable.gpu.ptr ) )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootLightingVisibility, input.lightingVisibilityTable.gpu );
-				m_BoundLightingVisibilityTable = input.lightingVisibilityTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundLightingViewConstants != input.lightingViewConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootLightingViewConstants, input.lightingViewConstants );
-				m_nBoundLightingViewConstants = input.lightingViewConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_BoundPropDraw != input.propDrawConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootPropDraw, input.propDrawConstants );
-				m_BoundPropDraw = input.propDrawConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_BoundPropTriangles != input.propTriangles )
-			{
-				++m_Stats.rootSrvSets;
-				pList->SetGraphicsRootShaderResourceView( kRootPropTriangles, input.propTriangles );
-				m_BoundPropTriangles = input.propTriangles;
-			}
+			packet.Set( kRootLightingView, input.lightingViewTable.gpu.ptr );
+			if ( input.lightingVisibilityTable.count ) packet.Set( kRootLightingVisibility, input.lightingVisibilityTable.gpu.ptr );
+			packet.Set( kRootLightingViewConstants, input.lightingViewConstants );
+			packet.Set( kRootPropDraw, input.propDrawConstants );
+			packet.Set( kRootPropTriangles, input.propTriangles );
 		}
 		if ( input.highresAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundHighresTable.ptr != input.highresTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootHighresTable, input.highresTable.gpu );
-				m_BoundHighresTable = input.highresTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundHighresConstants != input.highresConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootHighresConstants, input.highresConstants );
-				m_nBoundHighresConstants = input.highresConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundHighresFailure != input.highresFailure )
-			{
-				pList->SetGraphicsRootUnorderedAccessView( kRootHighresFailure, input.highresFailure );
-				m_nBoundHighresFailure = input.highresFailure;
-			}
+			packet.Set( kRootHighresTable, input.highresTable.gpu.ptr );
+			packet.Set( kRootHighresConstants, input.highresConstants );
+			packet.Set( kRootHighresFailure, input.highresFailure );
 		}
-		m_bGraphicsBindingsValid = true;
-		m_nGraphicsBindingsFence = input.retireFence;
 		return true;
 	}
 }
@@ -1500,7 +1253,7 @@ static D3D12_COMPARISON_FUNC StencilFunctionDX12( uint32_t nFunc )
 //-----------------------------------------------------------------------------
 // Purpose: Returns the cached PSO for key, creating it on a miss
 //-----------------------------------------------------------------------------
-ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence )
+RecordedPipelineDX12 *CPipelineCacheDX12::CapturePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, uint64_t nRetireFence )
 {
 	if ( m_nLastPipelineIndex >= 0 )
 	{
@@ -1508,7 +1261,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		if ( !entry.destroyed && entry.key == key )
 		{
 			entry.lastUseFence = nRetireFence;
-			return entry.pso.Get();
+			return entry.request.get();
 		}
 	}
 	const uint64_t identity = key.vs ^ ( key.ps * 1099511628211ull ) ^ key.vsVariant ^ key.psVariant ^ key.gs ^ key.gsVariant ^ key.input ^ ( uint64_t( key.color ) << 8 ) ^ ( uint64_t( key.depth ) << 16 ) ^ key.samples ^ key.raster ^ ( key.lightingAbi ? 0x9E3779B97F4A7C15ull : 0ull ) ^ ( key.gbufferPass ? 0xBF58476D1CE4E5B9ull : 0ull ) ^ ( key.contactReplay ? 0x94D049BB133111EBull : 0ull ) ^ ( key.nonEnvmapSsrPayload ? 0xD6E8FEB86659FD93ull : 0ull ) ^ ( key.relightPayload ? 0xA0761D6478BD642Full : 0ull );
@@ -1521,7 +1274,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		{
 			m_nLastPipelineIndex = index;
 			entry.lastUseFence = nRetireFence;
-			return entry.pso.Get();
+			return entry.request.get();
 		}
 	}
 	{
@@ -1534,10 +1287,57 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 				m_nLastPipelineIndex = i;
 				m_PipelineHints[hint] = static_cast<uint32_t>( i ) + 1;
 				entry.lastUseFence = nRetireFence;
-				return entry.pso.Get();
+				return entry.request.get();
 			}
 		}
 	}
+	// Only a new key needs to pin its bytecode and semantic names. A shader
+	// record may switch variants or be deleted before the lane reaches it.
+	auto request = std::make_shared<PipelineRequest>();
+	request->owner = this;
+	request->key = key;
+	request->source = std::make_unique<PipelineRequest::Source>();
+	auto &source = *request->source;
+	const D3D12_SHADER_BYTECODE stages[] = { vs, ps, gs };
+	for ( unsigned i = 0; i < ARRAYSIZE( stages ); ++i )
+		if ( stages[i].BytecodeLength )
+		{
+			auto *bytes = static_cast<const unsigned char *>( stages[i].pShaderBytecode );
+			source.stages[i].assign( bytes, bytes + stages[i].BytecodeLength );
+		}
+	if ( layout.NumElements )
+	{
+		source.elements.assign( layout.pInputElementDescs, layout.pInputElementDescs + layout.NumElements );
+		source.semantics.resize( layout.NumElements );
+		for ( UINT i = 0; i < layout.NumElements; ++i )
+		{
+			source.semantics[i] = source.elements[i].SemanticName;
+			source.elements[i].SemanticName = source.semantics[i].c_str();
+		}
+	}
+	Entry &entry = *m_Entries.AddToTailGetPtr();
+	entry.key = key;
+	entry.request = std::move( request );
+	entry.lastUseFence = nRetireFence;
+	m_nLastPipelineIndex = m_Entries.Count() - 1;
+	m_PipelineHints[hint] = static_cast<uint32_t>( m_Entries.Count() );
+	return entry.request.get();
+}
+
+ID3D12PipelineState *CPipelineCacheDX12::PipelineRequest::Resolve()
+{
+	std::call_once( once, [this] {
+		auto bytes = [this]( unsigned i ) -> D3D12_SHADER_BYTECODE { const auto &b = source->stages[i]; return { b.empty() ? nullptr : b.data(), b.size() }; };
+		pso = owner->ResolvePipeline( key, bytes(0), bytes(1), bytes(2), { source->elements.data(), UINT( source->elements.size() ) } );
+		source.reset();
+	} );
+	return pso.Get();
+}
+
+Microsoft::WRL::ComPtr<ID3D12PipelineState> CPipelineCacheDX12::ResolvePipeline( const PipelineKeyDX12 &key,
+	const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs,
+	const D3D12_INPUT_LAYOUT_DESC &layout )
+{
 	ZoneNamedN( ___tracy_scoped_zone, "DX12 PSOCreateMiss", DX12_ZONES_ACTIVE );
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 	desc.pRootSignature = key.highresAbi ? m_pHighresRoot.Get() : key.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
@@ -1600,6 +1400,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	const UINT root = key.highresAbi ? 2 : key.lightingAbi ? 1 : 0;
+	std::lock_guard<std::mutex> lock( m_RecipeMutex );
 	const uint64_t diskKey = m_Library.Key( desc, root );
 	HRESULT hr = S_OK;
 	pso = m_Recipes.Find( diskKey );
@@ -1620,7 +1421,7 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 			Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
 				begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
 		}
-		++m_Stats.pipelinesCreated;
+		m_ReplayCreates.fetch_add( 1, std::memory_order_relaxed );
 		++g_FirstUse.creates;
 		if ( SUCCEEDED( hr ) )
 			m_Library.Store( diskKey, pso.Get() );
@@ -1629,13 +1430,6 @@ ID3D12PipelineState *CPipelineCacheDX12::GetOrCreate( const PipelineKeyDX12 &key
 		m_Recipes.Record( diskKey, root, desc, pso.Get() );
 	if ( FAILED( hr ) )
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
-	// A refusal is cached as a null entry, so the driver is not asked again on every draw; eviction retries it.
-	Entry &entry = *m_Entries.AddToTailGetPtr();
-	entry.key = key;
-	entry.pso = std::move( pso );
-	entry.lastUseFence = nRetireFence;
-	m_nLastPipelineIndex = m_Entries.Count() - 1;
-	m_PipelineHints[hint] = static_cast<uint32_t>( m_Entries.Count() );
-	return entry.pso.Get();
+	return pso;
 }
 } // namespace shaderapidx12

@@ -69,6 +69,9 @@ protected:
 	int m_nViewportCount = 0;
 	float m_VsFloat[256][4]{};
 	float m_PsFloat[224][4]{};
+	std::shared_ptr<DrawModelRowsDX12> m_StagedRows, m_LegacyRows;
+	uint32_t m_LegacyRowMask = 0;
+	void MaterializeLegacyRows();
 	int m_VsInt[16][4]{};
 	int m_PsInt[16][4]{};
 	bool m_VsBool[16]{};
@@ -83,6 +86,8 @@ protected:
 		uint64_t layoutHash = 0, version = 0;
 		uint32_t byteSize = 0;
 		uint64_t mirrorVersions[3]{};
+		std::shared_ptr<DrawModelRowsDX12> rows;
+		uint32_t rowsOffset = 0, rowsMask = 0;
 		bool written = false;
 	};
 

@@ -16,7 +16,16 @@ namespace dx12native
 {
 static constexpr int kDX12NativeCBufferPointerVar = ( std::numeric_limits<int>::min )() + 0x12012;
 static constexpr uint32_t kDX12NativeCBufferWriteMagic = 0x3242434Eu;
-static constexpr uint32_t kDX12NativeCBufferVersion = 1;
+static constexpr uint32_t kDX12NativeCBufferVersion = 2;
+static constexpr int kModelRowsVar = kDX12NativeCBufferPointerVar + 1;
+// Private stdshader/backend bridge. A null destination requests the exact
+// current draw; otherwise the caller needs the last staged rows on the CPU.
+struct ModelRowsCall
+{
+	int limit;
+	int *live;
+	float *destination;
+};
 
 enum : uint32_t
 {
@@ -55,6 +64,7 @@ struct NativeCBufferWriteDX12
 	uint64_t layoutHash;
 	const void *data;
 	const NativeCBufferLegacyMapDX12 *legacyMap;
+	uint32_t modelRowsOffsetPlusOne = 0, modelRowsMask = 0;
 };
 
 static constexpr uint64_t kFnvOffset = 0xcbf29ce484222325ull;
