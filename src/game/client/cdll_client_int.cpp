@@ -211,6 +211,9 @@ extern vgui::IInputInternal *g_InputInternal;
 #include "gpu_optimized_settings.h"
 #include "shadowmaps_dx12.h"
 
+#if defined( _WIN32 )
+#include <chrono>
+#endif
 // memdbgon must be the last include file in a .cpp file!!!
 #if defined( L4D2 )
 #include "precache_register.h"
@@ -1912,6 +1915,31 @@ void CHLClient::ResetStringTablePointers()
 #endif
 }
 
+#ifdef _WIN32
+// Opt-in PresentMon correlation. MSVC steady_clock uses absolute QPC.
+// Do not do console or file IO in a measured frame.
+struct DemoFrameSample { double qpcMs; int tick, frame; };
+static CUtlVector<DemoFrameSample> s_DemoFrameSamples;
+static void SampleDemoFrame()
+{
+	static const bool enabled = CommandLine()->CheckParm( "-demoframetrace" ) != nullptr;
+	if ( !enabled || !engine->IsPlayingDemo() ) return;
+	using namespace std::chrono;
+	const double now = duration<double, std::milli>( steady_clock::now().time_since_epoch() ).count();
+	s_DemoFrameSamples.AddToTail( DemoFrameSample{ now, engine->GetDemoPlaybackTick(), gpGlobals->framecount } );
+}
+static void FinishDemoFrameTrace()
+{
+	if ( s_DemoFrameSamples.IsEmpty() ) return;
+	if ( FILE *out = fopen( CommandLine()->ParmValue( "-demoframetrace", "" ), "wb" ) )
+	{
+		fwrite( s_DemoFrameSamples.Base(), sizeof( DemoFrameSample ), s_DemoFrameSamples.Count(), out );
+		fclose( out );
+	}
+	s_DemoFrameSamples.Purge();
+}
+#endif
+
 //-----------------------------------------------------------------------------
 // Purpose: Per level de-init
 //-----------------------------------------------------------------------------
@@ -1925,6 +1953,9 @@ void CHLClient::LevelShutdown( void )
 		return;
 
 	g_bLevelInitialized = false;
+#ifdef _WIN32
+	FinishDemoFrameTrace();
+#endif
 	// Disable admission and drain native material/client views while entities and
 	// the leaf system still exist. Keep this bracket through all level teardown.
 	ShadowMapsDX12_BeginClientLevelShutdown();
@@ -2549,6 +2580,9 @@ void CHLClient::FrameStageNotify( ClientFrameStage_t curStage )
 	case FRAME_RENDER_START:
 		{
 			VPROF( "CHLClient::FrameStageNotify FRAME_RENDER_START" );
+#ifdef _WIN32
+			SampleDemoFrame();
+#endif
 
 			// Last thing before rendering, run simulation.
 			OnRenderStart();
