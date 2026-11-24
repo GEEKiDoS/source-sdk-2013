@@ -528,16 +528,22 @@ private:
 	bool QueryShadowBoundsTree( int node, const ShadowMapInfluenceVolume_t &volume, unsigned char kind ) const;
 	struct ShadowLeafEnumerator_t : public ISpatialLeafEnumerator
 	{
-		CDetailObjectSystem *m_pSystem;
-		const ShadowMapDetailOrientation_t *m_pOrientation;
-		bool m_bOrientationDependent;
-		ShadowMapDepthFootprint_t *m_pFootprint;
+		CUtlVector<int> leaves;
+		Vector mins, maxs;
+		bool valid = false;
 		bool EnumerateLeaf( int leaf, intp )
 		{
-			m_pSystem->DrawShadowLeaf( leaf, *m_pOrientation, m_bOrientationDependent, m_pFootprint );
+			int first, count;
+			ClientLeafSystem()->GetDetailObjectsInLeaf( leaf, first, count );
+			if ( count || ClientLeafSystem()->GetSubSystemDataInLeaf( leaf, CLSUBSYSTEM_DETAILOBJECTS ) )
+				leaves.AddToTail( leaf );
 			return true;
 		}
 	};
+	// BSP detail registrations do not move during the level. Keep the exact
+	// ordered leaf visits for recurring light/cascade boxes, not view-facing geometry.
+	ShadowLeafEnumerator_t m_ShadowLeafSets[32];
+	unsigned m_NextShadowLeafSet = 0;
 
 	Vector GetSpriteMiddleBottomPosition( DetailObjectLump_t const &lump ) const;
 	// Count the number of detail sprites in the leaf list
@@ -1743,6 +1749,7 @@ void CDetailObjectSystem::LevelShutdownPreEntity()
 	m_nFastSpriteBlocks = 0;
 	m_bShadowCasterBounds = false;
 	m_ShadowBoundsTree.Purge();
+	for ( auto &set : m_ShadowLeafSets ) { set.valid = false; set.leaves.Purge(); }
 	memset( &m_ShadowOrientation, 0, sizeof( m_ShadowOrientation ) );
 	m_nShadowOrientationCount = m_nNextShadowOrientation = 0;
 	m_nLastShadowOrientationGeneration = 0;
@@ -3324,12 +3331,23 @@ void CDetailObjectSystem::DrawShadowCasters( const ShadowCasterVolume_t &volume,
 {
 	VPROF_BUDGET( "CDetailObjectSystem::DrawShadowCasters", "Shadowmaps" );
 	m_ShadowReport.m_nLastDrawModels = m_ShadowReport.m_nLastDrawCards = 0;
-	ShadowLeafEnumerator_t enumerator;
-	enumerator.m_pSystem = this;
-	enumerator.m_pOrientation = &orientation;
-	enumerator.m_bOrientationDependent = orientationDependent;
-	enumerator.m_pFootprint = footprint;
-	engine->GetBSPTreeQuery()->EnumerateLeavesInBox( volume.m_vecMins, volume.m_vecMaxs, &enumerator, 0 );
+	ShadowLeafEnumerator_t *set = NULL;
+	for ( auto &entry : m_ShadowLeafSets )
+		if ( entry.valid && entry.mins == volume.m_vecMins && entry.maxs == volume.m_vecMaxs )
+		{
+			set = &entry;
+			break;
+		}
+	if ( !set )
+	{
+		set = &m_ShadowLeafSets[m_NextShadowLeafSet++ % ARRAYSIZE(m_ShadowLeafSets)];
+		set->leaves.RemoveAll();
+		set->mins = volume.m_vecMins; set->maxs = volume.m_vecMaxs;
+		engine->GetBSPTreeQuery()->EnumerateLeavesInBox( set->mins, set->maxs, set, 0 );
+		set->valid = true;
+	}
+	for ( int i = 0; i < set->leaves.Count(); ++i )
+		DrawShadowLeaf( set->leaves[i], orientation, orientationDependent, footprint );
 }
 
 void CDetailObjectSystem::DrawShadowLeaf( int leaf, const ShadowMapDetailOrientation_t &orientation, bool orientationDependent, ShadowMapDepthFootprint_t *footprint )

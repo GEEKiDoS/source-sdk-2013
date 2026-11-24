@@ -1083,6 +1083,15 @@ bool BoxInVolume( const ShadowCasterVolume_t &volume, const Vector &mins, const 
 	return true;
 }
 
+struct ProjectedSkyMesh_t
+{
+	uint32 map = 0;
+	int region = -1;
+	Vector travel;
+	float matrix[16];
+	CUtlVector<float> positions;
+};
+
 // Backend calls copy arrays/acquire replay and GPU leases immediately. CPU pool
 // entries remain immutable until GetStatus says their EndView replay completed.
 // Poll only on the main thread: NEVER enqueue a client-DLL callback/functor.
@@ -1156,13 +1165,16 @@ public:
 	CUtlVector<ShadowLightRank_t> lightRanks;
 	CUtlVector<uint32> casterRanges;
 	CUtlVector<int> casterIndices;
+	CUtlVector<int> dynamicIndices, immutableIndices, lightImmutableIndices;
+	const ShadowMapInfluenceVolume_t *cleanLight = NULL;
+	bool cleanLightCollected = false;
 	CUtlVector<int> sunDepthOutliers;
 	int drawCandidateFirst, drawCandidateCount;
 	CUtlVector<CHandle<C_Beam>> suppressedBeams; // §9 paired beams this main bracket replaces with the volume (empty for other kinds)
 	SunCascadeFit_t cascadeFits[4];
 	IDetailObjectSystem::ShadowReport_t detailReport;
 	int sunSkyRegion;				// Receiver's sealed region for the sun sky clip (BuildSun).
-	CUtlVector<float> sunSkyClip;	// Current sun chart's sky entry triangles in light clip space (RenderChart scratch).
+	ProjectedSkyMesh_t skyMesh[5]; // Four cascades and the static sun.
 };
 
 float HybridNonnegativeSetting( const char *text, float fallback )
@@ -1739,6 +1751,8 @@ bool DistributeCasters( CShadowViewData &data )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::DistributeCasters", "Shadowmaps" );
 	data.casterRanges.SetCount(data.relevant.Count()*2);
+	data.dynamicIndices.RemoveAll();
+	data.immutableIndices.RemoveAll();
 	// A plane-free influence containing the aggregate caster AABB accepts
 	// every caster using exactly the original per-axis intersection predicate.
 	Vector casterMins(FLT_MAX,FLT_MAX,FLT_MAX), casterMaxs(-FLT_MAX,-FLT_MAX,-FLT_MAX);
@@ -1746,6 +1760,12 @@ bool DistributeCasters( CShadowViewData &data )
 	for ( int c=0;c<data.casters.Count();++c )
 	{
 		const ShadowMapSceneCaster_t &caster=data.casters[c];
+		if ( caster.immutable )
+		{
+			data.immutableIndices.AddToTail(c);
+			continue;
+		}
+		data.dynamicIndices.AddToTail(c);
 		validBounds=validBounds && caster.mins.IsValid() && caster.maxs.IsValid();
 		for ( int a=0;a<3 && validBounds;++a ) validBounds=caster.mins[a]<=caster.maxs[a];
 		AddBounds(casterMins,casterMaxs,caster.mins,caster.maxs);
@@ -1764,18 +1784,13 @@ bool DistributeCasters( CShadowViewData &data )
 			complete=casterMins[a]>=volume.mins[a] && casterMaxs[a]<=volume.maxs[a];
 		if ( complete )
 		{
-			int count=data.casters.Count(), first=data.casterIndices.Count();
-			if ( count>INT_MAX-first ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-			data.casterIndices.AddMultipleToTail(count);
-			if ( count )
+			int count=data.dynamicIndices.Count(), first=completeFirst;
+			if ( first<0 )
 			{
-				if ( completeFirst>=0 )
-					memcpy(data.casterIndices.Base()+first,data.casterIndices.Base()+completeFirst,count*sizeof(int));
-				else
-				{
-					for ( int c=0;c<count;++c ) data.casterIndices[first+c]=c;
-					completeFirst=first;
-				}
+				first=completeFirst=data.casterIndices.Count();
+				if ( count>INT_MAX-first ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+				data.casterIndices.AddMultipleToTail(count);
+				if ( count ) memcpy(data.casterIndices.Base()+first,data.dynamicIndices.Base(),count*sizeof(int));
 			}
 			data.casterRanges[2*l]=first; data.casterRanges[2*l+1]=count;
 			continue;
@@ -1783,8 +1798,9 @@ bool DistributeCasters( CShadowViewData &data )
 		uint32 first=data.casterIndices.Count();
 		// Cube candidates are gathered once here, then classified into expanded
 		// face frusta by HasDynamic and the scene draw, not re-enumerated six times.
-		for ( int c=0;c<data.casters.Count();++c )
+		for ( int i=0;i<data.dynamicIndices.Count();++i )
 		{
+			int c=data.dynamicIndices[i];
 			const ShadowMapSceneCaster_t &caster=data.casters[c];
 			if ( !ShadowMapScene_VolumeIntersectsBox(volume,caster.mins,caster.maxs) ) continue;
 			if ( data.casterIndices.Count()==INT_MAX ) return Fail(SHADOWMAP_ERR_RESIDENCY);
@@ -2172,13 +2188,13 @@ void CollectFaceJob( ShadowFaceJob_t &job )
 	ShadowFaceCandidates_t &out=*job.output;
 	out.keys.RemoveAll();
 	out.drawOrder.RemoveAll();
-	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.casters.Count();
+	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.dynamicIndices.Count();
 	bool ordered=true;
 	for ( int i=0;i<count;++i )
 	{
-		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : i;
+		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : data.dynamicIndices[i];
 		const ShadowMapSceneCaster_t &caster=data.casters[index];
-		if ( caster.immutable || !BoxInVolume(*job.volume,caster.mins,caster.maxs) ) continue;
+		if ( !BoxInVolume(*job.volume,caster.mins,caster.maxs) ) continue;
 		out.drawOrder.AddToTail(index);
 		const ShadowChartCaster_t &entry=data.casterKeys[index];
 		if ( out.keys.Count() && ChartCasterCompare(&out.keys.Tail(),&entry)>0 ) ordered=false;
@@ -2341,18 +2357,16 @@ bool WritableSunTarget( CShadowViewData &data, DX12ShadowTarget_t &work, int siz
 	SpareSunTarget_t spare; spare.size=size; spare.target=previous; g_SunSpares.AddToTail(spare);
 	return true;
 }
-// Sun charts: the chart's sky entry triangles in light clip space (data.sunSkyClip) and the chart depth bias the
-// backend clips casters with; empty when the receiver region has no entry sky under this chart.
-bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, DX12ShadowSkyClip &skyClip )
+// The entry sky is map geometry. Dynamic caster movement requires another
+// depth pass, not another projection of the same triangles.
+void ProjectSunSkyMesh( ProjectedSkyMesh_t &mesh, const float matrix[16], int region )
 {
-	VPROF_BUDGET( "ShadowMapsDX12::BuildSunSkyClip", "Shadowmaps" );
-	data.sunSkyClip.RemoveAll();
-	if ( data.sunSkyRegion==kSunSkyClipOff ) return false;
-	VMatrix clip; memcpy(&clip[0][0],cache.pendingMatrix,sizeof(cache.pendingMatrix));
+	mesh.positions.RemoveAll();
+	VMatrix clip; memcpy(&clip[0][0],matrix,sizeof(mesh.matrix));
 	for ( int e=0;e<g_SunSky.entryFaces.Count();++e )
 	{
 		const SunSkyFace_t &face=g_SunSky.faces[g_SunSky.entryFaces[e]];
-		if ( data.sunSkyRegion>=0 && face.region!=data.sunSkyRegion ) continue;
+		if ( region>=0 && face.region!=region ) continue;
 		const Vector *polygon=&g_SunSky.vertices[face.firstVertex];
 		for ( int v=1;v+1<face.vertexCount;++v )
 		{
@@ -2360,14 +2374,25 @@ bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, DX12Sha
 			for ( int c=0;c<3;++c )
 			{
 				Vector4D position; Vector4DMultiplyPosition(clip,*corners[c],position);
-				const int first=data.sunSkyClip.AddMultipleToTail(4);
-				data.sunSkyClip[first]=position.x; data.sunSkyClip[first+1]=position.y; data.sunSkyClip[first+2]=position.z; data.sunSkyClip[first+3]=position.w;
+				const int first=mesh.positions.AddMultipleToTail(4);
+				memcpy(mesh.positions.Base()+first,position.Base(),4*sizeof(float));
 			}
 		}
 	}
-	if ( !data.sunSkyClip.Count() ) return false;
+	memcpy(mesh.matrix,matrix,sizeof(mesh.matrix));
+	mesh.map=g_MapCounter; mesh.region=region; mesh.travel=g_SunSky.travel;
+}
+bool BuildSunSkyClip( CShadowViewData &data, const ShadowCache_t &cache, int chartLight, DX12ShadowSkyClip &skyClip )
+{
+	VPROF_BUDGET( "ShadowMapsDX12::BuildSunSkyClip", "Shadowmaps" );
+	if ( data.sunSkyRegion==kSunSkyClipOff ) return false;
+	ProjectedSkyMesh_t &mesh=data.skyMesh[~uint32(chartLight) % ARRAYSIZE(data.skyMesh)];
+	if ( mesh.map!=g_MapCounter || mesh.region!=data.sunSkyRegion || mesh.travel!=g_SunSky.travel ||
+		memcmp(mesh.matrix,cache.pendingMatrix,sizeof(mesh.matrix)) )
+		ProjectSunSkyMesh(mesh,cache.pendingMatrix,data.sunSkyRegion);
+	if ( !mesh.positions.Count() ) return false;
 	if ( !CreateSunTarget(g_SunSkyTarget,"shadow_sun_sky_clip",MAX(g_ShadowRes.csm,g_ShadowRes.sun)) || !data.Lease(g_SunSkyTarget) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-	skyClip.target=g_SunSkyTarget; skyClip.clipPositions=data.sunSkyClip.Base(); skyClip.vertexCount=data.sunSkyClip.Count()/4;
+	skyClip.target=g_SunSkyTarget; skyClip.clipPositions=mesh.positions.Base(); skyClip.vertexCount=mesh.positions.Count()/4;
 	skyClip.depthBias=kSunSkyClipBiasUnits/(cache.pendingDepth[1]-cache.pendingDepth[0]);
 	return true;
 }
@@ -2383,15 +2408,32 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 	ShadowMapDepthScene_t scene;
 	scene.lightView=lightView; scene.receiverView=data.receiver; scene.volume=volume; scene.detail=data.detail; scene.detail.m_nShadowSkyRegion=skyClip ? data.sunSkyRegion : -1;
 	scene.casters=&data.casters; scene.lighting=g_Lighting; scene.target=target;
-	scene.candidateIndices=data.drawCandidateFirst>=0 ? &data.casterIndices : NULL;
-	scene.candidateFirst=data.drawCandidateFirst; scene.candidateCount=data.drawCandidateCount;
-	// Certification sorts localFaceCasters by identity. Rasterization must instead
-	// consume the same face membership in the original engine draw order.
-	if ( dynamic && !immutable )
+	// Clean depth already retains the static world/props across frames. Don't
+	// distribute those props to every moving overlay; gather them on a clean
+	// miss only. All faces of a local share its ordered influence candidates.
+	Assert( !immutable || !dynamic );
+	scene.candidateIndices=&data.dynamicFaceDrawOrder;
+	if ( immutable )
 	{
-		scene.candidateIndices=&data.dynamicFaceDrawOrder;
-		scene.candidateFirst=0; scene.candidateCount=data.dynamicFaceDrawOrder.Count();
+		scene.candidateIndices=&data.immutableIndices;
+		if ( data.cleanLight )
+		{
+			if ( !data.cleanLightCollected )
+			{
+				data.lightImmutableIndices.RemoveAll();
+				for ( int i=0;i<data.immutableIndices.Count();++i )
+				{
+					int index=data.immutableIndices[i];
+					const ShadowMapSceneCaster_t &caster=data.casters[index];
+					if ( ShadowMapScene_VolumeIntersectsBox(*data.cleanLight,caster.mins,caster.maxs) )
+						data.lightImmutableIndices.AddToTail(index);
+				}
+				data.cleanLightCollected=true;
+			}
+			scene.candidateIndices=&data.lightImmutableIndices;
+		}
 	}
+	scene.candidateFirst=0; scene.candidateCount=scene.candidateIndices->Count();
 	scene.x=x; scene.y=y; scene.size=size; scene.clear=clear;
 	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail; scene.instanceCasters=r_shadowmap_instancing.GetBool();
 	scene.dynamicLayer=dynamicLayer;
@@ -2538,7 +2580,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	bool baseRebuilt=!cache.pendingClean;
 	// Every caster pass of a sun chart (clean, rigid, overlay) is clipped by the same sky map.
 	DX12ShadowSkyClip skyClip, *sunSkyClip=NULL;
-	if ( chartLight<0 && BuildSunSkyClip(data,cache,skyClip) ) sunSkyClip=&skyClip;
+	if ( chartLight<0 && BuildSunSkyClip(data,cache,chartLight,skyClip) ) sunSkyClip=&skyClip;
 	if ( g_Error[0] ) return false;
 	// Required work is synchronous; no throttling or deferred visible updates.
 	if ( !cache.pendingClean )
@@ -2745,6 +2787,8 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( data.shadowsEnabled && data.realtimeLocals[relevantIndex] )
 	{
 		data.drawCandidateFirst=data.casterRanges[relevantIndex*2]; data.drawCandidateCount=data.casterRanges[relevantIndex*2+1];
+		data.cleanLight=&local.influence;
+		data.cleanLightCollected=false;
 	}
 	RuntimeShadowLightGpu &gpu=data.lights[data.lights.AddToTail()]; memset(&gpu,0,sizeof(gpu));
 	const DX12LightingSelectedLight &light=local.selected;
@@ -2996,6 +3040,7 @@ bool BuildSun( CShadowViewData &data, const VMatrix &receiverClip, const Vector 
 {
 	VPROF_BUDGET( "ShadowMapsDX12::BuildSun", "Shadowmaps" );
 	data.drawCandidateFirst=-1; data.drawCandidateCount=0;
+	data.cleanLight=NULL;
 	if ( g_Sun<0 ) return true;
 	const ShadowMapClientMapState &map=ShadowMapsDX12_MapState();
 	const DX12LightingSelectedLight &sun=g_Selected[g_Sun];
