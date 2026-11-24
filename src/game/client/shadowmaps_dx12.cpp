@@ -2218,19 +2218,52 @@ void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t 
 	UseFaceCandidates(data,*job.output);
 }
 
-bool CollectCachedCubeFaces( CShadowViewData &data, const LocalLight_t &local )
+// Only the viewmodel bracket has an AABB enclosing *every* gather point.
+// Main-view detail cards can gather at a lighting origin outside the camera
+// frustum. Don't cull those cube faces based on screen visibility.
+unsigned ViewModelCubeFaceMask( const CShadowViewData &data, const Vector &origin, float planeToTexel )
+{
+	if ( data.kind!=SHADOWMAP_VIEW_VIEWMODEL || !data.selfCasters.Count() ) return 63;
+	Vector lo=data.selfReceiverMins-origin, hi=data.selfReceiverMaxs-origin;
+	if ( !lo.IsValid() || !hi.IsValid() || !(planeToTexel>0) ) return 63;
+	Vector extent;
+	for ( int a=0;a<3;++a )
+	{
+		if ( lo[a]>hi[a] ) return 63;
+		extent[a]=MAX(fabsf(lo[a]),fabsf(hi[a]));
+	}
+	// A biased point moves by 0.5*r/planeToTexel. A PCF seam tap adds
+	// at most two texels along each transverse face axis, scaled by the
+	// biased axial depth. Enclose both and leave slack for raster rounding.
+	const float pad=1.0f+8.0f*extent.Length()/planeToTexel;
+	lo-=Vector(pad,pad,pad); hi+=Vector(pad,pad,pad);
+	unsigned mask=0;
+	for ( int a=0;a<3;++a )
+	{
+		int b=(a+1)%3,c=(a+2)%3;
+		float transverse=MAX(0.0f,MAX(MAX(lo[b],-hi[b]),MAX(lo[c],-hi[c])));
+		if ( hi[a]>=transverse ) mask|=1u<<(2*a);
+		if ( -lo[a]>=transverse ) mask|=2u<<(2*a);
+	}
+	return mask;
+}
+
+bool CollectCachedCubeFaces( CShadowViewData &data, const LocalLight_t &local, unsigned mask )
 {
 	static ConVarRef threaded("r_threaded_renderables");
 	if ( local.faceCount!=6 || data.drawCandidateCount<64 || !threaded.GetBool() ) return false;
 	ShadowFaceJob_t jobs[6];
+	int n=0;
 	for ( int f=0;f<6;++f )
 	{
+		if ( !(mask&(1u<<f)) ) continue;
 		if ( !local.cache[f].valid ) return false;
-		jobs[f]={ &data, &local.faceVolumes[f], &data.cubeFaces[f] };
+		jobs[n++]={ &data, &local.faceVolumes[f], &data.cubeFaces[f] };
 	}
 	// Each worker uses only frozen receiver bounds/keys and its own vectors.
 	// Join before any draw or target update; callbacks stay on the caller.
-	ParallelProcess("ShadowMapsDX12::CubeFaces",jobs,6,&CollectFaceJob,NULL,NULL,3);
+	if ( n<2 ) return false;
+	ParallelProcess("ShadowMapsDX12::CubeFaces",jobs,n,&CollectFaceJob,NULL,NULL,3);
 	return true;
 }
 bool SameDetailOrientation( const ShadowMapDetailOrientation_t &a, const ShadowMapDetailOrientation_t &b )
@@ -2830,9 +2863,19 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( !data.shadowsEnabled || !data.realtimeLocals[relevantIndex] ) return true;
 	AddReportVolume(data,(int)light.lightId,CasterVolume(local.influence));
 	const bool projectionChanged=local.projectionNear!=gpu.shadowNear || local.projectionFar!=gpu.shadowFar;
-	const bool haveCubeFaces=!projectionChanged && CollectCachedCubeFaces(data,local);
+	unsigned updateMask=63;
+	if ( local.faceCount==6 && !projectionChanged )
+		updateMask=ViewModelCubeFaceMask(data,local.world.origin,gpu.planeToTexel);
+	// A new face, page generation, or interrupted transaction still initializes
+	// synchronously. Skipping a warm, unsampled face does not advance its proof.
+	for ( int f=0;f<local.faceCount;++f )
+		if ( !local.cache[f].valid || local.cache[f].pending ||
+			local.cache[f].slotGeneration!=g_Pages[local.page[f]].generation )
+			updateMask|=1u<<f;
+	const bool haveCubeFaces=!projectionChanged && CollectCachedCubeFaces(data,local,updateMask);
 	for ( int f=0;f<local.faceCount;++f )
 	{
+		if ( !(updateMask&(1u<<f)) ) continue;
 		ShadowCache_t &cache=local.cache[f];
 		int pageIndex=local.page[f], slot=local.slot[f], x=(slot%g_ShadowRes.slots)*g_ShadowRes.local, y=(slot/g_ShadowRes.slots)*g_ShadowRes.local;
 		LocalPage_t &page=g_Pages[pageIndex];
