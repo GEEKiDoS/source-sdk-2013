@@ -166,6 +166,7 @@ static_assert( sizeof( DX12ShadowSkyClipConstants ) == 16, "DX12ShadowSkyClipCon
 #define DX12_SHADOW_VIEW_UNSHADOWED			0x8		// selected direct active; skip runtime depth sampling (baked world sun cap remains)
 #define DX12_SHADOW_VIEW_DEFERRED				0x10	// budgeted warm-up: missing charts are wholly zero; direct lighting remains active
 #define DX12_SHADOW_VIEW_LOCAL_SMOOTH			0x20	// local lights use the sharpened cubic 4x4 PCF instead of four bilinear taps
+#define DX12_SHADOW_VIEW_VIEWMODEL				0x40	// first-person viewmodel receivers: local lights ignore occluders within 32 units (shadowmap_lighting.hlsli)
 
 // ENABLED opts RuntimeShadowLightGpu::reserved0 or DX12ProjectedLightDesc::reserved into volumetric in-scattering.
 // BEAM is valid only alongside ENABLED on baked map spotlight records; it selects the independent beam medium.

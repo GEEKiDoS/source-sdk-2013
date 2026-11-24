@@ -432,6 +432,14 @@ prop doors, and physics props, irrespective of solidity or gib status.
 Brush models such as `func_brush` or `func_door` and non-prop entities still
 honor authored `EF_NOSHADOW`. Hidden props remain excluded; the depth pass
 continues to use the normal opaque/alpha-tested material paths.
+One exception keeps a light fixture from shadowing its own light: a prop
+authored without shadows whose world bounds, grown by 8 units, contain a local
+light's emitter is left out of that light's casters (`ShadowCasterHousesLight`
+in `shadowmaps_dx12.cpp`). It still casts for every other light. c8m1's
+rooftop door lamp (`cs_office/Light_security.mdl`, `disableshadows`) houses the
+`light_spot` above the door; its opaque housing otherwise threw a ring-shaped
+shadow over the wall and door. The spot camera's 4-unit near plane cannot
+clip that housing, which extends about 15 units below the emitter.
 This policy has no separate controls and does not alter entity effects, save
 data, or baked lighting.
 

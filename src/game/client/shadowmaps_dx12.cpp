@@ -1728,6 +1728,24 @@ void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &
 	snapshot.frame=gpGlobals->framecount;
 }
 
+// Native depth ignores authored disableshadows on props (clientleafsystem.cpp IsEligibleShadowCaster). A prop authored
+// that way whose bounds enclose the emitter is the light's own fixture (lamp housing, bulb cage): retail and the bake
+// let that light through it, so it never occludes the light it houses. It still shadows every other light.
+const float kShadowFixtureMargin=8.0f;
+bool ShadowCasterHousesLight( const ShadowMapSceneCaster_t &caster, const Vector &origin )
+{
+	for ( int a=0;a<3;++a )
+		if ( origin[a]<caster.mins[a]-kShadowFixtureMargin || origin[a]>caster.maxs[a]+kShadowFixtureMargin ) return false;
+	if ( caster.staticProp )
+	{
+		const int found=g_StaticPropReceivers.Find(caster.renderable);
+		return found!=g_StaticPropReceivers.InvalidIndex() && (g_StaticPropReceivers[found].authored.m_Flags&STATIC_PROP_NO_SHADOW);
+	}
+	IClientUnknown *unknown=caster.renderable->GetIClientUnknown();
+	C_BaseEntity *entity=unknown ? unknown->GetBaseEntity() : NULL;
+	return entity && entity->IsEffectActive(EF_NOSHADOW);
+}
+
 bool DistributeCasters( CShadowViewData &data )
 {
 	VPROF_BUDGET( "ShadowMapsDX12::DistributeCasters", "Shadowmaps" );
@@ -1751,8 +1769,12 @@ bool DistributeCasters( CShadowViewData &data )
 			data.casterRanges[2*l]=data.casterIndices.Count(); data.casterRanges[2*l+1]=0;
 			continue;
 		}
-		const ShadowMapInfluenceVolume_t &volume=LightByOwner(data.relevant[l]).influence;
-		bool complete=validBounds && volume.planeCount==0;
+		const LocalLight_t &local=LightByOwner(data.relevant[l]);
+		const ShadowMapInfluenceVolume_t &volume=local.influence;
+		const Vector origin(local.selected.origin[0],local.selected.origin[1],local.selected.origin[2]);
+		bool housed=false;
+		for ( int c=0;c<data.casters.Count() && !housed;++c ) housed=ShadowCasterHousesLight(data.casters[c],origin);
+		bool complete=!housed && validBounds && volume.planeCount==0;
 		for ( int a=0;a<3 && complete;++a )
 			complete=casterMins[a]>=volume.mins[a] && casterMaxs[a]<=volume.maxs[a];
 		if ( complete )
@@ -1780,6 +1802,7 @@ bool DistributeCasters( CShadowViewData &data )
 		{
 			const ShadowMapSceneCaster_t &caster=data.casters[c];
 			if ( !ShadowMapScene_VolumeIntersectsBox(volume,caster.mins,caster.maxs) ) continue;
+			if ( housed && ShadowCasterHousesLight(caster,origin) ) continue;
 			if ( data.casterIndices.Count()==INT_MAX ) return Fail(SHADOWMAP_ERR_RESIDENCY);
 			data.casterIndices.AddToTail(c);
 		}
@@ -4511,6 +4534,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	constants.cSunIdentity[0]=0xffffffffu;
 	if ( !data->shadowsEnabled ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_UNSHADOWED;
 	if ( r_shadowmap_local_filter.GetBool() ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_LOCAL_SMOOTH;
+	if ( kind==SHADOWMAP_VIEW_VIEWMODEL ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_VIEWMODEL;
 	Vector forward,right,up; AngleVectors(setup.angles,&forward,&right,&up);
 	CopyVector3(setup.origin,constants.cEyePosition); constants.cEyePosition[3]=setup.zNear;
 	CopyVector3(forward,constants.cViewForward);

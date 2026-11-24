@@ -33,6 +33,11 @@ SamplerState g_CookieSampler : register(s0, space5);
 // Packet-only policy, deliberately independent of material/snapshot variants.
 static const uint DX12_SHADOW_VIEW_UNSHADOWED = 0x8;
 static const uint DX12_SHADOW_VIEW_LOCAL_SMOOTH = 0x20;
+// Viewmodel receivers move their local-light lookup this far toward the light (at most halfway), so the player's own
+// first-person shadow body (cl_fp_self_shadow: world-model arms and weapon, which never line up with the viewmodel)
+// cannot shadow the viewmodel. Occluders farther away than this still do.
+static const uint DX12_SHADOW_VIEW_VIEWMODEL = 0x40;
+static const float DX12_SHADOW_VIEWMODEL_SELF_RANGE = 32.0;
 
 static const float2 g_ShadowPCFOffsets[4] =
 {
@@ -732,6 +737,12 @@ ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLigh
 {
 	ShadowMapLocalChart c = (ShadowMapLocalChart)0;
 	c.lightIndex = lightIndex;
+	[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_VIEWMODEL ) != 0 )
+	{
+		float3 toLight = light.origin - p;
+		float distanceToLight = length( toLight );
+		p += toLight * ( min( DX12_SHADOW_VIEWMODEL_SELF_RANGE, 0.5 * distanceToLight ) / max( distanceToLight, 1e-4 ) );
+	}
 	float3 relative = p - light.origin;
 	float radial = length( relative );
 	c.center = p;
