@@ -12,6 +12,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <type_traits>
+#include <atomic>
 
 namespace shaderapidx12
 {
@@ -67,6 +68,8 @@ public:
 		ResolveQueryData,
 		CopyDescriptorTable,
 		WriteNativeCbvTable,
+		DrawBindings,
+		UploadConstant,
 		ExternalCommand,
 		BeginEvent,
 		EndEvent,
@@ -82,6 +85,22 @@ public:
 	// ResourceBarrier calls recorded (each is a potential GPU synchronization point); monotonic, for -dx12stats.
 	uint64_t m_nBarrierCalls = 0;
 
+	struct DrawBindings
+	{
+		ID3D12RootSignature *root;
+		ID3D12DescriptorHeap *heaps[2];
+		uint64_t used, tables, srvs, uavs, values[36];
+		void Set( unsigned slot, uint64_t value ) { used |= uint64_t( 1 ) << slot; values[slot] = value; }
+	};
+	DrawBindings &CaptureBindings()
+	{
+		auto &packet = *reinterpret_cast<DrawBindings *>( Begin( Op::DrawBindings, sizeof( DrawBindings ) ) );
+		packet.used = 0;
+		return packet;
+	}
+	enum BindCounter { Root, Heaps, Tables, Cbvs, Srvs, BindCounterCount };
+	uint64_t TakeBindCount( BindCounter counter ) { return m_BindCounts[counter].exchange( 0, std::memory_order_relaxed ); }
+
 	void Flush()
 	{
 		m_pLastHeader = nullptr;
@@ -91,7 +110,9 @@ public:
 			m_pReleaseEmpty = m_pChunk;
 		m_pChunk = nullptr;
 		m_nUsed = 0;
+		m_bExternal = false;
 	}
+	bool ChunkHasExternal() const { return m_bExternal; }
 
 	// Returns an unused chunk to the caller on shutdown paths; null when the current chunk holds data.
 	unsigned char *TakeEmptyChunk()
@@ -371,11 +392,23 @@ public:
 		PutArray( p, sizes, 8 );
 	}
 
+	// The CPU source is draw-local; never give its pointer to the workers.
+	// The mapped destination is reserved exclusively through the list fence.
+	void UploadConstant( unsigned char *mapped, const void *source, UINT bytes, UINT padded )
+	{
+		auto *p = Begin( Op::UploadConstant, sizeof( mapped ) + 2 * sizeof( UINT ) + bytes );
+		Put( p, mapped );
+		Put( p, bytes );
+		Put( p, padded );
+		memcpy( p, source, bytes );
+	}
+
 	// Copies exactly `bytes` of a trivially-copyable, non-owning payload; `fn` receives a pointer to the copy at replay.
 	// The recording owner must invalidate its cached graphics bindings afterwards: the callback may change any list state.
 	void ExternalCommand( ExternalFnDX12 fn, const void *payload, uint32_t bytes )
 	{
 		unsigned char *p = Begin( Op::ExternalCommand, sizeof( fn ) + 8 + bytes );
+		m_bExternal = true;
 		Put( p, fn );
 		Put( p, bytes );
 		Put( p, bytes );
@@ -404,9 +437,10 @@ public:
 	}
 
 	// Replays [data, data+size) onto the native list; device performs descriptor copies.
-	static void Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size );
+	void Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size );
 
 private:
+	std::atomic<uint64_t> m_BindCounts[BindCounterCount]{};
 	struct Header
 	{
 		Op op;
@@ -462,6 +496,7 @@ private:
 	unsigned char *m_pReleaseEmpty = nullptr;
 	Header *m_pLastHeader = nullptr;
 	size_t m_nUsed = 0;
+	bool m_bExternal = false;
 };
 } // namespace shaderapidx12
 

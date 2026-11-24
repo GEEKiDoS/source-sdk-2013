@@ -254,12 +254,18 @@ public:
 		DrainSubmissions();
 	}
 
+	void RequestSceneRecordingBoundary() { m_bSceneBoundaryPending = true; }
+	bool BeginSceneDrawList();
+	bool ParallelRecording() const { return m_RecordLanes[0].thread != nullptr; }
+
 	// Waits until the worker has issued every queued operation (header-inline so callers outside the DLL can use it).
 	void DrainSubmissions()
 	{
 		const uint32_t nHead = m_nSubmitHead;
 		while ( m_nSubmitTail != nHead )
 			m_SubmitDoneEvent.Wait();
+		for ( auto &lane : m_RecordLanes )
+			if ( lane.thread ) lane.Wait( UINT64_MAX );
 	}
 
 	uint64_t Submit( bool bWait );
@@ -400,6 +406,7 @@ public:
 
 	uint64_t NextFenceValue() const { return m_nFenceValue + 1; }
 	uint64_t RecordedBarriers() const { return m_Recorder.m_nBarrierCalls; }
+	uint64_t TakeBindCount( CCommandRecorderDX12::BindCounter counter ) { return m_Recorder.TakeBindCount( counter ); }
 
 	uint64_t CompletedFenceValue() const { return m_pFence ? m_pFence->GetCompletedValue() : 0; }
 
@@ -609,6 +616,8 @@ private:
 		UINT interval = 0, flags = 0;
 		unsigned char *chunk = nullptr;
 		size_t chunkBytes = 0;
+		ID3D12GraphicsCommandList *extraLists[2]{};
+		uint64_t laneEnds[2]{};
 		// Present only: frame id for the provider's present markers, and whether this present interpolates.
 		uint32_t frameId = 0;
 		bool framegenActive = false;
@@ -634,6 +643,31 @@ private:
 	CInterlockedUInt m_nSubmitHead, m_nSubmitTail;
 	CInterlockedInt m_nSubmitError; // HRESULT of the first failed queued operation
 	SubmitOpDX12 m_SubmitOps[16];
+	// Single producer per lane. Both CPU descriptor drains and Execute may
+	// wait on a ticket; a completion wakes all waiters, not just the submitter.
+	struct RecordLane
+	{
+		CShaderDeviceDX12 *owner = nullptr;
+		ThreadHandle_t thread = nullptr;
+		SRWLOCK lock = SRWLOCK_INIT;
+		CONDITION_VARIABLE changed = CONDITION_VARIABLE_INIT;
+		uint64_t head = 0, tail = 0;
+		bool exit = false;
+		SubmitOpDX12 ops[8];
+		void Wait( uint64_t ticket )
+		{
+			if ( !ticket ) return;
+			AcquireSRWLockExclusive( &lock );
+			if ( ticket == UINT64_MAX ) ticket = head;
+			while ( tail < ticket ) SleepConditionVariableSRW( &changed, &lock, INFINITE, 0 );
+			ReleaseSRWLockExclusive( &lock );
+		}
+		void Push( const SubmitOpDX12 &op );
+	};
+	static uintp RecordThreadMain( void *context );
+	RecordLane m_RecordLanes[2];
+	unsigned m_nSceneList = 0;
+	bool m_bSceneBoundaryPending = false;
 	bool CreateView( View &view, HWND hWnd, int nWidth, int nHeight );
 	void QueryDisplayHdr( View &view );
 	bool ResizeView( View &view, int nWidth, int nHeight, bool bForceBuffers = false );
@@ -659,6 +693,8 @@ private:
 	{
 		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> allocator;
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
+		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> extraAllocators[2];
+		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> extraLists[2];
 		uint64_t fence = 0;
 		CUtlVector<ID3D12Pageable *> retained;
 	};

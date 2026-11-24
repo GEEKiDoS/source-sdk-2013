@@ -44,6 +44,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	memset( m_SrvTables, 0, sizeof( m_SrvTables ) );
 	memset( m_RecentConstants, 0, sizeof( m_RecentConstants ) );
 	m_nUploadPageHint = 0;
+	m_nCaptureRemaining = 0;
 	// Upload pages carry per-draw constants, dynamic geometry, instance rows and the per-view light records that every
 	// lit pixel reads. Cached (write-back) CPU pages suit cache-coherent UMA only; on a discrete adapter they are snooped
 	// system memory read across PCIe, which a large GPU L2 (Ada: 48 MB) can hide but older parts (Pascal: 2 MB, often
@@ -801,6 +802,29 @@ void CPipelineCacheDX12::BindDrawState( CCommandRecorderDX12 *pList, const D3D12
 // Purpose: Uploads constants and binds descriptor heaps, SRV/sampler tables and
 //          root CBVs for one draw, skipping state already bound in this recording
 //-----------------------------------------------------------------------------
+bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, const void *source, size_t bytes, UINT padded,
+	uint64_t fence, D3D12_GPU_VIRTUAL_ADDRESS &gpu )
+{
+	if ( !m_bDeferNativeCbvs )
+		return AllocateUploadLocked( source, bytes, padded, 256, fence, gpu, nullptr, nullptr, nullptr, 0, 0 );
+	// Carve immutable output slices from one owner-side page reservation.
+	// Replay fills them before the frame's (ordered, single-fence) Execute.
+	if ( m_nCaptureFence != fence || m_nCaptureRemaining < padded )
+	{
+		const UINT grant = MAX( 65536u, padded );
+		if ( !AllocateUploadLocked( nullptr, grant, grant, 256, fence, m_nCaptureAddress, nullptr, nullptr, nullptr, 0, 0, &m_pCaptureMapped ) )
+			return false;
+		m_nCaptureRemaining = grant;
+		m_nCaptureFence = fence;
+	}
+	gpu = m_nCaptureAddress;
+	list->UploadConstant( m_pCaptureMapped, source, static_cast<UINT>( bytes ), padded );
+	m_pCaptureMapped += padded;
+	m_nCaptureAddress += padded;
+	m_nCaptureRemaining -= padded;
+	return true;
+}
+
 bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input )
 {
 	if ( !pList )
@@ -929,7 +953,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				++m_Stats.constantHits;
 				continue;
 			}
-			if ( !AllocateUploadLocked( input.nativeData[i], nBytes, sizes[slot], 256, input.retireFence, addresses[slot], nullptr, nullptr, nullptr, 0, 0 ) )
+			if ( !CaptureConstant( pList, input.nativeData[i], nBytes, sizes[slot], input.retireFence, addresses[slot] ) )
 				return false;
 			++m_Stats.constantUploads;
 			last = { input.retireFence, version, 0, nBytes, addresses[slot] };
@@ -1092,217 +1116,59 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		return false;
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 RootTables", DX12_DRAW_ZONES_ACTIVE );
-		ID3D12RootSignature *root = input.highresAbi ? m_pHighresRoot.Get() : input.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
-		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundRoot != root )
-		{
-			pList->SetGraphicsRootSignature( root );
-			++m_Stats.rootSignatureBinds;
-			m_pBoundRoot = root;
-			// SetGraphicsRootSignature invalidates every root argument, including ordinary ones.
-			m_bGraphicsBindingsValid = false;
-		}
-		ID3D12DescriptorHeap *resourceHeap = m_Bindings.ResourceHeap().Heap(), *samplerHeap = m_Bindings.SamplerHeap().Heap();
-		if ( !m_bGraphicsBindingsValid || m_nGraphicsBindingsFence != input.retireFence || m_pBoundResourceHeap != resourceHeap || m_pBoundSamplerHeap != samplerHeap )
-		{
-			ID3D12DescriptorHeap *heaps[] = { resourceHeap, samplerHeap };
-			pList->SetDescriptorHeaps( 2, heaps );
-			++m_Stats.descriptorHeapBinds;
-			m_bGraphicsBindingsValid = false;
-			// Draws without space 4/5, a native space-1 stage, a receiver-visibility table or caster instance rows skip
-			// those binds (also after a root change or in a new list), which leaves the parameter unset there. Their
-			// cached handles must not survive it: a later draw naming the same handle again would not bind it.
-			m_BoundPbrSpots = {};
-			m_BoundProbeTable = {};
-			m_nBoundProbeConstants = 0;
-			m_BoundNativeTables[0] = m_BoundNativeTables[1] = {};
-			m_BoundLightingVisibilityTable = {};
-			// The highres root can first be used by a baked-only world pass, which skips space 2.
-			// Its following realtime pass must bind these even if their values match the previous root's.
-			m_BoundLightingViewTable = {};
-			m_nBoundLightingViewConstants = 0;
-			m_BoundPropDraw = m_BoundPropTriangles = 0;
-			m_BoundInstanceTransforms = 0;
-			m_BoundScreenSpaceTable = {};
-			m_nBoundScreenSpaceView = m_nBoundVolumetricConstants = 0;
-			m_pBoundResourceHeap = resourceHeap;
-			m_pBoundSamplerHeap = samplerHeap;
-		}
-		D3D12_GPU_DESCRIPTOR_HANDLE vertexSrvs = srvs;
-		vertexSrvs.ptr += 16 * resourceStride;
-		const D3D12_GPU_DESCRIPTOR_HANDLE rootTables[] = { srvs, input.samplerTables.pixel.gpu, vertexSrvs, input.samplerTables.vertex.gpu };
-		// Parameters a draw's shaders never read may stay stale; *Current_ records whether they match this draw.
-		if ( !m_bGraphicsBindingsValid )
-		{
-			m_bVertexTablesCurrent = false;
-			m_bGeometryConstantsCurrent = false;
-		}
-		const UINT tableCount = input.vertexTextures ? 4u : 2u;
-		for ( UINT i = 0; i < tableCount; ++i )
-			if ( !m_bGraphicsBindingsValid || ( i >= 2 && !m_bVertexTablesCurrent ) || m_BoundRootTables[i].ptr != rootTables[i].ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( i, rootTables[i] );
-				m_BoundRootTables[i] = rootTables[i];
-			}
+		// Capture desired root arguments, not differences against the last draw
+		// on this thread. Binding state belongs to the worker's native list.
+		static_assert( kHighresRootParameterCount == 36, "draw bindings packet layout" );
+		auto &packet = pList->CaptureBindings();
+		packet.root = input.highresAbi ? m_pHighresRoot.Get() : input.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
+		packet.heaps[0] = m_Bindings.ResourceHeap().Heap();
+		packet.heaps[1] = m_Bindings.SamplerHeap().Heap();
+		constexpr auto bit = []( UINT i ) { return uint64_t( 1 ) << i; };
+		packet.tables = 15 | bit( kRootNativeVertex ) | bit( kRootNativePixel ) | bit( kRootPbrSpots ) | bit( kRootScreenSpaceTable ) |
+			bit( kRootLightingView ) | bit( kRootLightingVisibility ) | bit( kRootProbeTable ) | bit( kRootHighresTable );
+		packet.srvs = bit( kRootInstanceTransforms ) | bit( kRootPropTriangles );
+		packet.uavs = bit( kRootHighresFailure );
+		packet.Set( 0, srvs.ptr );
+		packet.Set( 1, input.samplerTables.pixel.gpu.ptr );
 		if ( input.vertexTextures )
-			m_bVertexTablesCurrent = true;
-		else if ( m_BoundRootTables[2].ptr != vertexSrvs.ptr || m_BoundRootTables[3].ptr != input.samplerTables.vertex.gpu.ptr )
-			m_bVertexTablesCurrent = false;
-		for ( unsigned stage = 0; stage < 2; ++stage )
-			if ( input.nativeStage[stage] )
-			{
-				const UINT root = stage ? kRootNativePixel : kRootNativeVertex;
-				D3D12_GPU_DESCRIPTOR_HANDLE &bound = m_BoundNativeTables[stage];
-				if ( !m_bGraphicsBindingsValid || bound.ptr != nativeTables[stage].ptr )
-				{
-					++m_Stats.rootTableSets;
-					pList->SetGraphicsRootDescriptorTable( root, nativeTables[stage] );
-					bound = nativeTables[stage];
-				}
-			}
-		// Space-5 projected lights exist on every root, so the cache is only meaningful for the root it was bound to.
-		if ( input.pbrSpotsTable.count && ( !m_bGraphicsBindingsValid || m_BoundPbrSpots.ptr != input.pbrSpotsTable.gpu.ptr ) )
 		{
-			++m_Stats.rootTableSets;
-			pList->SetGraphicsRootDescriptorTable( kRootPbrSpots, input.pbrSpotsTable.gpu );
-			m_BoundPbrSpots = input.pbrSpotsTable.gpu;
+			packet.Set( 2, srvs.ptr + 16 * resourceStride );
+			packet.Set( 3, input.samplerTables.vertex.gpu.ptr );
 		}
-		// Space-4 ambient probes (lighting and highres roots): the nine-descriptor table and its constants travel together.
+		packet.used |= ( ( bit( ARRAYSIZE( constantAddresses ) ) - 1 ) << kRootVertexConstants );
+		memcpy( packet.values + kRootVertexConstants, constantAddresses, sizeof( constantAddresses ) );
+		if ( input.geometryStage )
+		{
+			packet.used |= uint64_t( 15 ) << kRootGeometryConstants;
+			memcpy( packet.values + kRootGeometryConstants, constantAddresses, 4 * sizeof( constantAddresses[0] ) );
+		}
+		if ( input.nativeStage[0] ) packet.Set( kRootNativeVertex, nativeTables[0].ptr );
+		if ( input.nativeStage[1] ) packet.Set( kRootNativePixel, nativeTables[1].ptr );
+		if ( input.pbrSpotsTable.count ) packet.Set( kRootPbrSpots, input.pbrSpotsTable.gpu.ptr );
 		if ( input.probeAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundProbeTable.ptr != input.probeTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootProbeTable, input.probeTable.gpu );
-				m_BoundProbeTable = input.probeTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundProbeConstants != input.probeConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootProbeConstants, input.probeConstants );
-				m_nBoundProbeConstants = input.probeConstants;
-			}
+			packet.Set( kRootProbeTable, input.probeTable.gpu.ptr );
+			packet.Set( kRootProbeConstants, input.probeConstants );
 		}
-		// Space-6 screen-space inputs are bound on every root; a zero input means the neutral table / zero constants.
-		{
-			const D3D12_GPU_DESCRIPTOR_HANDLE screenTable = input.screenSpaceTable.count ? input.screenSpaceTable.gpu : m_ScreenSpaceNullTable.gpu;
-			const D3D12_GPU_VIRTUAL_ADDRESS screenView = input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress;
-			const D3D12_GPU_VIRTUAL_ADDRESS volumetric = input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress;
-			const D3D12_GPU_VIRTUAL_ADDRESS skyClip = input.shadowSkyClipConstants ? input.shadowSkyClipConstants : m_nZeroConstantAddress;
-			if ( !m_bGraphicsBindingsValid || m_BoundScreenSpaceTable.ptr != screenTable.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootScreenSpaceTable, screenTable );
-				m_BoundScreenSpaceTable = screenTable;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundScreenSpaceView != screenView )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootScreenSpaceView, screenView );
-				m_nBoundScreenSpaceView = screenView;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundVolumetricConstants != volumetric )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootVolumetricConstants, volumetric );
-				m_nBoundVolumetricConstants = volumetric;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundShadowSkyClipConstants != skyClip )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootShadowSkyClipConstants, skyClip );
-				m_nBoundShadowSkyClipConstants = skyClip;
-			}
-		}
-		if ( input.instanceTransforms && ( !m_bGraphicsBindingsValid || m_BoundInstanceTransforms != input.instanceTransforms ) )
-		{
-			++m_Stats.rootSrvSets;
-			pList->SetGraphicsRootShaderResourceView( kRootInstanceTransforms, input.instanceTransforms );
-			m_BoundInstanceTransforms = input.instanceTransforms;
-		}
-		// Slots 0-3 feed VS b0-b3 (mirrored to GS b0-b3 when a geometry stage runs); slots 4-9 feed PS b0-b5.
-		for ( UINT slot = 0; slot < 10; ++slot )
-		{
-			const UINT root = slot < 4 ? kRootVertexConstants + slot : kRootPixelConstants + ( slot - 4 );
-			if ( !m_bGraphicsBindingsValid || m_BoundRootConstants[root - kRootVertexConstants] != constantAddresses[slot] )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( root, constantAddresses[slot] );
-				m_BoundRootConstants[root - kRootVertexConstants] = constantAddresses[slot];
-			}
-			if ( slot < 4 && input.geometryStage )
-			{
-				const UINT geometry = kRootGeometryConstants + slot;
-				if ( !m_bGraphicsBindingsValid || !m_bGeometryConstantsCurrent || m_BoundRootConstants[geometry - kRootVertexConstants] != constantAddresses[slot] )
-				{
-					++m_Stats.rootCbvSets;
-					pList->SetGraphicsRootConstantBufferView( geometry, constantAddresses[slot] );
-					m_BoundRootConstants[geometry - kRootVertexConstants] = constantAddresses[slot];
-				}
-			}
-		}
-		if ( input.geometryStage )
-			m_bGeometryConstantsCurrent = true;
-		else
-			for ( UINT slot = 0; slot < 4; ++slot )
-				if ( m_BoundRootConstants[kRootGeometryConstants + slot - kRootVertexConstants] != constantAddresses[slot] )
-					m_bGeometryConstantsCurrent = false;
+		packet.Set( kRootScreenSpaceTable, input.screenSpaceTable.count ? input.screenSpaceTable.gpu.ptr : m_ScreenSpaceNullTable.gpu.ptr );
+		packet.Set( kRootScreenSpaceView, input.screenSpaceView ? input.screenSpaceView : m_nZeroConstantAddress );
+		packet.Set( kRootVolumetricConstants, input.volumetricConstants ? input.volumetricConstants : m_nZeroConstantAddress );
+		packet.Set( kRootShadowSkyClipConstants, input.shadowSkyClipConstants ? input.shadowSkyClipConstants : m_nZeroConstantAddress );
+		if ( input.instanceTransforms ) packet.Set( kRootInstanceTransforms, input.instanceTransforms );
 		if ( input.lightingAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundLightingViewTable.ptr != input.lightingViewTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootLightingView, input.lightingViewTable.gpu );
-				m_BoundLightingViewTable = input.lightingViewTable.gpu;
-			}
-			if ( input.lightingVisibilityTable.count &&
-			     ( !m_bGraphicsBindingsValid || m_BoundLightingVisibilityTable.ptr != input.lightingVisibilityTable.gpu.ptr ) )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootLightingVisibility, input.lightingVisibilityTable.gpu );
-				m_BoundLightingVisibilityTable = input.lightingVisibilityTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundLightingViewConstants != input.lightingViewConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootLightingViewConstants, input.lightingViewConstants );
-				m_nBoundLightingViewConstants = input.lightingViewConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_BoundPropDraw != input.propDrawConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootPropDraw, input.propDrawConstants );
-				m_BoundPropDraw = input.propDrawConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_BoundPropTriangles != input.propTriangles )
-			{
-				++m_Stats.rootSrvSets;
-				pList->SetGraphicsRootShaderResourceView( kRootPropTriangles, input.propTriangles );
-				m_BoundPropTriangles = input.propTriangles;
-			}
+			packet.Set( kRootLightingView, input.lightingViewTable.gpu.ptr );
+			if ( input.lightingVisibilityTable.count ) packet.Set( kRootLightingVisibility, input.lightingVisibilityTable.gpu.ptr );
+			packet.Set( kRootLightingViewConstants, input.lightingViewConstants );
+			packet.Set( kRootPropDraw, input.propDrawConstants );
+			packet.Set( kRootPropTriangles, input.propTriangles );
 		}
 		if ( input.highresAbi )
 		{
-			if ( !m_bGraphicsBindingsValid || m_BoundHighresTable.ptr != input.highresTable.gpu.ptr )
-			{
-				++m_Stats.rootTableSets;
-				pList->SetGraphicsRootDescriptorTable( kRootHighresTable, input.highresTable.gpu );
-				m_BoundHighresTable = input.highresTable.gpu;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundHighresConstants != input.highresConstants )
-			{
-				++m_Stats.rootCbvSets;
-				pList->SetGraphicsRootConstantBufferView( kRootHighresConstants, input.highresConstants );
-				m_nBoundHighresConstants = input.highresConstants;
-			}
-			if ( !m_bGraphicsBindingsValid || m_nBoundHighresFailure != input.highresFailure )
-			{
-				pList->SetGraphicsRootUnorderedAccessView( kRootHighresFailure, input.highresFailure );
-				m_nBoundHighresFailure = input.highresFailure;
-			}
+			packet.Set( kRootHighresTable, input.highresTable.gpu.ptr );
+			packet.Set( kRootHighresConstants, input.highresConstants );
+			packet.Set( kRootHighresFailure, input.highresFailure );
 		}
-		m_bGraphicsBindingsValid = true;
-		m_nGraphicsBindingsFence = input.retireFence;
 		return true;
 	}
 }

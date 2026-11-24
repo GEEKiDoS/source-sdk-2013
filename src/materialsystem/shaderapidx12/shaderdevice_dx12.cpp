@@ -725,6 +725,13 @@ uint64_t CShaderDeviceDX12::Submit( bool bWait )
 	op.kind = SubmitOpDX12::Execute;
 	op.list = frame.list.Get();
 	op.value = nValue;
+	for ( unsigned i = 0; i < m_nSceneList; ++i )
+	{
+		op.extraLists[i] = frame.extraLists[i].Get();
+		op.laneEnds[i] = m_RecordLanes[i].head;
+	}
+	m_nSceneList = 0;
+	m_bSceneBoundaryPending = false;
 	EnqueueSubmission( op );
 	if ( m_bFailed )
 		return 0;
@@ -1408,6 +1415,8 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 	ZoneNamedN( replayZone, "DX12 CommandReplay", DX12_ZONES_ACTIVE );
 	size_t offset = 0;
 	ID3D12GraphicsCommandList2 *list2 = nullptr; // queried on the first breadcrumb of this replay
+	DrawBindings bound{};
+	uint64_t binds[BindCounterCount]{};
 	while ( offset < size )
 	{
 		Header header;
@@ -1419,8 +1428,43 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			memcpy( &value, p, sizeof( value ) );
 			p += sizeof( value );
 		};
+		if ( ( header.op >= Op::SetGraphicsRootSignature && header.op <= Op::SetGraphicsRoot32BitConstants ) ||
+			header.op == Op::SetDescriptorHeaps || header.op == Op::ExternalCommand )
+			bound.root = nullptr;
 		switch ( header.op )
 		{
+		case Op::DrawBindings:
+		{
+			const auto &next = *reinterpret_cast<const DrawBindings *>( p );
+			const bool reset = bound.root != next.root;
+			if ( reset )
+			{
+				list->SetGraphicsRootSignature( next.root );
+				bound.root = next.root;
+				++binds[Root];
+			}
+			if ( reset || bound.heaps[0] != next.heaps[0] || bound.heaps[1] != next.heaps[1] )
+			{
+				list->SetDescriptorHeaps( 2, next.heaps );
+				memcpy( bound.heaps, next.heaps, sizeof( next.heaps ) );
+				bound.used = 0;
+				++binds[Heaps];
+			}
+			for ( uint64_t pending = next.used; pending; pending &= pending - 1 )
+			{
+				unsigned long slot;
+				_BitScanForward64( &slot, pending );
+				const uint64_t bit = uint64_t( 1 ) << slot, value = next.values[slot];
+				if ( ( bound.used & bit ) && bound.values[slot] == value ) continue;
+				if ( next.tables & bit ) { list->SetGraphicsRootDescriptorTable( slot, { value } ); ++binds[Tables]; }
+				else if ( next.srvs & bit ) { list->SetGraphicsRootShaderResourceView( slot, value ); ++binds[Srvs]; }
+				else if ( next.uavs & bit ) list->SetGraphicsRootUnorderedAccessView( slot, value );
+				else { list->SetGraphicsRootConstantBufferView( slot, value ); ++binds[Cbvs]; }
+				bound.values[slot] = value;
+			}
+			bound.used |= next.used;
+			break;
+		}
 		case Op::OMSetRenderTargets:
 		{
 			UINT count, single, stored, hasDepth;
@@ -1695,6 +1739,15 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->EndQuery( heap, type, index );
 			break;
 		}
+		case Op::UploadConstant:
+		{
+			unsigned char *mapped;
+			UINT bytes, padded;
+			get( mapped ); get( bytes ); get( padded );
+			memcpy( mapped, p, bytes );
+			if ( padded != bytes ) memset( mapped + bytes, 0, padded - bytes );
+			break;
+		}
 		case Op::WriteNativeCbvTable:
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE dst;
@@ -1781,6 +1834,8 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 		}
 		}
 	}
+	for ( unsigned i = 0; i < BindCounterCount; ++i )
+		if ( binds[i] ) m_BindCounts[i].fetch_add( binds[i], std::memory_order_relaxed );
 	if ( list2 )
 		list2->Release();
 }
@@ -1811,7 +1866,7 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	switch ( op.kind )
 	{
 	case SubmitOpDX12::Replay:
-		CCommandRecorderDX12::Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes );
+		m_Recorder.Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes );
 		{
 			AUTO_LOCK( m_ChunkMutex );
 			m_FreeChunks.AddToTail( op.chunk );
@@ -1826,11 +1881,17 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	{
 		ZoneNamedN( submitZone, "DX12 Submit Execute", DX12_ZONES_ACTIVE );
 		hr = op.list->Close();
-		if ( SUCCEEDED( hr ) )
+		ID3D12CommandList *lists[3] = { op.list };
+		UINT count = 1;
+		for ( unsigned i = 0; i < ARRAYSIZE( op.extraLists ) && op.extraLists[i]; ++i )
 		{
-			ID3D12CommandList *pLists[] = { op.list };
-			m_pQueue->ExecuteCommandLists( 1, pLists );
+			m_RecordLanes[i].Wait( op.laneEnds[i] );
+			const HRESULT closed = op.extraLists[i]->Close();
+			if ( FAILED( closed ) ) hr = closed;
+			lists[count++] = op.extraLists[i];
 		}
+		if ( SUCCEEDED( hr ) )
+			m_pQueue->ExecuteCommandLists( count, lists );
 		// Signal even after a failed Close so fence waits cannot hang; the error is reported at the next flush.
 		const HRESULT hrSignal = m_pQueue->Signal( m_pFence.Get(), op.value );
 		if ( SUCCEEDED( hr ) )
@@ -1889,10 +1950,80 @@ void CShaderDeviceDX12::FlushCommandChunk( unsigned char *pChunk, size_t nBytes 
 {
 	SubmitOpDX12 op{};
 	op.kind = SubmitOpDX12::Replay;
-	op.list = m_Frames[m_nFrameIndex].list.Get();
+	auto &frame = m_Frames[m_nFrameIndex];
+	op.list = m_nSceneList ? frame.extraLists[m_nSceneList - 1].Get() : frame.list.Get();
 	op.chunk = pChunk;
 	op.chunkBytes = nBytes;
-	EnqueueSubmission( op );
+	if ( ParallelRecording() && m_Recorder.ChunkHasExternal() )
+	{
+		// External callbacks have submit-thread affinity and may carry mutable
+		// provider state. No earlier/later pass may overtake a callback.
+		DrainSubmissions();
+		EnqueueSubmission( op );
+		DrainSubmissions();
+	}
+	else if ( m_nSceneList && m_RecordLanes[m_nSceneList - 1].thread )
+		m_RecordLanes[m_nSceneList - 1].Push( op );
+	else
+		EnqueueSubmission( op );
+}
+
+void CShaderDeviceDX12::RecordLane::Push( const SubmitOpDX12 &op )
+{
+	AcquireSRWLockExclusive( &lock );
+	while ( head - tail == ARRAYSIZE( ops ) ) SleepConditionVariableSRW( &changed, &lock, INFINITE, 0 );
+	ops[head++ % ARRAYSIZE( ops )] = op;
+	WakeAllConditionVariable( &changed );
+	ReleaseSRWLockExclusive( &lock );
+}
+
+uintp CShaderDeviceDX12::RecordThreadMain( void *context )
+{
+	auto &lane = *static_cast<RecordLane *>( context );
+	ThreadSetDebugName( "DX12 pass recorder" );
+	DevMsg( "DX12 pass recorder %u: tid %lu\n", unsigned( &lane - lane.owner->m_RecordLanes ), GetCurrentThreadId() );
+	AcquireSRWLockExclusive( &lane.lock );
+	for ( ;; )
+	{
+		while ( lane.tail == lane.head && !lane.exit ) SleepConditionVariableSRW( &lane.changed, &lane.lock, INFINITE, 0 );
+		if ( lane.exit ) break;
+		const SubmitOpDX12 &op = lane.ops[lane.tail % ARRAYSIZE( lane.ops )];
+		ReleaseSRWLockExclusive( &lane.lock );
+		const HRESULT hr = lane.owner->RunSubmission( op );
+		if ( FAILED( hr ) ) lane.owner->m_nSubmitError.AssignIf( S_OK, hr );
+		lane.owner->m_SubmitDoneEvent.Set();
+		AcquireSRWLockExclusive( &lane.lock );
+		++lane.tail;
+		WakeAllConditionVariable( &lane.changed );
+	}
+	ReleaseSRWLockExclusive( &lane.lock );
+	return 0;
+}
+
+bool CShaderDeviceDX12::BeginSceneDrawList()
+{
+	if ( !m_bSceneBoundaryPending ) return false;
+	m_bSceneBoundaryPending = false;
+	if ( m_nSceneList >= ARRAYSIZE( m_RecordLanes ) || !m_RecordLanes[m_nSceneList].thread ||
+		m_bShadowTimingEnabled || m_bGpuEventTiming || m_nGpuPixOverflow ) return false;
+	FrameContext &frame = m_Frames[m_nFrameIndex];
+	auto &allocator = frame.extraAllocators[m_nSceneList];
+	auto &list = frame.extraLists[m_nSceneList];
+	if ( !list )
+	{
+		if ( !allocator && FAILED( m_pDevice->CreateCommandAllocator( D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS( &allocator ) ) ) ) return false;
+		if ( FAILED( m_pDevice->CreateCommandList( 0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.Get(), nullptr, IID_PPV_ARGS( &list ) ) ) ) return false;
+		if ( FAILED( list->Close() ) ) { list.Reset(); return false; }
+	}
+	SuspendGpuPIXEvents();
+	m_Recorder.Flush();
+	SubmitOpDX12 reset{};
+	reset.kind = SubmitOpDX12::Reset;
+	reset.allocator = allocator.Get();
+	reset.list = list.Get();
+	m_RecordLanes[m_nSceneList++].Push( reset );
+	ResumeGpuPIXEvents();
+	return true;
 }
 
 void CShaderDeviceDX12::ReleaseCommandChunks()
@@ -1943,6 +2074,14 @@ void CShaderDeviceDX12::StartSubmitThread()
 	m_nSubmitTail = 0;
 	m_nSubmitError = S_OK;
 	m_hSubmitThread = CreateSimpleThread( &CShaderDeviceDX12::SubmitThreadMain, this );
+	if ( m_hSubmitThread )
+		for ( auto &lane : m_RecordLanes )
+		{
+			lane.owner = this;
+			lane.exit = false;
+			lane.thread = CreateSimpleThread( RecordThreadMain, &lane );
+			if ( !lane.thread ) break;
+		}
 }
 
 void CShaderDeviceDX12::StopSubmitThread()
@@ -1950,6 +2089,17 @@ void CShaderDeviceDX12::StopSubmitThread()
 	if ( !m_hSubmitThread )
 		return;
 	FlushSubmissions();
+	for ( auto &lane : m_RecordLanes )
+	{
+		if ( !lane.thread ) continue;
+		AcquireSRWLockExclusive( &lane.lock );
+		lane.exit = true;
+		WakeAllConditionVariable( &lane.changed );
+		ReleaseSRWLockExclusive( &lane.lock );
+		ThreadJoin( lane.thread );
+		ReleaseThreadHandle( lane.thread );
+		lane.thread = nullptr;
+	}
 	m_bSubmitExit = 1;
 	m_SubmitWorkEvent.Set();
 	ThreadJoin( m_hSubmitThread );
@@ -1982,7 +2132,7 @@ void CShaderDeviceDX12::FlushSubmissions()
 {
 	if ( !m_hSubmitThread )
 		return;
-	if ( m_nSubmitTail != m_nSubmitHead )
+	if ( ParallelRecording() || m_nSubmitTail != m_nSubmitHead )
 	{
 		ZoneNamedN( presentWait, "DX12 SubmitThreadWait", DX12_ZONES_ACTIVE );
 		DrainSubmissions();
@@ -2094,6 +2244,8 @@ void CShaderDeviceDX12::ShutdownDevice()
 	{
 		FrameContext &frame = m_Frames[nFrame];
 		frame.list.Reset();
+		for ( auto &list : frame.extraLists ) list.Reset();
+		for ( auto &allocator : frame.extraAllocators ) allocator.Reset();
 		for ( int i = 0; i < frame.retained.Count(); ++i )
 			frame.retained[i]->Release();
 		frame.retained.RemoveAll();

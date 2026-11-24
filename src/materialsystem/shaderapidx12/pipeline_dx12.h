@@ -395,6 +395,11 @@ private:
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
+	bool CaptureConstant( CCommandRecorderDX12 *list, const void *source, size_t bytes, UINT padded, uint64_t fence, D3D12_GPU_VIRTUAL_ADDRESS &gpu );
+	unsigned char *m_pCaptureMapped = nullptr;
+	D3D12_GPU_VIRTUAL_ADDRESS m_nCaptureAddress = 0;
+	uint64_t m_nCaptureFence = 0;
+	UINT m_nCaptureRemaining = 0;
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
 	CPersistentPipelineDX12 m_Library;
 	CPipelineRecipesDX12 m_Recipes;
