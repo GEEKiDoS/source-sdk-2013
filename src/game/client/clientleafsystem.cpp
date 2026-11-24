@@ -1898,15 +1898,8 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 			return false;
 	}
 
+	if ( flags & RENDER_FLAGS_TWOPASS ) return true;
 	const model_t *pModel = pRenderable->GetModel();
-	int modelType = pModel ? modelinfo->GetModelType( pModel ) : mod_bad;
-	bool bTwoPass = ( flags & RENDER_FLAGS_TWOPASS ) != 0 || pRenderable->IsTwoPass();
-	if ( pModel && ( modelType == mod_studio || modelType == mod_brush ) )
-	{
-		bTwoPass = bTwoPass || modelinfo->IsTranslucentTwoPass( pModel );
-	}
-	if ( bTwoPass )
-		return true;
 
 	// Do not use the ordinary render bucket or FxBlend here: distance-faded engine
 	// static props can be in its translucent bucket while their materials are opaque.
@@ -1916,6 +1909,13 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 		bTranslucent = bTranslucent || pRenderable->IsTransparent();
 	}
 	if ( !bTranslucent && !pRenderable->UsesPowerOfTwoFrameBufferTexture() )
+		return true;
+
+	// Most eligible registrations are opaque. Only resolve the additional
+	// two-pass exceptions if the ordinary opaque test didn't admit this one.
+	if ( pRenderable->IsTwoPass() ) return true;
+	const int modelType = pModel ? modelinfo->GetModelType( pModel ) : mod_bad;
+	if ( ( modelType == mod_studio || modelType == mod_brush ) && modelinfo->IsTranslucentTwoPass( pModel ) )
 		return true;
 
 	// Actual cutout materials have a depth path even if the registration is marked
