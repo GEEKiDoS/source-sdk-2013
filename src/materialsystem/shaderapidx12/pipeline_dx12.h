@@ -182,7 +182,7 @@ public:
 	};
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
-	void DeferNativeCbvs( bool defer ) { m_bDeferNativeCbvs = defer; }
+	void BeginNativeCapture() { m_bLastSrvTableIsPrevious = false; m_nCaptureRemaining = 0; memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) ); memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) ); }
 
 	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
 	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
@@ -424,9 +424,7 @@ private:
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
-	bool CaptureConstant( CCommandRecorderDX12 *list, const void *source, size_t bytes, UINT padded, uint64_t fence, D3D12_GPU_VIRTUAL_ADDRESS &gpu );
-	unsigned char *m_pCaptureMapped = nullptr;
-	D3D12_GPU_VIRTUAL_ADDRESS m_nCaptureAddress = 0;
+	bool CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence );
 	uint64_t m_nCaptureFence = 0;
 	UINT m_nCaptureRemaining = 0;
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );
@@ -456,8 +454,6 @@ private:
 		uint64_t fence = 0, heapGeneration = 0, descriptorEpoch = 0;
 	};
 
-	bool m_bDeferNativeCbvs = false;
-	CachedSrvTable m_SrvTables[512];
 	uint64_t m_nSrvDescriptorEpoch = 1;
 	CachedSrvTable m_LastSrvTable{};
 
@@ -489,8 +485,7 @@ private:
 
 	struct NativeTableCache
 	{
-		D3D12_GPU_VIRTUAL_ADDRESS addresses[8] = {};
-		UINT sizes[8] = {};
+		uint8_t live = 0;
 		D3D12_GPU_DESCRIPTOR_HANDLE gpu{};
 		uint64_t fence = 0, heapGeneration = 0;
 	};

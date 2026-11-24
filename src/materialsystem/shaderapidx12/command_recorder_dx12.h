@@ -75,8 +75,10 @@ public:
 		EndQuery,
 		ResolveQueryData,
 		CopyDescriptorTable,
+		ResolveSrvTable,
 		WriteNativeCbvTable,
 		DrawBindings,
+		ConstantArena,
 		UploadConstant,
 		ExternalCommand,
 		BeginEvent,
@@ -92,6 +94,43 @@ public:
 	void *m_pChunkContext = nullptr;
 	// ResourceBarrier calls recorded (each is a potential GPU synchronization point); monotonic, for -dx12stats.
 	uint64_t m_nBarrierCalls = 0;
+	struct SrvSet
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE sources[32];
+		ID3D12Resource *textures[32];
+	};
+	struct SrvPacket
+	{
+		SrvSet set;
+		uint64_t epoch, generation, fence;
+		D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+		D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+		UINT stride, missing;
+	};
+	void ResolveSrvTable( const D3D12_CPU_DESCRIPTOR_HANDLE (&src)[32], ID3D12Resource *const (&textures)[32],
+		const D3D12_SHADER_RESOURCE_VIEW_DESC (&views)[32], UINT missing, UINT stride, D3D12_CPU_DESCRIPTOR_HANDLE cpu,
+		D3D12_GPU_DESCRIPTOR_HANDLE gpu, uint64_t fence, uint64_t generation, uint64_t epoch )
+	{
+		unsigned n = 0;
+		for ( UINT mask = missing; mask; mask &= mask - 1 ) ++n;
+		auto *out = reinterpret_cast<SrvPacket *>( Begin( Op::ResolveSrvTable, sizeof( SrvPacket ) + n * sizeof( views[0] ) ) );
+		out->epoch = epoch; out->generation = generation; out->fence = fence; out->cpu = cpu; out->gpu = gpu;
+		out->stride = stride; out->missing = missing;
+		memcpy( out->set.sources, src, sizeof( src ) ); memcpy( out->set.textures, textures, sizeof( textures ) );
+		auto *descs = reinterpret_cast<D3D12_SHADER_RESOURCE_VIEW_DESC *>( out + 1 );
+		for ( unsigned i = 0; missing; ++i )
+			if ( missing & ( 1u << i ) ) { *descs++ = views[i]; missing &= ~( 1u << i ); }
+	}
+	struct ConstantState
+	{
+		unsigned char *mapped = nullptr;
+		D3D12_GPU_VIRTUAL_ADDRESS cursor = 0, addresses[16]{};
+		UINT sizes[16]{};
+		struct SrvEntry { SrvSet set; uint64_t fence, generation, epoch; D3D12_GPU_DESCRIPTOR_HANDLE gpu; };
+		SrvEntry entries[128]{};
+		D3D12_GPU_DESCRIPTOR_HANDLE srv{};
+		UINT stride = 0;
+	};
 
 	struct DrawBindings
 	{
@@ -106,7 +145,7 @@ public:
 		packet.used = 0;
 		return packet;
 	}
-	enum BindCounter { Root, Heaps, Tables, Cbvs, Srvs, Pipelines, BindCounterCount };
+	enum BindCounter { Root, Heaps, Tables, Cbvs, Srvs, Pipelines, SrvHits, SrvCopies, BindCounterCount };
 	uint64_t TakeBindCount( BindCounter counter ) { return m_BindCounts[counter].exchange( 0, std::memory_order_relaxed ); }
 
 	void Flush()
@@ -397,23 +436,26 @@ public:
 	}
 
 	// The table and uploads are already reserved through the submission fence.
-	void WriteNativeCbvTable( D3D12_CPU_DESCRIPTOR_HANDLE dst, UINT stride, const D3D12_GPU_VIRTUAL_ADDRESS (&addresses)[8], const UINT (&sizes)[8] )
+	void WriteNativeCbvTable( D3D12_CPU_DESCRIPTOR_HANDLE dst, UINT stride, UINT stage, UINT live, D3D12_GPU_VIRTUAL_ADDRESS zero )
 	{
-		auto *p = Begin( Op::WriteNativeCbvTable, sizeof( dst ) + sizeof( stride ) + sizeof( addresses ) + sizeof( sizes ) );
+		auto *p = Begin( Op::WriteNativeCbvTable, sizeof( dst ) + 3 * sizeof( UINT ) + sizeof( zero ) );
 		Put( p, dst );
 		Put( p, stride );
-		PutArray( p, addresses, 8 );
-		PutArray( p, sizes, 8 );
+		Put( p, stage ); Put( p, live ); Put( p, zero );
 	}
 
+	void ConstantArena( unsigned char *mapped, D3D12_GPU_VIRTUAL_ADDRESS gpu )
+	{
+		auto *p = Begin( Op::ConstantArena, sizeof( mapped ) + sizeof( gpu ) );
+		Put( p, mapped ); Put( p, gpu );
+	}
 	// The CPU source is draw-local; never give its pointer to the workers.
 	// The mapped destination is reserved exclusively through the list fence.
-	void UploadConstant( unsigned char *mapped, const void *source, UINT bytes, UINT padded )
+	void UploadConstant( UINT slot, const void *source, UINT bytes )
 	{
-		auto *p = Begin( Op::UploadConstant, sizeof( mapped ) + 2 * sizeof( UINT ) + bytes );
-		Put( p, mapped );
+		auto *p = Begin( Op::UploadConstant, 2 * sizeof( UINT ) + bytes );
+		Put( p, slot );
 		Put( p, bytes );
-		Put( p, padded );
 		memcpy( p, source, bytes );
 	}
 
@@ -451,7 +493,7 @@ public:
 	}
 
 	// Replays [data, data+size) onto the native list; device performs descriptor copies.
-	void Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size );
+	void Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size, ConstantState &constants );
 
 private:
 	std::atomic<uint64_t> m_BindCounts[BindCounterCount]{};

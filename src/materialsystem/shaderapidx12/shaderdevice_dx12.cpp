@@ -1410,7 +1410,7 @@ void CShaderDeviceDX12::SetFrameGenFpsLimit( float flFps )
 //-----------------------------------------------------------------------------
 // Purpose: Replays recorded commands onto the native list; the device performs descriptor copies
 //-----------------------------------------------------------------------------
-void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size )
+void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device *device, const unsigned char *data, size_t size, ConstantState &constants )
 {
 	ZoneNamedN( replayZone, "DX12 CommandReplay", DX12_ZONES_ACTIVE );
 	size_t offset = 0;
@@ -1458,7 +1458,8 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			{
 				unsigned long slot;
 				_BitScanForward64( &slot, pending );
-				const uint64_t bit = uint64_t( 1 ) << slot, value = next.values[slot];
+				const uint64_t bit = uint64_t( 1 ) << slot;
+				const uint64_t value = slot == 0 ? constants.srv.ptr : slot == 2 ? constants.srv.ptr + 16u * constants.stride : next.values[slot];
 				if ( ( bound.used & bit ) && bound.values[slot] == value ) continue;
 				if ( next.tables & bit ) { list->SetGraphicsRootDescriptorTable( slot, { value } ); ++binds[Tables]; }
 				else if ( next.srvs & bit ) { list->SetGraphicsRootShaderResourceView( slot, value ); ++binds[Srvs]; }
@@ -1757,26 +1758,77 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			list->EndQuery( heap, type, index );
 			break;
 		}
+		case Op::ConstantArena:
+			get( constants.mapped ); get( constants.cursor );
+			break;
 		case Op::UploadConstant:
 		{
-			unsigned char *mapped;
-			UINT bytes, padded;
-			get( mapped ); get( bytes ); get( padded );
-			memcpy( mapped, p, bytes );
-			if ( padded != bytes ) memset( mapped + bytes, 0, padded - bytes );
+			UINT slot, bytes;
+			get( slot ); get( bytes );
+			const UINT padded = ( bytes + 255 ) & ~255u;
+			memcpy( constants.mapped, p, bytes );
+			if ( padded != bytes ) memset( constants.mapped + bytes, 0, padded - bytes );
+			constants.addresses[slot] = constants.cursor;
+			constants.sizes[slot] = padded;
+			constants.mapped += padded; constants.cursor += padded;
 			break;
 		}
 		case Op::WriteNativeCbvTable:
 		{
 			D3D12_CPU_DESCRIPTOR_HANDLE dst;
-			UINT stride, sizes[8];
-			D3D12_GPU_VIRTUAL_ADDRESS addresses[8];
-			get( dst ); get( stride ); get( addresses ); get( sizes );
+			UINT stride, stage, live;
+			D3D12_GPU_VIRTUAL_ADDRESS zero;
+			get( dst ); get( stride ); get( stage ); get( live ); get( zero );
 			for ( unsigned i = 0; i < 8; ++i, dst.ptr += stride )
 			{
-				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[i], sizes[i] };
+				const UINT slot = stage * 8 + i;
+				const bool bound = ( live & ( 1u << i ) ) != 0;
+				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ bound ? constants.addresses[slot] : zero, bound ? constants.sizes[slot] : 256u };
 				device->CreateConstantBufferView( &view, dst );
 			}
+			break;
+		}
+		case Op::ResolveSrvTable:
+		{
+			const auto &in = *reinterpret_cast<const SrvPacket *>( p );
+			constants.stride = in.stride;
+			constants.srv = in.gpu;
+			if ( !in.missing )
+			{
+				uint64_t hash = 0;
+				for ( unsigned i = 0; i < 16; ++i ) hash = ( hash ^ in.set.sources[i].ptr ) * 1099511628211ull;
+				auto &entry = constants.entries[Mix32HashFunctor()( uint32_t( hash ) ^ uint32_t( hash >> 32 ) ) % ARRAYSIZE( constants.entries )];
+				if ( entry.fence == in.fence && entry.generation == in.generation && entry.epoch == in.epoch &&
+					!memcmp( &entry.set, &in.set, sizeof( in.set ) ) )
+				{
+					constants.srv = entry.gpu;
+					++binds[SrvHits];
+					break;
+				}
+				const UINT count = 32;
+				device->CopyDescriptors( 1, &in.cpu, &count, count, in.set.sources, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+				entry = { in.set, in.fence, in.generation, in.epoch, in.gpu };
+				++binds[SrvCopies];
+				break;
+			}
+			auto *view = reinterpret_cast<const D3D12_SHADER_RESOURCE_VIEW_DESC *>( &in + 1 );
+			D3D12_CPU_DESCRIPTOR_HANDLE dest[32], src[32];
+			UINT count = 0;
+			for ( UINT i = 0; i < 32; ++i )
+			{
+				const D3D12_CPU_DESCRIPTOR_HANDLE address{ in.cpu.ptr + SIZE_T( i ) * in.stride };
+				if ( !( in.missing & ( 1u << i ) ) )
+				{
+					dest[count] = address; src[count++] = in.set.sources[i]; continue;
+				}
+				auto srv = *view++;
+				if ( !srv.Shader4ComponentMapping ) srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+				if ( !srv.ViewDimension ) srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+				if ( srv.Format == DXGI_FORMAT_UNKNOWN ) srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+				if ( srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D && !srv.Texture2D.MipLevels ) srv.Texture2D.MipLevels = 1;
+				device->CreateShaderResourceView( in.set.textures[i], &srv, address );
+			}
+			if ( count ) device->CopyDescriptors( count, dest, nullptr, count, src, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 			break;
 		}
 		case Op::CopyDescriptorTable:
@@ -1884,7 +1936,7 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	switch ( op.kind )
 	{
 	case SubmitOpDX12::Replay:
-		m_Recorder.Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes );
+		m_Recorder.Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes, *op.constants );
 		{
 			AUTO_LOCK( m_ChunkMutex );
 			m_FreeChunks.AddToTail( op.chunk );
@@ -1972,6 +2024,7 @@ void CShaderDeviceDX12::FlushCommandChunk( unsigned char *pChunk, size_t nBytes 
 	op.list = m_nSceneList ? frame.extraLists[m_nSceneList - 1].Get() : frame.list.Get();
 	op.chunk = pChunk;
 	op.chunkBytes = nBytes;
+	op.constants = &frame.constants[m_nSceneList];
 	if ( ParallelRecording() && m_Recorder.ChunkHasExternal() )
 	{
 		// External callbacks have submit-thread affinity and may carry mutable

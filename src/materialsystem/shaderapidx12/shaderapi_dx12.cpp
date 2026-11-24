@@ -2059,7 +2059,10 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		// graphics argument and never split a native occlusion query.
 		if ( !shadowPass && !motionActive && !contactReplay && m_ActiveOcclusionQueries.IsEmpty() &&
 			m_pDevice->BeginSceneDrawList() )
+		{
+			m_Pipeline.BeginNativeCapture();
 			m_Pipeline.InvalidateGraphicsBindings();
+		}
 		m_Pipeline.BindRenderTargets( list, target.colorCount, target.rtvs, target.colors, target.depth ? &target.dsv : nullptr, target.depth, retireFence );
 	}
 	D3D12_VIEWPORT viewport{ 0, 0, static_cast<float>( target.width ), static_cast<float>( target.height ), 0, 1 };
@@ -5943,8 +5946,6 @@ void CShaderAPIDX12::BeginFrame()
 	m_nFrameDrawCount = 0;
 	m_nFrameFlushCount = 0;
 	m_nFrameStartFence = m_pDevice ? m_pDevice->NextFenceValue() : 0;
-	static ConVarRef queueMode( "mat_queue_mode" );
-	m_Pipeline.DeferNativeCbvs( queueMode.GetInt() == 0 || ( m_pDevice && m_pDevice->ParallelRecording() ) );
 	m_bDepthPrepassResolved = false;
 	m_nFrameSyncCount = 0;
 	m_bFrameActive = true;
@@ -6021,7 +6022,7 @@ void CShaderAPIDX12::EndFrame()
 			const auto binds = [this]( CCommandRecorderDX12::BindCounter c ) { return m_pDevice ? m_pDevice->TakeBindCount( c ) : 0; };
 			const double n = static_cast<double>( m_nDrawStatsFrames );
 			Msg( "ShaderAPIDX12 stats/frame: draws %.1f memoHits %.1f srvTableHits %.1f srvTableCopies %.1f constHits %.1f constUploads %.1f transientConst %.1f rootCbvSets %.1f rootTableSets %.1f rootSrvSets %.1f shadowDraws %.1f casterInstances %.1f casterInstancedDraws %.1f\n",
-			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, p.srvTableHits / n, p.srvTableCopies / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, binds( CCommandRecorderDX12::Cbvs ) / n, binds( CCommandRecorderDX12::Tables ) / n, binds( CCommandRecorderDX12::Srvs ) / n,
+			    m_DrawStats.draws / n, m_DrawStats.memoHits / n, ( p.srvTableHits + binds( CCommandRecorderDX12::SrvHits ) ) / n, binds( CCommandRecorderDX12::SrvCopies ) / n, p.constantHits / n, p.constantUploads / n, p.transientConstants / n, binds( CCommandRecorderDX12::Cbvs ) / n, binds( CCommandRecorderDX12::Tables ) / n, binds( CCommandRecorderDX12::Srvs ) / n,
 			    m_DrawStats.shadowDraws / n, m_DrawStats.casterInstances / n, m_DrawStats.casterInstancedDraws / n );
 			Msg( "ShaderAPIDX12 frame sync/frame: submits %.2f (max %llu) psoCreates %.2f textureUploadMiB %.2f prepassReadOnlyDraws %.1f prepassNullPS %.1f prepassShaded %.1f motionStaticSkips %.1f psoBinds %.1f rootSigBinds %.1f heapBinds %.1f\n",
 			    m_DrawStats.submits / n, static_cast<unsigned long long>( m_DrawStats.maxFrameSubmits ), m_Pipeline.TakeCreatedPipelines() / n,

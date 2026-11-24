@@ -41,7 +41,6 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	memset( m_LastConstantSlots, 0, sizeof( m_LastConstantSlots ) );
 	memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) );
 	memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) );
-	memset( m_SrvTables, 0, sizeof( m_SrvTables ) );
 	memset( m_RecentConstants, 0, sizeof( m_RecentConstants ) );
 	m_nUploadPageHint = 0;
 	m_nCaptureRemaining = 0;
@@ -803,25 +802,22 @@ void CPipelineCacheDX12::BindDrawState( CCommandRecorderDX12 *pList, const D3D12
 // Purpose: Uploads constants and binds descriptor heaps, SRV/sampler tables and
 //          root CBVs for one draw, skipping state already bound in this recording
 //-----------------------------------------------------------------------------
-bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, const void *source, size_t bytes, UINT padded,
-	uint64_t fence, D3D12_GPU_VIRTUAL_ADDRESS &gpu )
+bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence )
 {
-	if ( !m_bDeferNativeCbvs )
-		return AllocateUploadLocked( source, bytes, padded, 256, fence, gpu, nullptr, nullptr, nullptr, 0, 0 );
+	const UINT padded = ( static_cast<UINT>( bytes ) + 255 ) & ~255u;
 	// Carve immutable output slices from one owner-side page reservation.
 	// Replay fills them before the frame's (ordered, single-fence) Execute.
 	if ( m_nCaptureFence != fence || m_nCaptureRemaining < padded )
 	{
 		const UINT grant = MAX( 65536u, padded );
-		if ( !AllocateUploadLocked( nullptr, grant, grant, 256, fence, m_nCaptureAddress, nullptr, nullptr, nullptr, 0, 0, &m_pCaptureMapped ) )
+		D3D12_GPU_VIRTUAL_ADDRESS base; unsigned char *mapped;
+		if ( !AllocateUploadLocked( nullptr, grant, grant, 256, fence, base, nullptr, nullptr, nullptr, 0, 0, &mapped ) )
 			return false;
+		list->ConstantArena( mapped, base );
 		m_nCaptureRemaining = grant;
 		m_nCaptureFence = fence;
 	}
-	gpu = m_nCaptureAddress;
-	list->UploadConstant( m_pCaptureMapped, source, static_cast<UINT>( bytes ), padded );
-	m_pCaptureMapped += padded;
-	m_nCaptureAddress += padded;
+	list->UploadConstant( slot, source, static_cast<UINT>( bytes ) );
 	m_nCaptureRemaining -= padded;
 	return true;
 }
@@ -932,36 +928,32 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 	{
 		if ( !input.nativeStage[stage] )
 			continue;
-		D3D12_GPU_VIRTUAL_ADDRESS addresses[8];
-		UINT sizes[8];
+		uint8_t live = 0;
+		bool changed = false;
 		for ( unsigned slot = 0; slot < 8; ++slot )
 		{
 			const unsigned i = stage * 8 + slot;
 			const size_t nBytes = ( input.nativeCBufferMask[stage] & ( 1u << slot ) ) ? input.nativeSizes[i] : 0;
-			sizes[slot] = nBytes ? static_cast<UINT>( ( nBytes + 255 ) & ~size_t( 255 ) ) : 256u;
-			if ( !nBytes )
-			{
-				addresses[slot] = m_nZeroConstantAddress;
-				continue;
-			}
+			if ( !nBytes ) continue;
+			live |= uint8_t( 1u << slot );
 			if ( !input.nativeData[i] || nBytes > kConstantBufferMaxBytes || ( nBytes & 15 ) )
 				return false;
 			const uint64_t version = input.nativeVersions[i];
 			LastConstantSlot &last = m_LastNativeSlots[i];
 			if ( version && last.fence == input.retireFence && last.version == version && last.bytes == nBytes )
 			{
-				addresses[slot] = last.address;
 				++m_Stats.constantHits;
 				continue;
 			}
-			if ( !CaptureConstant( pList, input.nativeData[i], nBytes, sizes[slot], input.retireFence, addresses[slot] ) )
+			if ( !CaptureConstant( pList, i, input.nativeData[i], nBytes, input.retireFence ) )
 				return false;
 			++m_Stats.constantUploads;
-			last = { input.retireFence, version, 0, nBytes, addresses[slot] };
+			last = { input.retireFence, version, 0, nBytes, 0 };
+			changed = true;
 		}
 		// An unchanged address set within this fence reuses the previous table.
 		NativeTableCache &cached = m_NativeTableCache[stage];
-		if ( cached.fence == input.retireFence && cached.heapGeneration == m_Bindings.ResourceHeap().Generation() && !memcmp( cached.addresses, addresses, sizeof( addresses ) ) && !memcmp( cached.sizes, sizes, sizeof( sizes ) ) )
+		if ( !changed && cached.live == live && cached.fence == input.retireFence && cached.heapGeneration == ResourceHeapGeneration() )
 		{
 			nativeTables[stage] = cached.gpu;
 			continue;
@@ -969,142 +961,35 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const DescriptorRangeDX12 table = m_Bindings.AllocateDescriptors( 8, input.retireFence );
 		if ( table.count != 8 )
 			return false;
-		// In queued mode recording is already off the main thread. Don't put
-		// extra descriptor work ahead of ExecuteCommandLists on the submit worker.
-		if ( m_bDeferNativeCbvs )
-			pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>(resourceStride), addresses, sizes );
-		else
-		{
-			auto cpu = table.cpu;
-			for ( unsigned slot = 0; slot < 8; ++slot, cpu.ptr += resourceStride )
-			{
-				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
-				m_pDevice->CreateConstantBufferView( &view, cpu );
-			}
-		}
-		memcpy( cached.addresses, addresses, sizeof( addresses ) );
-		memcpy( cached.sizes, sizes, sizeof( sizes ) );
+		pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>( resourceStride ), stage, live, m_nZeroConstantAddress );
+		cached.live = live;
 		cached.gpu = table.gpu;
 		cached.fence = input.retireFence;
 		cached.heapGeneration = table.generation;
 		nativeTables[stage] = table.gpu;
 	}
-	D3D12_GPU_DESCRIPTOR_HANDLE srvs{};
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 SRVBindings", DX12_DRAW_ZONES_ACTIVE );
-		// Complete-source tables are reusable within their recording fence and heap generation; a CPU source slot
-		// can be rewritten for another texture copy, so resources are compared as well as handles.
-		const uint64_t generation = m_Bindings.ResourceHeap().Generation();
-		const auto sameTable = [&]( const CachedSrvTable &cached )
+		const auto heap = ResourceHeapGeneration();
+		if ( input.texturesUnchanged && m_bLastSrvTableIsPrevious && m_LastSrvTable.fence == input.retireFence &&
+			m_LastSrvTable.heapGeneration == heap && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch )
+			++m_Stats.srvTableHits;
+		else
 		{
-			return cached.fence == input.retireFence && cached.heapGeneration == generation && cached.descriptorEpoch == m_nSrvDescriptorEpoch &&
-			    !memcmp( cached.sources, input.srvSources, sizeof( input.srvSources ) ) &&
-			    !memcmp( cached.resources, input.textures, sizeof( input.textures ) );
-		};
-		CachedSrvTable *slot = nullptr;
-		const bool previousValid = m_bLastSrvTableIsPrevious;
-		// An unchanged texture set reuses the previous draw's table (whose sources were complete) without scanning
-		// or comparing the 32 handles.
-		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable.fence == input.retireFence && m_LastSrvTable.heapGeneration == generation && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch;
-		const bool sourcesComplete = reusePrevious || [&]
-		{
-			SIZE_T nZeroMask = 0;
-			for ( int i = 0; i < ARRAYSIZE( input.srvSources ); ++i )
-				nZeroMask |= input.srvSources[i].ptr == 0;
-			return nZeroMask == 0;
-		}();
-		m_bLastSrvTableIsPrevious = false;
-		if ( sourcesComplete )
-		{
-			if ( reusePrevious )
+			auto table = m_Bindings.AllocateDescriptors( 32, input.retireFence );
+			if ( table.count != 32 ) return false;
+			UINT missing = 0;
+			for ( unsigned i = 0; i < 32; ++i ) if ( !input.srvSources[i].ptr )
 			{
-				srvs = m_LastSrvTable.gpu;
-				++m_Stats.srvTableHits;
+				missing |= 1u << i;
+				if ( input.textures[i] ) RetainExternalResource( input.textures[i], input.retireFence );
 			}
-			else if ( sameTable( m_LastSrvTable ) )
-			{
-				srvs = m_LastSrvTable.gpu;
-				++m_Stats.srvTableHits;
-			}
-			else
-			{
-				// Highres world materials can share t0..t2 and differ at the
-				// lightmap or detail slots. Equality still checks the full table.
-				uint64_t identity = 0;
-				for ( unsigned i = 0; i < 16; ++i )
-					identity = ( identity ^ input.srvSources[i].ptr ) * 1099511628211ull;
-				slot = &m_SrvTables[Mix32HashFunctor()( static_cast<uint32_t>( identity ) ^ static_cast<uint32_t>( identity >> 32 ) ) & ( ARRAYSIZE( m_SrvTables ) - 1 )];
-				if ( sameTable( *slot ) )
-				{
-					srvs = slot->gpu;
-					m_LastSrvTable = *slot;
-					++m_Stats.srvTableHits;
-					slot = nullptr;
-				}
-			}
-			m_bLastSrvTableIsPrevious = srvs.ptr != 0;
-		}
-		if ( !srvs.ptr )
-		{
-			DescriptorRangeDX12 table;
-			{
-				ZoneNamedN( ___tracy_scoped_zone, "DX12 ResourceDescriptorAllocation", DX12_DRAW_ZONES_ACTIVE );
-				table = m_Bindings.AllocateDescriptors( 32, input.retireFence );
-			}
-			if ( table.count != 32 )
-				return false;
-			srvs = table.gpu;
-			if ( sourcesComplete )
-			{
-				// The submission worker performs the copy at replay; source slots are fence-retired (ReleaseResourceDescriptor).
-				pList->CopyDescriptorTable( table.cpu, 32, input.srvSources );
-				++m_Stats.srvTableCopies;
-				CachedSrvTable &fresh = m_LastSrvTable;
-				memcpy( fresh.sources, input.srvSources, sizeof( fresh.sources ) );
-				memcpy( fresh.resources, input.textures, sizeof( fresh.resources ) );
-				fresh.gpu = srvs;
-				fresh.fence = input.retireFence;
-				fresh.heapGeneration = table.generation;
-				fresh.descriptorEpoch = m_nSrvDescriptorEpoch;
-				if ( slot )
-					*slot = fresh;
-				m_bLastSrvTableIsPrevious = true;
-			}
-			else
-			{
-				D3D12_CPU_DESCRIPTOR_HANDLE destinations[32], sources[32];
-				UINT copyCount = 0;
-				for ( unsigned i = 0; i < 32; ++i )
-				{
-					D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
-					cpu.ptr += i * resourceStride;
-					D3D12_CPU_DESCRIPTOR_HANDLE source = input.srvSources[i];
-					if ( !source.ptr )
-					{
-						D3D12_SHADER_RESOURCE_VIEW_DESC srv = input.srvDescs[i];
-						if ( !srv.Shader4ComponentMapping )
-							srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-						if ( !srv.ViewDimension )
-							srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-						if ( srv.Format == DXGI_FORMAT_UNKNOWN )
-							srv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-						if ( srv.ViewDimension == D3D12_SRV_DIMENSION_TEXTURE2D && !srv.Texture2D.MipLevels )
-							srv.Texture2D.MipLevels = 1;
-						if ( !input.textures[i] && !memcmp( &srv, &m_NullSrvDesc, sizeof( srv ) ) )
-							source = m_NullSrv;
-						else
-						{
-							m_pDevice->CreateShaderResourceView( input.textures[i], &srv, cpu );
-							continue;
-						}
-					}
-					destinations[copyCount] = cpu;
-					sources[copyCount] = source;
-					++copyCount;
-				}
-				if ( copyCount )
-					m_pDevice->CopyDescriptors( copyCount, destinations, nullptr, copyCount, sources, nullptr, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-			}
+			pList->ResolveSrvTable( input.srvSources, input.textures, input.srvDescs, missing, UINT( resourceStride ),
+				table.cpu, table.gpu, input.retireFence, heap, m_nSrvDescriptorEpoch );
+			m_bLastSrvTableIsPrevious = !missing;
+			m_LastSrvTable.fence = input.retireFence;
+			m_LastSrvTable.heapGeneration = heap;
+			m_LastSrvTable.descriptorEpoch = m_nSrvDescriptorEpoch;
 		}
 	}
 	// The lighting view table precedes ordinary draw tables; a missing reservation must not bind a stale handle.
@@ -1129,11 +1014,11 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 			bit( kRootLightingView ) | bit( kRootLightingVisibility ) | bit( kRootProbeTable ) | bit( kRootHighresTable );
 		packet.srvs = bit( kRootInstanceTransforms ) | bit( kRootPropTriangles );
 		packet.uavs = bit( kRootHighresFailure );
-		packet.Set( 0, srvs.ptr );
+		packet.Set( 0, 0 ); // The worker resolves both views of the captured SRV set.
 		packet.Set( 1, input.samplerTables.pixel.gpu.ptr );
 		if ( input.vertexTextures )
 		{
-			packet.Set( 2, srvs.ptr + 16 * resourceStride );
+			packet.Set( 2, 0 );
 			packet.Set( 3, input.samplerTables.vertex.gpu.ptr );
 		}
 		packet.used |= ( ( bit( ARRAYSIZE( constantAddresses ) ) - 1 ) << kRootVertexConstants );

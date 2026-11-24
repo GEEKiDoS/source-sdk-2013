@@ -616,6 +616,7 @@ private:
 		UINT interval = 0, flags = 0;
 		unsigned char *chunk = nullptr;
 		size_t chunkBytes = 0;
+		CCommandRecorderDX12::ConstantState *constants = nullptr;
 		ID3D12GraphicsCommandList *extraLists[2]{};
 		uint64_t laneEnds[2]{};
 		// Present only: frame id for the provider's present markers, and whether this present interpolates.
@@ -695,6 +696,7 @@ private:
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> list;
 		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> extraAllocators[2];
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> extraLists[2];
+		CCommandRecorderDX12::ConstantState constants[3];
 		uint64_t fence = 0;
 		CUtlVector<ID3D12Pageable *> retained;
 	};
