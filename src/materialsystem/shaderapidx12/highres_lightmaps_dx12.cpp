@@ -1529,6 +1529,10 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         TextureView(device,nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT,false,1,Slot(device,s.neutral.descriptors.Get(),3));
         for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,true,1,Slot(device,s.neutral.descriptors.Get(),4+g));
         for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R8_UNORM,true,1,Slot(device,s.neutral.descriptors.Get(),8+g));
+        // The immutable atlas is complete. Queue its fence-owned copies in
+        // the loading transaction, not behind the first receiver's draw.
+        if (s.device->IsRecordingOwner() && s.device->CommandList() && !s.InitializeUploads())
+        { s.Fail("Highres lightmaps: native upload failed"); return; }
         // Publish only after every validation/allocation/descriptor succeeds.
         for (uint32 p=0;p<s.pages.size();++p) { auto *texture=s.api->FindTexture(s.pages[p].handle); texture->highresPage=p; texture->highresLayoutGeneration=s.atlas->layoutGeneration; }
         s.status.layoutGeneration=s.atlas->layoutGeneration; s.status.pageCount=uint32(s.pages.size()); s.status.state=DX12_HIGHRES_READY;

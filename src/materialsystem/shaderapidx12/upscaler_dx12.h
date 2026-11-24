@@ -132,6 +132,7 @@ public:
 
 	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x, 6 lightweight TAAU (always available).
 	UpscalerKindDX12 Resolve( int nMode ) const;
+	bool EnsureNativeAAPipelines( UpscalerKindDX12 kind );
 	// Creates the provider context for `desc` when it differs from the current one. DLSS records its creation on a
 	// private list executed on `pQueue` and waited for, so no recorded frame ever creates and evaluates together.
 	// The caller destroys any previous feature through ReleaseFeature first.

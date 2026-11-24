@@ -151,21 +151,66 @@ public:
 	unsigned Total() const { return unsigned( m_Pending.size() ); }
 	unsigned Next() const { return m_Next; }
 	uint64_t Pop() { return m_Pending[m_Next++]; }
-	void Replay( uint64_t key, ID3D12Device *device, ID3D12RootSignature *const roots[3], CPersistentPipelineDX12 &lib,
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> &out, bool &created ) const
+private:
+	void Describe( const Recipe &r, ID3D12RootSignature *root, D3D12_INPUT_ELEMENT_DESC (&layout)[32],
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC &d ) const
 	{
-		const auto &r = m_Recipes.at( key ); const auto &s = r.state;
-		D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-		d.pRootSignature = roots[s.root]; if ( !d.pRootSignature ) return;
+		const State &s = r.state;
+		d.pRootSignature = root;
 		D3D12_SHADER_BYTECODE *stages[] = { &d.VS, &d.PS, &d.GS };
 		for ( unsigned i = 0; i < 3; ++i ) if ( s.stages[i] ) { const Bytes &b = m_Blobs.at( s.stages[i] ); *stages[i] = { b.data(), b.size() }; }
-		D3D12_INPUT_ELEMENT_DESC layout[32];
 		for ( UINT i = 0; i < s.elements; ++i ) { const auto &el = r.layout[i]; layout[i] = { el.name, el.index, DXGI_FORMAT( el.format ), el.slot, el.offset, D3D12_INPUT_CLASSIFICATION( el.classification ), el.step }; }
 		d.InputLayout = { layout, s.elements }; d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE( s.topology );
 		d.NumRenderTargets = s.colors; memcpy( d.RTVFormats, s.rt, sizeof( s.rt ) ); d.DSVFormat = s.ds; d.SampleDesc = s.samples; d.SampleMask = UINT_MAX;
 		d.RasterizerState = s.raster; d.BlendState = s.blend; d.DepthStencilState = s.depth;
+	}
+public:
+	void Replay( uint64_t key, ID3D12Device *device, ID3D12RootSignature *const roots[3], CPersistentPipelineDX12 &lib,
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> &out, bool &created ) const
+	{
+		const auto &r = m_Recipes.at( key ); const auto &s = r.state;
+		if ( !roots[s.root] ) return;
+		D3D12_INPUT_ELEMENT_DESC layout[32];
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+		Describe( r, roots[s.root], layout, d );
 		if ( lib.Key( d, s.root ) != key ) return;
 		if ( !lib.Load( key, d, out.GetAddressOf() ) ) created = SUCCEEDED( device->CreateGraphicsPipelineState( &d, IID_PPV_ARGS( &out ) ) );
+	}
+	// A material's coverage and early-test choices can change between views.
+	// Reuse the observed mesh layout, MRTs, root and raster state; substitute
+	// the actual twin selected for the same material combo. Predicted descriptors
+	// are device-resident only, not added to the portable observations.
+	void WarmPixelVariant( D3D12_SHADER_BYTECODE from, D3D12_SHADER_BYTECODE to, bool readOnlyDepth,
+		ID3D12Device *device, ID3D12RootSignature *const roots[3], CPersistentPipelineDX12 &lib )
+	{
+		if ( m_Recipes.empty() ) return;
+		const auto id = Hash( static_cast<const unsigned char *>( from.pShaderBytecode ), from.BytecodeLength );
+		if ( !m_Blobs.count( id ) ) return;
+		for ( const auto &it : m_Recipes )
+		{
+			const State &s = it.second.state;
+			if ( s.stages[1] != id || !roots[s.root] || !s.colors || !s.blend.RenderTarget[0].RenderTargetWriteMask ||
+				s.blend.RenderTarget[0].BlendEnable ) continue;
+			if ( readOnlyDepth ? !s.depth.DepthEnable || !s.depth.DepthWriteMask : s.root != 2 || s.blend.AlphaToCoverageEnable ) continue;
+			D3D12_INPUT_ELEMENT_DESC layout[32];
+			D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+			Describe( it.second, roots[s.root], layout, d );
+			d.PS = to;
+			if ( readOnlyDepth )
+			{
+				d.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+				d.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
+			}
+			const uint64_t key = lib.Key( d, s.root );
+			if ( m_Resident.count( key ) || m_Resident.size() >= kLimit ) continue;
+			Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+			if ( !lib.Load( key, d, pso.GetAddressOf() ) )
+			{
+				if ( FAILED( device->CreateGraphicsPipelineState( &d, IID_PPV_ARGS( &pso ) ) ) ) continue;
+				lib.Store( key, pso.Get() );
+			}
+			m_Resident.emplace( key, std::move( pso ) );
+		}
 	}
 	void Publish( uint64_t key, ID3D12PipelineState *pso ) { m_Resident[key] = pso; }
 };

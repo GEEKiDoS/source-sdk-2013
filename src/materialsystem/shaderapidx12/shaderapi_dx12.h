@@ -410,7 +410,7 @@ public:
 
 	bool InitializeDeviceResources( CShaderDeviceDX12 *pDevice );
 	void WarmLevelShaderCombos();
-	void ReleaseLevelShaderPins() { m_LevelShaderFiles.Purge(); }
+	void ReleaseLevelShaderPins() { m_LevelShaderFiles.Purge(); ++m_LevelPinEpoch; }
 	bool ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped )
 	{
 		return m_Pipeline.ReserveTextureUpload( bytes, fence, resource, offset, mapped );
@@ -1283,11 +1283,13 @@ private:
 	bool m_bRasterOverride = false;
 	CUtlHashtable<CUtlString, ShaderVcsFile *, StringHashFunctor, StringEqualFunctor, const char *> m_NamedShaderFiles;
 	CUtlMap<ShaderVcsFile *, bool> m_LevelShaderFiles{ DefLessFunc( ShaderVcsFile * ) };
+	uint64_t m_LevelPinEpoch = 1;
 	struct NamedShaderRecordDX12
 	{
 		NamedShaderKey key;
 		ShaderRecordDX12 *record;
 		unsigned references = 0;
+		uint64_t pinEpoch = 0;
 		NamedShaderRecordDX12( NamedShaderKeyView view, ShaderRecordDX12 *value ) : key( view ), record( value ) {}
 	};
 	struct NamedShaderComboDX12
