@@ -137,7 +137,10 @@ const float kDielectricF0 = 0.04f;
 class CPBRContext : public CBasePerMaterialContextData
 {
 public:
-	CCommandBufferBuilder< CFixedCommandStorageBuffer< 1500 > > m_SemiStaticCmdsOut;
+	// Immutable until material vars change. Keep adjacent legacy rows adjacent
+	// so applying a material doesn't interpret an opcode for every field.
+	float m_StaticPixel[15][4], m_Surface[10][4], m_StaticVertex[9][4], m_StaticInfected[5][4];
+	CCommandBufferBuilder< CFixedCommandStorageBuffer< 768 > > m_TextureBinds;
 	DX12ShadowmapSnapshot m_Snapshot;
 	float m_SelfIllumTint[3] = {};
 	float m_TreeSwayParams[5][4] = {};
@@ -156,6 +159,24 @@ public:
 	// blend type under its own modulation instead of trusting the one the material was staged with.
 	int m_nBlendTexture = -1;
 	bool m_bBlendIsBase = false;
+
+	void ApplyMaterial( IShaderDynamicAPI *api )
+	{
+		DX12SetPixelShaderConstant( 0, m_StaticPixel[0], 15 );
+		DX12SetPixelShaderConstant( kExtraMaterialRegister, m_Surface[0], 10 );
+		DX12SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, m_StaticVertex[0], 9 );
+		DX12SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, m_TreeSwayParams[0], 5 );
+		api->SetPixelShaderFogParams( kFogRegister );
+		if ( m_bInfected )
+		{
+			DX12SetPixelShaderConstant( kInfectedPixelRegister, m_StaticInfected[0], 2 );
+			DX12SetPixelShaderConstant( kInfectedPixelRegister + 3, m_StaticInfected[2], 1 );
+			DX12SetPixelShaderConstant( kInfectedPixelRegister + 7, m_StaticInfected[3], 2 );
+		}
+		// These are only texture commands. The shader API can consume the
+		// entire bind set at once; standard textures still resolve per draw.
+		api->ExecuteCommandBuffer( m_TextureBinds.Base() );
+	}
 };
 
 //-----------------------------------------------------------------------------
@@ -704,25 +725,23 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 		!s.explicitRoughness && !s.emissionMode && !s.hasThickness && ps[11][0] == 0.0f && ps[11][1] == 0.0f;
 	memcpy( ctx.m_TreeSwayParams, treeSway, sizeof( ctx.m_TreeSwayParams ) );
 
-	auto &cmds = ctx.m_SemiStaticCmdsOut;
-	cmds.Reset();
-	cmds.SetPixelShaderConstant( 0, ps[0], 15 );
-	cmds.SetPixelShaderConstant( 35, l4d2[0], 4 );
-	cmds.SetPixelShaderConstant( 39, l4d2World, 1 );
-	cmds.SetPixelShaderConstant( kExtraMaterialRegister, extra[0], 2 );
-	cmds.SetPixelShaderConstant( kExtraMaterialRegister + 2, world[0], 3 );
-	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0, vs[0][0], 8 );
-	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_0 + 8, vertexColor, 1 );
-	cmds.SetVertexShaderConstant( VERTEX_SHADER_SHADER_SPECIFIC_CONST_13, treeSway[0], 5 );
-	cmds.SetPixelShaderFogParams( kFogRegister );
+	memcpy( ctx.m_StaticPixel, ps, sizeof( ctx.m_StaticPixel ) );
+	memcpy( ctx.m_Surface, extra, sizeof( extra ) );
+	memcpy( ctx.m_Surface[2], world, sizeof( world ) );
+	memcpy( ctx.m_Surface[5], l4d2, sizeof( l4d2 ) );
+	memcpy( ctx.m_Surface[9], l4d2World, sizeof( ctx.m_Surface[9] ) );
+	memcpy( ctx.m_StaticVertex, vs, sizeof( vs ) );
+	memcpy( ctx.m_StaticVertex[8], vertexColor, sizeof( ctx.m_StaticVertex[8] ) );
 	if ( s.infected )
 	{
-		cmds.SetPixelShaderConstant( kInfectedPixelRegister, infected[0], 2 );
-		cmds.SetPixelShaderConstant( kInfectedPixelRegister + 3, infected[3], 1 );
-		cmds.SetPixelShaderConstant( kInfectedPixelRegister + 7, infected[7], 2 );
+		memcpy( ctx.m_StaticInfected, infected, 2 * sizeof( infected[0] ) );
+		memcpy( ctx.m_StaticInfected[2], infected[3], sizeof( infected[3] ) );
+		memcpy( ctx.m_StaticInfected[3], infected[7], 2 * sizeof( infected[0] ) );
 	}
 
 	// Textures
+	auto &cmds = ctx.m_TextureBinds;
+	cmds.Reset();
 	if ( s.hasBase )
 		cmds.BindTexture( pShader, sampler( sm.base ), v.base, v.baseFrame );
 	else
@@ -1190,7 +1209,6 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 	DYNAMIC_STATE
 	{
 		CCommandBufferBuilder< CFixedCommandStorageBuffer< 750 > > DynamicCmdsOut;
-		DynamicCmdsOut.Call( pContextData->m_SemiStaticCmdsOut.Base() );
 		float nms[4] = {
 			pContextData->m_bBump && PbrNmsEnabled() ? 1.0f : 0.0f,
 			PbrNmsLength(),
@@ -1345,6 +1363,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			SET_DYNAMIC_PIXEL_SHADER_CMD( DynamicCmdsOut, pbr_world_ps51 );
 		}
 		DynamicCmdsOut.End();
+		pContextData->ApplyMaterial( pShaderAPI );
 		DX12ExecuteCommandBuffer( pShaderAPI, DynamicCmdsOut.Base() );
 
 		// c0 sits inside the semi-static c0..c14 block: stage it after the replay.
