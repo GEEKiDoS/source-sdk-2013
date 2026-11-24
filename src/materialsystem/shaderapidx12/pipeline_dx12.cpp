@@ -37,7 +37,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	++m_nSrvDescriptorEpoch;
 	InvalidateGraphicsBindings();
 	// Fence values restart with a new device; drop every fence-keyed reuse record.
-	m_LastSrvTable = CachedSrvTable();
+	m_LastSrvTable = nullptr;
 	memset( m_LastConstantSlots, 0, sizeof( m_LastConstantSlots ) );
 	memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) );
 	memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) );
@@ -980,7 +980,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const bool previousValid = m_bLastSrvTableIsPrevious;
 		// An unchanged texture set reuses the previous draw's table (whose sources were complete) without scanning
 		// or comparing the 32 handles.
-		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable.fence == input.retireFence && m_LastSrvTable.heapGeneration == generation && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch;
+		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable && m_LastSrvTable->fence == input.retireFence && m_LastSrvTable->heapGeneration == generation && m_LastSrvTable->descriptorEpoch == m_nSrvDescriptorEpoch;
 		const bool sourcesComplete = reusePrevious || [&]
 		{
 			SIZE_T nZeroMask = 0;
@@ -993,12 +993,12 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		{
 			if ( reusePrevious )
 			{
-				srvs = m_LastSrvTable.gpu;
+				srvs = m_LastSrvTable->gpu;
 				++m_Stats.srvTableHits;
 			}
-			else if ( sameTable( m_LastSrvTable ) )
+			else if ( m_LastSrvTable && sameTable( *m_LastSrvTable ) )
 			{
-				srvs = m_LastSrvTable.gpu;
+				srvs = m_LastSrvTable->gpu;
 				++m_Stats.srvTableHits;
 			}
 			else
@@ -1012,9 +1012,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				if ( sameTable( *slot ) )
 				{
 					srvs = slot->gpu;
-					m_LastSrvTable = *slot;
+					m_LastSrvTable = slot;
 					++m_Stats.srvTableHits;
-					slot = nullptr;
 				}
 			}
 			m_bLastSrvTableIsPrevious = srvs.ptr != 0;
@@ -1034,15 +1033,14 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				// The submission worker performs the copy at replay; source slots are fence-retired (ReleaseResourceDescriptor).
 				pList->CopyDescriptorTable( table.cpu, 32, input.srvSources );
 				++m_Stats.srvTableCopies;
-				CachedSrvTable &fresh = m_LastSrvTable;
+				CachedSrvTable &fresh = *slot;
 				memcpy( fresh.sources, input.srvSources, sizeof( fresh.sources ) );
 				memcpy( fresh.resources, input.textures, sizeof( fresh.resources ) );
 				fresh.gpu = srvs;
 				fresh.fence = input.retireFence;
 				fresh.heapGeneration = table.generation;
 				fresh.descriptorEpoch = m_nSrvDescriptorEpoch;
-				if ( slot )
-					*slot = fresh;
+				m_LastSrvTable = slot;
 				m_bLastSrvTableIsPrevious = true;
 			}
 			else

@@ -753,10 +753,7 @@ private:
 		float rows[kCasterInstances][12];     // rigid: cModel[0] rows, arrival order
 		uint16_t palette[kCasterInstances];   // skinned: index of the instance's palette in palettes
 		uint16_t next[kCasterInstances];
-		float staging[kCasterInstances][12];  // group-contiguous copy for one UploadTransient
-		// Skinned palettes (kCasterPaletteFloats each) in arrival order and their group-contiguous staging copy;
-		// capacity persists across batches.
-		CUtlVector<float> palettes, paletteStaging;
+		CUtlVector<float> palettes;           // skinned palettes in arrival order
 		uint32_t paletteCount = 0;
 	} m_CasterBatch;
 	struct
