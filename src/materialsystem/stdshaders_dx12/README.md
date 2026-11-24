@@ -443,6 +443,18 @@ everything and the shader's threshold stays the only one). Before this, every al
 (chain-link fences, grates, foliage) was a solid shadow caster: `-dx12shaderlog` listed `depthwrite_vs51` but never
 `depthwrite_ps51` on `d1_trainstation_02`. Brush `$alphatest` casters already carried the flag through their own wrappers.
 
+The SDK model-info material count can be zero for studio props whose materials
+are all translucent, so the native caster query checks the actual studio body
+and skin in that case. Separately, the SDK's studio depth override rejects
+translucent materials before checking alpha testing. On the verified SDK x64
+build, the DX12 native bridge admits materials with both flags at that one
+depth-admission call while native shadow charts are rendering. The c1m2
+fortification gates' frame and mesh then use the same `DepthWrite` cutout draw,
+with the original alpha threshold. Pure translucency is still excluded from
+depth; ordinary material flags, draw order and flashlight/legacy depth are
+unchanged. An unsupported signature logs once and keeps the SDK's original
+depth admission.
+
 Queued caster submission: the SDK's render-call arenas hold both queued commands and their list nodes. At quiescent
 DX12 startup the pinned native bridge increases both built-in arenas from 8 MiB to 32 MiB, retaining the 256 KiB
 initial commit and 64 KiB commit steps. A single filtered allocator hook gives new queued render contexts the same

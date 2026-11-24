@@ -2052,6 +2052,7 @@ void CLightingDX12::Enqueue( LightingPacketDX12 *packet )
 }
 void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 {
+	HlightEngineBridge::EnsureStudioShadowCutouts();
 	// t1026 is uploaded from each view's RuntimeShadowLightGpu packet. Admission needs only CPU
 	// descriptors and immutable selected records: no GPU submission, shared recorder access or fence wait.
 	Impl &s = *m_Impl;

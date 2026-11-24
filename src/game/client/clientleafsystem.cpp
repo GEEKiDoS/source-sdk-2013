@@ -13,6 +13,8 @@
 #include "utlbidirectionalset.h"
 #include "model_types.h"
 #include "ivrenderview.h"
+#include "istudiorender.h"
+#include "studio.h"
 #include "tier0/vprof.h"
 #include "bsptreedata.h"
 #include "detailobjectsystem.h"
@@ -1841,10 +1843,22 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 	if ( !pModel )
 		return false;
 	int nMaterials = modelinfo->GetModelMaterialCount( pModel );
-	m_ShadowCasterMaterials.SetCount( nMaterials );
 	if ( nMaterials )
 	{
+		m_ShadowCasterMaterials.SetCount( nMaterials );
 		modelinfo->GetModelMaterials( pModel, nMaterials, m_ShadowCasterMaterials.Base() );
+	}
+	else if ( modelType == mod_studio && ( flags & ( RENDER_FLAGS_STATIC_PROP | RENDER_FLAGS_PROP ) ) && ShadowMapsDX12_Active() )
+	{
+		// The SDK model-info count can be zero for a studio model whose
+		// materials are all translucent, including alpha-tested fences.
+		studiohdr_t *pStudio = modelinfo->GetStudiomodel( pModel );
+		if ( pStudio && pStudio->numtextures > 0 )
+		{
+			m_ShadowCasterMaterials.SetCount( pStudio->numtextures );
+			nMaterials = g_pStudioRender->GetMaterialListFromBodyAndSkin( modelinfo->GetCacheHandle( pModel ),
+				pRenderable->GetSkin(), pRenderable->GetBody(), m_ShadowCasterMaterials.Count(), m_ShadowCasterMaterials.Base() );
+		}
 	}
 	for ( int i = 0; i < nMaterials; ++i )
 	{

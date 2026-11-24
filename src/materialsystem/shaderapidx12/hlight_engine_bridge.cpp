@@ -1,5 +1,6 @@
 //========= Copyright Valve Corporation, All rights reserved. ============//
 #include "hlight_engine_bridge.h"
+#include "shaderdevice_dx12.h"
 #include "materialsystem/imaterialsystem.h"
 #include "tier0/threadtools.h"
 #include "tier1/checksum_crc.h"
@@ -49,6 +50,12 @@ constexpr uintptr_t kScratch[4] = { 0x598280, 0x5D8280, 0x618280, 0x658280 };
 constexpr uint32 kMaxLuxels = 16384;
 constexpr uint32 kNativeBump = 8, kNativeDisplacement = 0x800;
 constexpr uint16 kEnd = 0xffff;
+// Both static StudioDrawModelArray and ordinary studio mesh drawing enter
+// the same depth-override skin setup. Only this IsTranslucent call has the
+// early return that precedes DepthWrite's original alpha-test setup.
+constexpr uintptr_t kStudioDepthAdmission = 0x4353, kStudioDepthAdmissionReturn = 0x4368;
+std::atomic<uintptr_t> g_StudioDepthAdmissionReturn{0};
+bool g_StudioCutoutsAttempted = false;
 
 struct Hook
 {
@@ -70,6 +77,8 @@ void DisplacementHook(void *, void *, uint32);
 void *LumpHook(void *, uint32);
 void QueuedMeshLockHook(void *, int, int, MeshDesc_t &);
 bool QueuedCallArenaInitHook(QueuedCallArena *, uint32, uint32, uint32, uint32);
+enum { kQueuedCallArenaInitHook = 10, kStudioCutoutMaterialHook, kStudioCutoutQueuedMaterialHook };
+template<int Index> bool StudioDepthIsTranslucentHook(IMaterial *);
 Hook g_Hooks[] = {
     {0x101850, "405355565741544155415641574881ec98010000488b0de5626a00bb07000000", reinterpret_cast<void *>(&FaceLoadHook)},
     {0xD9030, "4883ec28488d0db5422b00ff15cff92700488d0dc8422b00ff1532f82700660f", reinterpret_cast<void *>(&LevelInitHook)},
@@ -81,9 +90,26 @@ Hook g_Hooks[] = {
     {0xC30B0, "40555741574883ec204883b9f001000000418bf84c8bfa488be9747348897424", reinterpret_cast<void *>(&DisplacementHook)},
     {0xFC790, "405356415641574883ec384863f2488bd983fe3f761441b83f000000488d0d65", reinterpret_cast<void *>(&LumpHook)},
     {0x2CC70, "48895c240848896c24104889742418574883ec2033ed8bc248396970498bd941", reinterpret_cast<void *>(&QueuedMeshLockHook), true},
-    {0x772D0, "48895c24084889742410574883ec508b842480000000418bf183c00389512083", reinterpret_cast<void *>(&QueuedCallArenaInitHook), true}
+    {0x772D0, "48895c24084889742410574883ec508b842480000000418bf183c00389512083", reinterpret_cast<void *>(&QueuedCallArenaInitHook), true},
+    // CMaterial and CMaterial_QueueFriendly. CMaterialSubRect tail-jumps to
+    // its backing material's entry, preserving this same caller return PC.
+    {0x83E0, "40534883ec20488b01488bd9ff90f0010000807b2a057638488b4b504885c974", reinterpret_cast<void *>(&StudioDepthIsTranslucentHook<kStudioCutoutMaterialHook>), true},
+    {0xAEA0, "40534883ec20488b01ba00000040488bd9ff90f000000084c0741b488b4b08f3", reinterpret_cast<void *>(&StudioDepthIsTranslucentHook<kStudioCutoutQueuedMaterialHook>), true}
 };
-Hook &g_QueuedCallArenaInit = g_Hooks[ARRAYSIZE(g_Hooks) - 1];
+constexpr int kFirstStudioCutoutHook = kStudioCutoutMaterialHook;
+Hook &g_QueuedCallArenaInit = g_Hooks[kQueuedCallArenaInitHook];
+
+template<int Index> bool StudioDepthIsTranslucentHook(IMaterial *material)
+{
+    auto original = reinterpret_cast<bool (*)(IMaterial *)>(g_Hooks[Index].original);
+    // Skin setup executes on the hardware material context during queued
+    // replay or an immediate draw. The pass stack follows that command stream
+    // even when a queue drain moves replay temporarily to the main thread.
+    if (reinterpret_cast<uintptr_t>(_ReturnAddress()) != g_StudioDepthAdmissionReturn.load(std::memory_order_relaxed) ||
+        !g_pShaderDeviceDX12 || !g_pShaderDeviceDX12->Lighting().ShadowPassActive())
+        return original(material);
+    return original(material) && !material->IsAlphaTested();
+}
 
 template<class T> T Load(uintptr_t address)
 {
@@ -1322,6 +1348,7 @@ void RestoreCallback(int)
 }
 bool RemoveHooks()
 {
+    g_StudioDepthAdmissionReturn.store(0, std::memory_order_relaxed);
     bool queued = true;
     for (const auto &hook : g_Hooks)
         if (hook.created) queued = (MH_QueueDisableHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK) && queued;
@@ -1350,8 +1377,8 @@ static bool InstallHooks()
         !ModuleHash(material, "dd8059fa55f22e8088a6b9ec33adc7425ea857f916b3264b8055159a4bc8d4f2"))
     { V_strncpy(g.compatibility, "High-resolution lightmaps: unsupported engine/material-system build", sizeof(g.compatibility)); return false; }
     g.engine = reinterpret_cast<uintptr_t>(engine); g.materialModule = reinterpret_cast<uintptr_t>(material);
-    for (const auto &hook : g_Hooks)
-        if (&hook != &g_QueuedCallArenaInit && !EntryMatches(HookTarget(hook), hook.bytes))
+    for (const Hook *hook = g_Hooks; hook != g_Hooks + kFirstStudioCutoutHook; ++hook)
+        if (hook != &g_QueuedCallArenaInit && !EntryMatches(HookTarget(*hook), hook->bytes))
         { V_strncpy(g.compatibility, "High-resolution lightmaps: native entry signature differs from the supported profile", sizeof(g.compatibility)); return false; }
     if (!EntryMatches(g.materialModule + kNativeQueueReplay, "405356415641574883ec38488b0586fe0c004c8db17803000033db48897c2468"))
     { V_strncpy(g.compatibility, "High-resolution lightmaps: native queue replay signature differs from the supported profile", sizeof(g.compatibility)); return false; }
@@ -1363,8 +1390,9 @@ static bool InstallHooks()
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED)
     { V_strncpy(g.compatibility, "High-resolution lightmaps: entry-hook initialization failed", sizeof(g.compatibility)); return false; }
     g.ownsMinHook = init == MH_OK;
-    for (auto &hook : g_Hooks)
+    for (Hook *entry = g_Hooks; entry != g_Hooks + kFirstStudioCutoutHook; ++entry)
     {
+        Hook &hook = *entry;
         const MH_STATUS status = MH_CreateHook(reinterpret_cast<void *>(HookTarget(hook)), hook.detour, &hook.original);
         if (status != MH_OK)
         {
@@ -1414,6 +1442,56 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink)
     g.supported = true; g.compatibility[0] = 0;
     if (lateAttach) V_strncpy(g.compatibility, "High-resolution lightmaps: existing world was not observed; clean map reload required", sizeof(g.compatibility));
     return true;
+}
+void EnsureStudioShadowCutouts()
+{
+    if (g_StudioCutoutsAttempted || !g.supported) return;
+    g_StudioCutoutsAttempted = true;
+    const HMODULE studio = GetModuleHandleW(L"studiorender.dll");
+    const uintptr_t base = reinterpret_cast<uintptr_t>(studio);
+    if (!studio || !ModuleHash(studio, "4765b37069e67127a76687364da66e6bd29b4305db1cb7ae0be27beaed003cc6") ||
+        !EntryMatches(base + kStudioDepthAdmission, "8b01ff90d80000004b8b0cfe488b01ff908800000084c00f85b00300004b8b0c"))
+    {
+        Warning("ShaderAPIDX12: studio cutout shadow admission unavailable: unsupported studiorender depth signature\n");
+        return;
+    }
+    for (int i = kFirstStudioCutoutHook; i < ARRAYSIZE(g_Hooks); ++i)
+    {
+        const Hook &hook = g_Hooks[i];
+        if (!EntryMatches(HookTarget(hook), hook.bytes))
+        {
+            Warning("ShaderAPIDX12: studio cutout shadow admission unavailable: unsupported material signature\n");
+            return;
+        }
+    }
+    MH_STATUS status = MH_OK;
+    for (int i = kFirstStudioCutoutHook; i < ARRAYSIZE(g_Hooks) && status == MH_OK; ++i)
+    {
+        Hook &hook = g_Hooks[i];
+        void *target = reinterpret_cast<void *>(HookTarget(hook));
+        status = MH_CreateHook(target, hook.detour, &hook.original);
+        if (status == MH_OK)
+        {
+            hook.created = true;
+            status = MH_QueueEnableHook(target);
+        }
+    }
+    if (status == MH_OK) status = MH_ApplyQueued();
+    if (status != MH_OK)
+    {
+        for (int i = kFirstStudioCutoutHook; i < ARRAYSIZE(g_Hooks); ++i)
+        {
+            Hook &hook = g_Hooks[i];
+            if (hook.created && MH_RemoveHook(reinterpret_cast<void *>(HookTarget(hook))) == MH_OK)
+            {
+                hook.created = false;
+                hook.original = nullptr;
+            }
+        }
+        Warning("ShaderAPIDX12: studio cutout shadow admission unavailable: %s\n", MH_StatusToString(status));
+        return;
+    }
+    g_StudioDepthAdmissionReturn.store(base + kStudioDepthAdmissionReturn, std::memory_order_relaxed);
 }
 void Shutdown()
 {

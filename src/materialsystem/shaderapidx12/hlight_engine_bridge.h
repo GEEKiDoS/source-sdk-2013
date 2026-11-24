@@ -103,6 +103,8 @@ bool Initialize(IMaterialSystem *materials, IHlightNativeSink *sink);
 void Shutdown();
 bool Supported();
 const char *CompatibilityError();
+// Try the optional, build-pinned studio depth admission hooks before the first map draw.
+void EnsureStudioShadowCutouts();
 // Pair around owned-client level shutdown BEFORE entity/leaf teardown. Nested native
 // transactions preserve prior queue permission, ideal mode, and service-thread selection.
 void BeginClientLevelShutdown();
