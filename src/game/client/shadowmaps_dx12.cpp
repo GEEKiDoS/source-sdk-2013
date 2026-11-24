@@ -1904,6 +1904,14 @@ int AllowedShadowResolution( int requested )
 			requested, ShadowLevelBytes(requested)>>20, base>>20, dedicated>>20, limit, level );
 	return level;
 }
+// Changing shadow target resolution or re-enabling shadows invalidates
+// depth contents, not the model hardware/LOD identities prepared at signon.
+void InvalidateShadowDepthCaches()
+{
+	++g_StaticGeneration; if ( !g_StaticGeneration ) ++g_StaticGeneration;
+	++g_CasterContentGeneration;
+	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
+}
 void ApplyShadowResolution()
 {
 	int requested=r_shadowmap_resolution.GetInt();
@@ -1922,7 +1930,7 @@ void ApplyShadowResolution()
 		for ( int c=0;c<4;++c ) g_ViewPool[v]->cascadeFits[c]=SunCascadeFit_t();
 	DestroyTarget(g_SunSkyTarget);
 	g_ShadowResLevel=level; g_ShadowRes=kShadowResolution[level];
-	ShadowMapsDX12_InvalidateStatic();
+	InvalidateShadowDepthCaches();
 }
 void DetachLocalFace( LocalPage_t &page, LocalLight_t &local, int face, int owner )
 {
@@ -4478,7 +4486,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	data->shadowsEnabled=g_FrameShadowsEnabled;
 	// Do not mutate targets retained by in-flight packets. Reenable invalidates
 	// CPU cache identities only; the usual leases/copy-on-write protect pixels.
-	if ( data->shadowsEnabled && !g_RuntimeShadowsWereEnabled ) ShadowMapsDX12_InvalidateStatic();
+	if ( data->shadowsEnabled && !g_RuntimeShadowsWereEnabled ) InvalidateShadowDepthCaches();
 	g_RuntimeShadowsWereEnabled=data->shadowsEnabled;
 	// Secondary world receivers keep the unshadowed packet (baked lightmaps and visibility).
 	// Their depth must not invalidate the main view's residency latch above.
@@ -4789,10 +4797,8 @@ void ShadowMapsDX12_InvalidateCasterRegistration( IClientRenderable *renderable 
 }
 void ShadowMapsDX12_InvalidateStatic()
 {
-	++g_StaticGeneration; if ( !g_StaticGeneration ) ++g_StaticGeneration;
+	InvalidateShadowDepthCaches();
 	ClearStaticPropModelVisibility();
-	++g_CasterContentGeneration;
-	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
 }
 int ShadowMapsDX12_CasterSkyRegion( IClientRenderable *renderable )
 {
