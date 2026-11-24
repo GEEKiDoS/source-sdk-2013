@@ -317,6 +317,7 @@ void ShadowMapsDX12_EndReceiverView();
 // cache generation. Backend resolves the actual draw without splitting batches.
 void ShadowMapsDX12_RegisterStaticPropReceiver( uint32 ordinal, ICollideable *prop, const StaticPropLump_t &authored );
 void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable );
+void ShadowMapsDX12_PrepareStaticPropReceivers();
 
 // Dynamic caster bookkeeping (clientleafsystem/renderable movement feeds this through RenderableChanged glue):
 // invalidates every light/cascade overlapped by the previous or current bounds.

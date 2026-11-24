@@ -4250,6 +4250,25 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 	g_Lighting->RegisterStaticPropReceiver(uint64(reinterpret_cast<uintptr_t>(renderable)),receiver);
 	prop.publishedGeneration = cached->generation;
 }
+// Authored props have stable model handles by post-entity init. If a model
+// isn't ready yet, the main view retries the same registration pass.
+void ShadowMapsDX12_PrepareStaticPropReceivers()
+{
+	if ( !ShadowMapsDX12_Active() ) return;
+	static ConVarRef rootLOD("r_rootlod");
+	if ( g_StaticPropRegistrationRootLOD != rootLOD.GetInt() )
+	{
+		ClearStaticPropModelVisibility();
+		g_StaticPropRegistrationRootLOD = rootLOD.GetInt();
+	}
+	if ( g_StaticPropRegistrationComplete ) return;
+	g_StaticPropRegistrationComplete = true;
+	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	{
+		ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
+		if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;
+	}
+}
 bool ShadowMapsDX12_ShadowsEnabled() { return !g_ClientLevelShutdown && ShadowMapsDX12_Active() && r_shadowmap_enable.GetBool(); }
 static bool s_bInFeatureDepthView = false;
 bool ShadowMapsDX12_InFeatureDepthView() { return s_bInFeatureDepthView; }
@@ -4467,23 +4486,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 		data->shadowsEnabled=false;
 	// Admit every authored prop, independent of PVS/occlusion and draw order.
 	if ( kind == SHADOWMAP_VIEW_MAIN )
-	{
-		static ConVarRef rootLOD("r_rootlod");
-		if ( g_StaticPropRegistrationRootLOD != rootLOD.GetInt() )
-		{
-			ClearStaticPropModelVisibility();
-			g_StaticPropRegistrationRootLOD = rootLOD.GetInt();
-		}
-		if ( !g_StaticPropRegistrationComplete )
-		{
-			g_StaticPropRegistrationComplete = true;
-			FOR_EACH_MAP( g_StaticPropReceivers, prop )
-			{
-				ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
-				if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;
-			}
-		}
-	}
+		ShadowMapsDX12_PrepareStaticPropReceivers();
 	if ( !++g_ViewGeneration ) ++g_ViewGeneration;
 	data->packet.mapGeneration=g_MapGeneration; data->packet.viewGeneration=g_ViewGeneration;
 	data->packet.highresRoute=1; data->packet.nativeMapGeneration=native.nativeMapGeneration;

@@ -1886,6 +1886,7 @@ void CHLClient::LevelInitPostEntity( )
 {
 	IGameSystem::LevelInitPostEntityAllSystems();
 	C_PhysPropClientside::RecreateAll();
+	ShadowMapsDX12_PrepareStaticPropReceivers();
 	internalCenterPrint->Clear();
 }
 

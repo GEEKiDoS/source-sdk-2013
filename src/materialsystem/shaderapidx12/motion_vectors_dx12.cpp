@@ -253,11 +253,9 @@ ShaderRecordDX12 *CShaderAPIDX12::MotionVertexShader( VertexFormat_t vertexForma
 // Purpose: Lazily compiles the motion shaders and selects a scene-sized motion
 //			target; updates INT_RENDERPARM_DX12_MOTION_STATUS
 //-----------------------------------------------------------------------------
-bool CShaderAPIDX12::EnsureMotionResources( int nMode )
+bool CShaderAPIDX12::EnsureMotionShaders()
 {
 	if ( m_bMotionUnavailable )
-		return false;
-	if ( !m_pDevice->NativeDevice() || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
 		return false;
 	if ( !m_MotionVS[0] )
 	{
@@ -298,6 +296,13 @@ bool CShaderAPIDX12::EnsureMotionResources( int nMode )
 			return false;
 		}
 	}
+	return true;
+}
+
+bool CShaderAPIDX12::EnsureMotionResources( int nMode )
+{
+	if ( !m_pDevice->NativeDevice() || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() || !EnsureMotionShaders() )
+		return false;
 	const D3D12_RESOURCE_DESC scene = m_pDevice->SceneColor()->GetDesc();
 	TextureRecord *pSharedTarget = nullptr;
 	if ( scene.SampleDesc.Count == 1 )

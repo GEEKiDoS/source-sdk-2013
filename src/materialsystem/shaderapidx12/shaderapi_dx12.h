@@ -769,6 +769,7 @@ private:
 	void CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mesh, const VertexBindingDX12 &stream0, CIndexBufferDX12 *indices, int firstIndex, int indexCount );
 	void FlushShadowCasterBatch( bool close ); // emits every group; close=false keeps the scope open (capacity overflow)
 	void SetMotionPass( int nMode );
+	bool EnsureMotionShaders();
 	bool EnsureMotionResources( int nMode );
 	bool PrepareMotionBinding( RenderTargetBindingDX12 &binding );
 	void DrawMotionReprojection();

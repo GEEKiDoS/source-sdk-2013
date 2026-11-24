@@ -843,6 +843,9 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		if ( m_Upscaler.Initialized() && ( kind == UpscalerKindDX12::SmaaT2x || kind == UpscalerKindDX12::Taau ) )
 			m_Upscaler.EnsureNativeAAPipelines( kind );
 	}
+	ConVarRef motion( "r_motionvectors", true );
+	if ( motion.IsValid() && motion.GetBool() )
+		EnsureMotionShaders();
 	CUtlString error;
 	CUtlHashtable<NamedShaderKey, ShaderVcsFile *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> requests;
 	const auto request = [&]( const char *name, bool pixel, int index ) -> ShaderVcsFile *
@@ -908,6 +911,28 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
 		if ( file )
 			m_LevelShaderFiles.InsertOrReplace( file, true );
+	}
+	// These passes bind physical programs directly, without going through
+	// TakeSnapshot. Their small native, non-folded combo grids are bounded
+	// by the published VCS directory, not by guessed dynamic index ranges.
+	if ( m_pDevice->Highres().EnhancedMap() )
+	{
+		static const struct { const char *name; bool pixel; } passes[] =
+		{
+			{ "depthwrite_instanced_vs51", false },
+			{ "shadow_depth_restore_vs51", false }, { "shadow_depth_restore_ps51", true },
+			{ "shadow_sky_depth_vs51", false }, { "shadow_sky_clip_ps51", true },
+			{ "dx12_detailshadowlit_vs51", false }, { "dx12_detailshadowlit_ps51", true },
+			{ "flashlight_bounce_vs51", false }, { "flashlight_bounce_ps51", true }
+		};
+		for ( const auto &pass : passes )
+		{
+			auto *file = OpenNamedShader( pass.name, pass.pixel );
+			if ( !file || file->ComboFold() ) continue;
+			uint32_t index;
+			for ( size_t i = 0; file->StaticComboIndex( i, index ); ++i )
+				request( pass.name, pass.pixel, int( index ) );
+		}
 	}
 	CUtlVector<ShaderVcsFile *> files;
 	FOR_EACH_MAP( m_LevelShaderFiles, it )
