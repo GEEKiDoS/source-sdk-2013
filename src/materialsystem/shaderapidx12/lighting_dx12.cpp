@@ -1295,6 +1295,10 @@ struct LightingViewStateDX12
 	LightingPacketDX12 *packet = nullptr;
 	uint64_t fence = 0, heap = 0;
 	uint64_t modelLightEpoch = 0;
+	// The packet owns immutable light origins; engine slots commonly repeat
+	// across the materials of a model. Directional slots never use this cache.
+	struct Duplicate { Vector origin; bool valid = false, matched = false; };
+	Duplicate duplicates[4];
 	DescriptorRangeDX12 table{};
 	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
@@ -1323,7 +1327,7 @@ struct CLightingDX12::Impl
 	std::array<ModelLightTest, 4096> modelLightTests[2]{};
 	ModelLightWorkDX12 modelLightWork;
 	ModelLightCellsDX12 modelLightCells;
-	// Reuse rows across views only when the complete ordered light table is identical.
+	// Keep the previous ordered inputs to the CPU light ranking; GPU chart placement is not an input.
 	CUtlVector<RuntimeShadowLightGpu> previousModelLights;
 	uint64_t modelLightEpoch = 1;
 	struct ModelLightingResult { uint32 mapGeneration = 0; uint64_t epoch = 0; int limit = 0; Vector origin; float rows[7][4]; };
@@ -2219,11 +2223,22 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		{
 			const LightDesc_t &light = api.m_Lights[indices[i]];
 			bool duplicate = light.m_Type == MATERIAL_LIGHT_DIRECTIONAL && runtimeSun;
-			for ( int j = 0; !duplicate && light.m_Type != MATERIAL_LIGHT_DIRECTIONAL && j < lights.Count(); ++j )
+			if ( light.m_Type != MATERIAL_LIGHT_DIRECTIONAL )
 			{
-				const float dx = lights[j].origin[0] - light.m_Position.x, dy = lights[j].origin[1] - light.m_Position.y,
-					dz = lights[j].origin[2] - light.m_Position.z;
-				duplicate = dx * dx + dy * dy + dz * dz < 1.0f;
+				auto &cached = s.views.Tail()->duplicates[i];
+				if ( !cached.valid || cached.origin != light.m_Position )
+				{
+					cached.origin = light.m_Position;
+					cached.valid = true;
+					cached.matched = false;
+					for ( const auto &other : lights )
+					{
+						const float dx = other.origin[0] - light.m_Position.x, dy = other.origin[1] - light.m_Position.y,
+							dz = other.origin[2] - light.m_Position.z;
+						if ( dx * dx + dy * dy + dz * dz < 1.0f ) { cached.matched = true; break; }
+					}
+				}
+				duplicate = cached.matched;
 			}
 			if ( !duplicate )
 				continue;
@@ -2247,8 +2262,16 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	auto &epoch = s.views.Tail()->modelLightEpoch;
 	if ( !epoch )
 	{
-		if ( s.previousModelLights.Count() != lights.Count() || ( lights.Count() &&
-			memcmp( s.previousModelLights.Base(), lights.Base(), lights.Count() * sizeof( lights[0] ) ) ) )
+		bool different = s.previousModelLights.Count() != lights.Count();
+		for ( int i = 0; !different && i < lights.Count(); ++i )
+		{
+			const auto &old = s.previousModelLights[i], &now = lights[i];
+			// Includes lightId, type and all attenuation/radiance inputs. The
+			// six projection matrices and atlas rectangles affect only the GPU.
+			different = memcmp( &old, &now, offsetof( RuntimeShadowLightGpu, shadowNear ) ) ||
+				old.realtimeWeight != now.realtimeWeight;
+		}
+		if ( different )
 		{
 			s.previousModelLights = lights;
 			++s.modelLightEpoch;
@@ -3602,7 +3625,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	std::shared_ptr<Impl::RegisteredProp> record;
 	const DX12StaticPropReceiver *receiver = s.propScopes.Count() ? &s.propScopes.Tail()->prop : nullptr;
 	StaticPropInstanceKeyDX12 instanceKey;
-	const bool validKey = StaticPropInstanceKeyForDrawDX12(meshToken,modelToWorld,instanceKey);
+	const bool validKey = !receiver && StaticPropInstanceKeyForDrawDX12(meshToken,modelToWorld,instanceKey);
 	bool meshRegistered = false, ambiguous = false;
 	{
 		AUTO_LOCK(s.mutex);
@@ -3786,12 +3809,12 @@ bool CLightingDX12::PrepareViewTables( LightingViewStateDX12 &scope, bool receiv
 	}
 	input.propDrawConstants = s.neutralPropConstants;
 	input.propTriangles = s.neutralPropAddress;
-	const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-	const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
-	const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
 	const bool bindVisibility = receiverVisibility && s.highresMap;
 	if ( scope.fence != fence || scope.heap != heapGeneration || scope.cheapAuxiliary != cheapAuxiliary || scope.receiverVisibility != bindVisibility )
 	{
+		const UINT stride = device->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
+		const uint32 counts[4] = { view.lightCount, view.tileCount, view.tileIndexCount, view.tileCount };
+		const uint32 sizes[4] = { sizeof( RuntimeShadowLightGpu ), 8, 4, 16 };
 		scope.cheapAuxiliary = cheapAuxiliary;
 		scope.table = pipeline.AllocateTransientResources( DX12_LIGHTING_RESOURCE_TABLE_COUNT, fence );
 		if ( scope.table.count != DX12_LIGHTING_RESOURCE_TABLE_COUNT ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }

@@ -133,7 +133,20 @@ private:
 		Cell &cell = *lane.cell;
 		for ( size_t i=0; i<cell.result.size(); ++i )
 		{
-			const auto &p = (*lane.lights)[int(i)].origin;
+			const auto &light = (*lane.lights)[int(i)];
+			const auto &p = light.origin;
+			// Don't spend a BSP walk certifying an emitter outside this cell's
+			// attenuation/fade reach. Mixed is not a visibility answer: a view
+			// that supplies a longer reach still traces the exact segment.
+			float reach = light.attenuationRadius;
+			if ( light.endFade > light.startFade && ( reach <= 0 || light.endFade < reach ) )
+				reach = light.endFade;
+			if ( reach > 0 && ( fabsf(p[0]-cell.center.x) > reach+16.5f ||
+				fabsf(p[1]-cell.center.y) > reach+16.5f || fabsf(p[2]-cell.center.z) > reach+16.5f ) )
+			{
+				cell.result[i] = ModelCellResult::Mixed;
+				continue;
+			}
 			cell.result[i] = ClassifyModelLightCell(*lane.nodes,cell.center,Vector(p[0],p[1],p[2]));
 		}
 		cell.ready.store(true,std::memory_order_release);
