@@ -31,6 +31,7 @@
 #include "model_types.h"
 #include "worldsize.h"
 #include "tier0/threadtools.h"
+#include "vstdlib/jobthread.h"
 #include "datacache/imdlcache.h"
 #include "engine/ICollideable.h"
 #include "gamebspfile.h"
@@ -148,6 +149,11 @@ struct ShadowChartCaster_t
 	bool certified, stableAtCommit, layerRigid;
 	int casterIndex, contentFirst, contentBytes;
 	uint64 notificationRevision, registrationRevision;
+};
+struct ShadowFaceCandidates_t
+{
+	CUtlVector<ShadowChartCaster_t> keys; // Identity order for exact cache comparison.
+	CUtlVector<int> drawOrder;            // Enumeration order for rasterization.
 };
 enum ShadowRigidChangeFlags_t
 {
@@ -1140,6 +1146,7 @@ public:
 	Vector selfReceiverMins, selfReceiverMaxs;		// World bounds of the viewmodel receivers (with selfCasters).
 	CUtlVector<ShadowChartCaster_t> localFaceCasters;
 	CUtlVector<int> dynamicFaceDrawOrder;
+	ShadowFaceCandidates_t cubeFaces[6];
 	CUtlVector<ShadowChartCaster_t> casterKeys;
 	CUtlVector<unsigned char> casterContent;
 	uint64 casterContentGeneration;
@@ -2152,30 +2159,62 @@ int ChartCasterCompare( const ShadowChartCaster_t *a, const ShadowChartCaster_t 
 	if ( a->immutable!=b->immutable ) return a->immutable ? 1 : -1;
 	return a->staticProp==b->staticProp ? 0 : a->staticProp ? 1 : -1;
 }
-void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t &volume )
+struct ShadowFaceJob_t
 {
-	VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters", "Shadowmaps" );
-	// Retain scratch capacity across faces/views; canonical order compares the
-	// exact set, independent of leaf enumeration order, without hashes/copies.
-	data.localFaceCasters.RemoveAll();
-	data.dynamicFaceDrawOrder.RemoveAll();
+	const CShadowViewData *data;
+	const ShadowCasterVolume_t *volume;
+	ShadowFaceCandidates_t *output;
+};
+
+void CollectFaceJob( ShadowFaceJob_t &job )
+{
+	const CShadowViewData &data=*job.data;
+	ShadowFaceCandidates_t &out=*job.output;
+	out.keys.RemoveAll();
+	out.drawOrder.RemoveAll();
 	int count=data.drawCandidateFirst>=0 ? data.drawCandidateCount : data.casters.Count();
 	bool ordered=true;
 	for ( int i=0;i<count;++i )
 	{
 		int index=data.drawCandidateFirst>=0 ? data.casterIndices[data.drawCandidateFirst+i] : i;
 		const ShadowMapSceneCaster_t &caster=data.casters[index];
-		if ( caster.immutable || !BoxInVolume(volume,caster.mins,caster.maxs) ) continue;
-		data.dynamicFaceDrawOrder.AddToTail(index);
+		if ( caster.immutable || !BoxInVolume(*job.volume,caster.mins,caster.maxs) ) continue;
+		out.drawOrder.AddToTail(index);
 		const ShadowChartCaster_t &entry=data.casterKeys[index];
-		if ( data.localFaceCasters.Count() && ChartCasterCompare(&data.localFaceCasters.Tail(),&entry)>0 ) ordered=false;
-		data.localFaceCasters.AddToTail(entry);
+		if ( out.keys.Count() && ChartCasterCompare(&out.keys.Tail(),&entry)>0 ) ordered=false;
+		out.keys.AddToTail(entry);
 	}
-	if ( !ordered )
+	if ( !ordered ) out.keys.Sort(ChartCasterCompare);
+}
+
+void UseFaceCandidates( CShadowViewData &data, ShadowFaceCandidates_t &face )
+{
+	data.dynamicFaceDrawOrder.Swap(face.drawOrder);
+	data.localFaceCasters.Swap(face.keys);
+}
+
+void CollectLocalFaceCasters( CShadowViewData &data, const ShadowCasterVolume_t &volume )
+{
+	VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters", "Shadowmaps" );
+	ShadowFaceJob_t job={ &data, &volume, &data.cubeFaces[0] };
+	CollectFaceJob(job);
+	UseFaceCandidates(data,*job.output);
+}
+
+bool CollectCachedCubeFaces( CShadowViewData &data, const LocalLight_t &local )
+{
+	static ConVarRef threaded("r_threaded_renderables");
+	if ( local.faceCount!=6 || data.drawCandidateCount<64 || !threaded.GetBool() ) return false;
+	ShadowFaceJob_t jobs[6];
+	for ( int f=0;f<6;++f )
 	{
-		VPROF_BUDGET( "ShadowMapsDX12::CollectLocalFaceCasters.Sort", "Shadowmaps" );
-		data.localFaceCasters.Sort(ChartCasterCompare);
+		if ( !local.cache[f].valid ) return false;
+		jobs[f]={ &data, &local.faceVolumes[f], &data.cubeFaces[f] };
 	}
+	// Each worker uses only frozen receiver bounds/keys and its own vectors.
+	// Join before any draw or target update; callbacks stay on the caller.
+	ParallelProcess("ShadowMapsDX12::CubeFaces",jobs,6,&CollectFaceJob,NULL,NULL,3);
+	return true;
 }
 bool SameDetailOrientation( const ShadowMapDetailOrientation_t &a, const ShadowMapDetailOrientation_t &b )
 {
@@ -2745,6 +2784,7 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	if ( !data.shadowsEnabled || !data.realtimeLocals[relevantIndex] ) return true;
 	AddReportVolume(data,(int)light.lightId,CasterVolume(local.influence));
 	const bool projectionChanged=local.projectionNear!=gpu.shadowNear || local.projectionFar!=gpu.shadowFar;
+	const bool haveCubeFaces=!projectionChanged && CollectCachedCubeFaces(data,local);
 	for ( int f=0;f<local.faceCount;++f )
 	{
 		ShadowCache_t &cache=local.cache[f];
@@ -2773,7 +2813,8 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 			VPROF_BUDGET( "ShadowMapsDX12::BuildLocal.ReuseChecks", "Shadowmaps" );
 			const ShadowCasterVolume_t &volume=local.faceVolumes[f];
 			bool billboards=DetailObjectSystem()->HasShadowCasters(volume,true);
-			CollectLocalFaceCasters(data,volume);
+			if ( haveCubeFaces ) UseFaceCandidates(data,data.cubeFaces[f]);
+			else CollectLocalFaceCasters(data,volume);
 			bool dynamic=data.localFaceCasters.Count()!=0;
 			uint32 detailGeneration=billboards ? data.detail.m_nGeneration : 0;
 			bool rebuild=cache.staticGeneration!=g_StaticGeneration || cache.slotGeneration!=page.generation;
