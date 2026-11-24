@@ -37,7 +37,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	++m_nSrvDescriptorEpoch;
 	InvalidateGraphicsBindings();
 	// Fence values restart with a new device; drop every fence-keyed reuse record.
-	m_LastSrvTable = nullptr;
+	m_LastSrvTable = CachedSrvTable();
 	memset( m_LastConstantSlots, 0, sizeof( m_LastConstantSlots ) );
 	memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) );
 	memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) );
@@ -944,7 +944,19 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const DescriptorRangeDX12 table = m_Bindings.AllocateDescriptors( 8, input.retireFence );
 		if ( table.count != 8 )
 			return false;
-		pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>( resourceStride ), addresses, sizes );
+		// In queued mode recording is already off the main thread. Don't put
+		// extra descriptor work ahead of ExecuteCommandLists on the submit worker.
+		if ( m_bDeferNativeCbvs )
+			pList->WriteNativeCbvTable( table.cpu, static_cast<UINT>(resourceStride), addresses, sizes );
+		else
+		{
+			auto cpu = table.cpu;
+			for ( unsigned slot = 0; slot < 8; ++slot, cpu.ptr += resourceStride )
+			{
+				const D3D12_CONSTANT_BUFFER_VIEW_DESC view{ addresses[slot], sizes[slot] };
+				m_pDevice->CreateConstantBufferView( &view, cpu );
+			}
+		}
 		memcpy( cached.addresses, addresses, sizeof( addresses ) );
 		memcpy( cached.sizes, sizes, sizeof( sizes ) );
 		cached.gpu = table.gpu;
@@ -968,7 +980,7 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		const bool previousValid = m_bLastSrvTableIsPrevious;
 		// An unchanged texture set reuses the previous draw's table (whose sources were complete) without scanning
 		// or comparing the 32 handles.
-		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable && m_LastSrvTable->fence == input.retireFence && m_LastSrvTable->heapGeneration == generation && m_LastSrvTable->descriptorEpoch == m_nSrvDescriptorEpoch;
+		const bool reusePrevious = input.texturesUnchanged && previousValid && m_LastSrvTable.fence == input.retireFence && m_LastSrvTable.heapGeneration == generation && m_LastSrvTable.descriptorEpoch == m_nSrvDescriptorEpoch;
 		const bool sourcesComplete = reusePrevious || [&]
 		{
 			SIZE_T nZeroMask = 0;
@@ -981,12 +993,12 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 		{
 			if ( reusePrevious )
 			{
-				srvs = m_LastSrvTable->gpu;
+				srvs = m_LastSrvTable.gpu;
 				++m_Stats.srvTableHits;
 			}
-			else if ( m_LastSrvTable && sameTable( *m_LastSrvTable ) )
+			else if ( sameTable( m_LastSrvTable ) )
 			{
-				srvs = m_LastSrvTable->gpu;
+				srvs = m_LastSrvTable.gpu;
 				++m_Stats.srvTableHits;
 			}
 			else
@@ -1000,8 +1012,9 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				if ( sameTable( *slot ) )
 				{
 					srvs = slot->gpu;
-					m_LastSrvTable = slot;
+					m_LastSrvTable = *slot;
 					++m_Stats.srvTableHits;
+					slot = nullptr;
 				}
 			}
 			m_bLastSrvTableIsPrevious = srvs.ptr != 0;
@@ -1021,14 +1034,15 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				// The submission worker performs the copy at replay; source slots are fence-retired (ReleaseResourceDescriptor).
 				pList->CopyDescriptorTable( table.cpu, 32, input.srvSources );
 				++m_Stats.srvTableCopies;
-				CachedSrvTable &fresh = *slot;
+				CachedSrvTable &fresh = m_LastSrvTable;
 				memcpy( fresh.sources, input.srvSources, sizeof( fresh.sources ) );
 				memcpy( fresh.resources, input.textures, sizeof( fresh.resources ) );
 				fresh.gpu = srvs;
 				fresh.fence = input.retireFence;
 				fresh.heapGeneration = table.generation;
 				fresh.descriptorEpoch = m_nSrvDescriptorEpoch;
-				m_LastSrvTable = slot;
+				if ( slot )
+					*slot = fresh;
 				m_bLastSrvTableIsPrevious = true;
 			}
 			else

@@ -3600,38 +3600,35 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 	CasterBatchDX12 &batch = m_CasterBatch;
 	if ( batch.instanceCount )
 	{
-		const size_t rigidStride = sizeof( batch.rows[0] ), paletteBytes = kCasterPaletteFloats * sizeof( float );
-		const size_t rigidBytes = ( batch.instanceCount - batch.paletteCount ) * rigidStride;
-		const size_t skinnedBytes = batch.paletteCount * paletteBytes;
-		const uint64_t fence = m_pDevice->NextFenceValue();
+		uint32_t rigid = 0, skinned = 0;
+		if ( batch.paletteStaging.Count() < int( batch.paletteCount * kCasterPaletteFloats ) )
+			batch.paletteStaging.SetCount( batch.paletteCount * kCasterPaletteFloats );
+		for ( uint32_t g = 0; g < batch.groupCount; ++g )
+		{
+			CasterGroupDX12 &group = batch.groups[g];
+			if ( group.vsDynamicIndex & 2 )
+			{
+				group.first = skinned;
+				for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
+					memcpy( &batch.paletteStaging[skinned++ * kCasterPaletteFloats], &batch.palettes[batch.palette[i] * kCasterPaletteFloats], kCasterPaletteFloats * sizeof( float ) );
+			}
+			else
+			{
+				group.first = rigid;
+				for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
+					memcpy( batch.staging[rigid++], batch.rows[i], sizeof( batch.rows[i] ) );
+			}
+		}
+		const size_t rigidBytes = static_cast<size_t>( rigid ) * sizeof( batch.staging[0] );
+		const size_t paletteBytes = kCasterPaletteFloats * sizeof( float ), skinnedBytes = static_cast<size_t>( skinned ) * paletteBytes;
 		D3D12_GPU_VIRTUAL_ADDRESS rigidBase = 0, skinnedBase = 0;
-		unsigned char *rigid = nullptr, *skinned = nullptr;
-		if ( ( rigidBytes && !m_Pipeline.ReserveTransient( rigidBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, fence, rigidBase, rigid ) ) ||
-			( skinnedBytes && !m_Pipeline.ReserveTransient( skinnedBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, fence, skinnedBase, skinned ) ) )
+		if ( ( rigid && !m_Pipeline.UploadTransient( batch.staging, rigidBytes, rigidBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, m_pDevice->NextFenceValue(), rigidBase ) ) ||
+			( skinned && !m_Pipeline.UploadTransient( batch.paletteStaging.Base(), skinnedBytes, skinnedBytes, D3D12_RAW_UAV_SRV_BYTE_ALIGNMENT, m_pDevice->NextFenceValue(), skinnedBase ) ) )
 		{
 			m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 		}
 		else
 		{
-			// Gather straight into the fence-retired upload spans in draw order.
-			// Never read the write-combined destination.
-			uint32_t rigidCount = 0, skinnedCount = 0;
-			for ( uint32_t g = 0; g < batch.groupCount; ++g )
-			{
-				CasterGroupDX12 &group = batch.groups[g];
-				if ( group.vsDynamicIndex & 2 )
-				{
-					group.first = skinnedCount;
-					for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
-						memcpy( skinned + skinnedCount++ * paletteBytes, &batch.palettes[batch.palette[i] * kCasterPaletteFloats], paletteBytes );
-				}
-				else
-				{
-					group.first = rigidCount;
-					for ( uint16_t i = group.head; i != 0xFFFF; i = batch.next[i] )
-						memcpy( rigid + rigidCount++ * rigidStride, batch.rows[i], rigidStride );
-				}
-			}
 			const StateSnapshot_t savedSnapshot = m_hActiveSnapshotId;
 			const VertexShaderHandle_t savedVS = m_hBoundVS;
 			const bool savedNamed = m_bBoundVertexShaderIsNamed;
@@ -3652,7 +3649,7 @@ void CShaderAPIDX12::FlushShadowCasterBatch( bool close )
 				m_bNamedVertexShaderDirty = false;
 				m_CasterEmit.instances = group.count;
 				m_CasterEmit.transforms = ( group.vsDynamicIndex & 2 ) ? skinnedBase + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * paletteBytes :
-					rigidBase + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * rigidStride;
+					rigidBase + static_cast<D3D12_GPU_VIRTUAL_ADDRESS>( group.first ) * sizeof( batch.staging[0] );
 				streams[0] = { group.vertices, group.byteOffset, group.firstVertex, group.vertexCount, 1, group.format };
 				DrawBuffers( streams, group.indices, 0, MATERIAL_TRIANGLES, group.firstIndex, group.indexCount, true, group.meshToken, group.mesh );
 				++m_DrawStats.casterInstancedDraws;
@@ -5938,6 +5935,8 @@ void CShaderAPIDX12::BeginFrame()
 	m_nFrameDrawCount = 0;
 	m_nFrameFlushCount = 0;
 	m_nFrameStartFence = m_pDevice ? m_pDevice->NextFenceValue() : 0;
+	static ConVarRef queueMode( "mat_queue_mode" );
+	m_Pipeline.DeferNativeCbvs( queueMode.GetInt() == 0 );
 	m_bDepthPrepassResolved = false;
 	m_nFrameSyncCount = 0;
 	m_bFrameActive = true;

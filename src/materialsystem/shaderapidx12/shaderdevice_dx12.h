@@ -609,7 +609,6 @@ private:
 		UINT interval = 0, flags = 0;
 		unsigned char *chunk = nullptr;
 		size_t chunkBytes = 0;
-		size_t descriptorBytes = 0;
 		// Present only: frame id for the provider's present markers, and whether this present interpolates.
 		uint32_t frameId = 0;
 		bool framegenActive = false;
@@ -617,24 +616,19 @@ private:
 
 	HRESULT RunSubmission( const SubmitOpDX12 &op );
 	unsigned char *AcquireCommandChunk();
-	void FlushCommandChunk( unsigned char *pChunk, size_t nBytes, size_t descriptorBytes );
+	void FlushCommandChunk( unsigned char *pChunk, size_t nBytes );
 	static unsigned char *AcquireRecorderChunk( void *pContext );
-	static void FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes, size_t descriptorBytes );
+	static void FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes );
 	void ReleaseCommandChunks();
 	static constexpr int kMaxCommandChunks = 32;
 	CCommandRecorderDX12 m_Recorder;
 	CThreadFastMutex m_ChunkMutex;
 	CUtlVector<unsigned char *> m_FreeChunks, m_AllChunks;
 	static uintp SubmitThreadMain( void *pParam );
-	static uintp DescriptorThreadMain( void *pParam );
-	void WriteChunkDescriptors( const SubmitOpDX12 &op );
 	void StartSubmitThread();
 	void StopSubmitThread();
 	void EnqueueSubmission( const SubmitOpDX12 &op );
 	ThreadHandle_t m_hSubmitThread = nullptr;
-	ThreadHandle_t m_hDescriptorThread = nullptr;
-	CThreadEvent m_DescriptorWorkEvent;
-	CInterlockedUInt m_nDescriptorsReady;
 	CThreadEvent m_SubmitWorkEvent, m_SubmitDoneEvent;
 	CInterlockedInt m_bSubmitExit;
 	CInterlockedUInt m_nSubmitHead, m_nSubmitTail;

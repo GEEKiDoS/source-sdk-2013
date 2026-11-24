@@ -102,11 +102,6 @@ public:
 	void Reclaim( uint64_t nCompletedFence );
 	bool ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped );
 	bool UploadTransient( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, const uint32_t *pSwapOffsets = nullptr, size_t nSwapCount = 0, size_t nVertexStride = 0 );
-	// Recording owner fills the reserved span before recording its consumer.
-	bool ReserveTransient( size_t bytes, size_t alignment, uint64_t fence, D3D12_GPU_VIRTUAL_ADDRESS &gpu, unsigned char *&mapped )
-	{
-		return AllocateUploadLocked( nullptr, bytes, bytes, alignment, fence, gpu, nullptr, nullptr, nullptr, 0, 0, &mapped );
-	}
 	// Borrowed upload resource, retained through nRetireFence; offset is a multiple of nStride.
 	bool UploadStructured( const void *pData, size_t nBytes, uint32_t nStride, uint64_t nRetireFence, ID3D12Resource **ppResource, uint64_t *pOffset );
 	void RetainExternalResource( ID3D12Resource *pResource, uint64_t nRetireFence );
@@ -181,6 +176,7 @@ public:
 	};
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
+	void DeferNativeCbvs( bool defer ) { m_bDeferNativeCbvs = defer; }
 
 	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
 	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
@@ -426,9 +422,10 @@ private:
 		uint64_t fence = 0, heapGeneration = 0, descriptorEpoch = 0;
 	};
 
+	bool m_bDeferNativeCbvs = false;
 	CachedSrvTable m_SrvTables[512];
 	uint64_t m_nSrvDescriptorEpoch = 1;
-	CachedSrvTable *m_LastSrvTable = nullptr; // Borrows a slot in m_SrvTables, never a descriptor.
+	CachedSrvTable m_LastSrvTable{};
 
 	struct LastConstantSlot
 	{

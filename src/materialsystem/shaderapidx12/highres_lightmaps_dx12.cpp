@@ -487,6 +487,7 @@ struct CHighresLightmapsDX12::Impl
     std::vector<uint32> probeWanted;    // asset slot -> epoch of the last wanted set that contained it
     std::vector<std::pair<uint32,uint32>> probeOrder; // wanted set: (squared brick distance, asset slot), nearest first
     std::vector<std::pair<uint32,uint32>> probeMoves, probeCellUpdates;
+    std::vector<uint8> probeStaging;
     uint32 probeEpoch = 0, probeOrderNext = 0, probeEvictCursor = 0;
     int32 probeCameraBrick[3] = {INT_MIN, INT_MIN, INT_MIN};
     uint64 probeStreamFence = 0;
@@ -889,55 +890,49 @@ struct CHighresLightmapsDX12::Impl
             Transition(list,texture.resource.Get(),texture.state,D3D12_RESOURCE_STATE_COPY_DEST);
         }
         const uint8 *sources[DX12_PROBE_TABLE_COUNT]; ProbeSources(sources);
-        // Pack moved bricks side by side, writing each upload row sequentially. Adjacent
-        // destinations within the same GPU atlas row can then use one copy box.
+        // Each table's moved bricks sit side by side in one placed footprint (width 5 per brick, at most 1280 texels) and
+        // each copy selects its brick with a source box; the cell updates likewise form one row. UploadStructured takes
+        // whole multiples of its stride, so the staging is padded to the placement alignment.
         constexpr uint32 kSide = hprobe::kBrickProbes;
         const auto pitch = [](size_t bytes) { return uint32((bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-1) & ~size_t(D3D12_TEXTURE_DATA_PITCH_ALIGNMENT-1)); };
-        uint32 sourceTexel[kProbeStreamBricksPerSubmission];
-        for (size_t k=0; k<probeMoves.size(); ++k)
-            sourceTexel[k] = hprobe::TexelIndex(g,probeMoves[k].first,0,0,0);
+        const auto placed = [](size_t bytes) { return (bytes + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT-1) & ~size_t(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT-1); };
         const uint32 width = uint32(probeMoves.size())*kSide;
         bool ok = true;
         for (uint32 i=0; ok && i<DX12_PROBE_TABLE_COUNT; ++i)
         {
             if (i == DX12_PROBE_T_INDIRECTION) continue;
             const uint32 bytes = kProbeTexelBytes[i], rowPitch = pitch(size_t(width)*bytes);
-            ID3D12Resource *upload = nullptr; size_t offset = 0; uint8 *mapped = nullptr;
-            if (!api->m_Pipeline.ReserveTextureUpload(size_t(rowPitch)*kSide*kSide,fence,&upload,offset,&mapped)) { ok = false; break; }
-            const size_t atlasPitch = size_t(g.atlasBricks[0])*kSide, atlasSlice = atlasPitch*g.atlasBricks[1]*kSide;
-            for (uint32 z=0; z<kSide; ++z) for (uint32 y=0; y<kSide; ++y)
+            probeStaging.assign(placed(size_t(rowPitch)*kSide*kSide),0);
+            const size_t atlasPitch = size_t(g.atlasBricks[0])*kSide*bytes;
+            const size_t atlasSlice = atlasPitch*g.atlasBricks[1]*kSide;
+            for (size_t k=0; k<probeMoves.size(); ++k)
             {
-                uint8 *row = mapped+(size_t(z)*kSide+y)*rowPitch;
-                const uint8 *source = sources[i]+(z*atlasSlice+y*atlasPitch)*bytes;
-                if (bytes != 4)
-                    for (size_t k=0; k<probeMoves.size(); ++k)
-                        memcpy(row+k*kSide*bytes,source+size_t(sourceTexel[k])*bytes,kSide*bytes);
-                else
-                    for (size_t k=0; k<probeMoves.size(); ++k)
-                        memcpy(row+k*kSide*4,source+size_t(sourceTexel[k])*4,kSide*4);
+                const uint8 *brick = sources[i]+size_t(hprobe::TexelIndex(g,probeMoves[k].first,0,0,0))*bytes;
+                for (uint32 z=0; z<kSide; ++z) for (uint32 y=0; y<kSide; ++y)
+                    memcpy(probeStaging.data()+(size_t(z)*kSide+y)*rowPitch+k*kSide*bytes,
+                        brick+z*atlasSlice+y*atlasPitch,kSide*bytes);
             }
+            ID3D12Resource *upload = nullptr; uint64 offset = 0;
+            if (!api->m_Pipeline.UploadStructured(probeStaging.data(),probeStaging.size(),D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,fence,&upload,&offset)) { ok = false; break; }
             D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
             src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             src.PlacedFootprint.Offset = offset; src.PlacedFootprint.Footprint = {kProbeFormats[i],width,kSide,kSide,rowPitch};
             dst.pResource = probeTextures[i].resource.Get(); dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX; dst.SubresourceIndex = 0;
-            for (size_t k=0; k<probeMoves.size(); )
+            for (size_t k=0; k<probeMoves.size(); ++k)
             {
                 const uint32 slot = probeMoves[k].second;
-                size_t end = k+1;
-                const size_t rowEnd = k + probeGpuAtlas[0] - slot%probeGpuAtlas[0];
-                while (end<probeMoves.size() && end<rowEnd && probeMoves[end].second == slot+(end-k)) ++end;
-                const D3D12_BOX box = { uint32(k)*kSide, 0, 0, uint32(end)*kSide, kSide, kSide };
+                const D3D12_BOX box = { uint32(k)*kSide, 0, 0, uint32(k+1)*kSide, kSide, kSide };
                 list->CopyTextureRegion(&dst,(slot%probeGpuAtlas[0])*kSide,((slot/probeGpuAtlas[0])%probeGpuAtlas[1])*kSide,
                     (slot/(probeGpuAtlas[0]*probeGpuAtlas[1]))*kSide,&src,&box);
-                k = end;
             }
         }
         if (ok)
         {
             const uint32 cells = uint32(probeCellUpdates.size()), rowPitch = pitch(size_t(cells)*4);
-            ID3D12Resource *upload = nullptr; size_t offset = 0; uint8 *mapped = nullptr;
-            ok = api->m_Pipeline.ReserveTextureUpload(rowPitch,fence,&upload,offset,&mapped);
-            if (ok) for (uint32 k=0; k<cells; ++k) memcpy(mapped+size_t(k)*4,&probeCellUpdates[k].second,4);
+            probeStaging.assign(placed(rowPitch),0);
+            for (uint32 k=0; k<cells; ++k) memcpy(probeStaging.data()+size_t(k)*4,&probeCellUpdates[k].second,4);
+            ID3D12Resource *upload = nullptr; uint64 offset = 0;
+            ok = api->m_Pipeline.UploadStructured(probeStaging.data(),probeStaging.size(),D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT,fence,&upload,&offset);
             D3D12_TEXTURE_COPY_LOCATION src{}, dst{};
             src.pResource = upload; src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
             src.PlacedFootprint.Offset = offset; src.PlacedFootprint.Footprint = {kProbeFormats[DX12_PROBE_T_INDIRECTION],cells,1,1,rowPitch};
