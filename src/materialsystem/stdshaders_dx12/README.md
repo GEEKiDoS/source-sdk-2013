@@ -96,8 +96,10 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   vertex declaration, MSAA, independent blend or root ABI). A material snapshot cannot predict all of those.
   The renderer interns the *resolved* VS/PS/GS bytes, including translated shaders, and records the final descriptor.
   On subsequent loads it holds the resulting PSOs on the device, independent of transient shader handles.
-  Level warmup also resolves the material's present native dynamics and its highres, early-test and PBR
-  coverage routes. From a material's pixel-shader twins and observed input layout/target recipes it prebuilds
+  Level warmup projects the material's highres, early-test and PBR coverage routes to physical statics.
+  Up to six loading threads decode independent VCS files. The recipe catalog identifies native payloads
+  worth reflecting; unobserved programs keep their ordinary resolver. From a material's pixel-shader twins and
+  observed input layout/target recipes it prebuilds
   matching early-test and read-only-depth PSOs. It also replays each pass with mesh declarations seen for
   its exact VS bytecode, so a stream change need not have a separately recorded full descriptor.
 - For seed capture use the release shader pack, play representative campaign sections at the supported quality/MSAA
@@ -109,6 +111,10 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
 - For an A/B, `-dx12noprecache` disables both recipe collection and replay without disabling the existing driver
   library. `-dx12psotrace` logs draw-path PSO creates, named shader misses and native cbuffer reflection
   (absolute QPC milliseconds) for correlation with PresentMon. An overlapping call need not be on the critical path.
+  On Windows, `-demoframetrace <path>` saves binary `<double qpc_ms, int32 demo_tick, int32 client_frame>`
+  records at level shutdown. Join each main-chain Present to the preceding `FRAME_RENDER_START` marker.
+  Use separate, unprofiled runs for the timing comparison: WPR stop/merge during playback can introduce
+  stalls at unrelated demo ticks.
 
   **GTX 1050 capture:** `test_3_2.dem`, `c5m4_quarter`, 960×540, `mat_queue_mode 2`, seek tick 15500.
   That capture used 355 observed descriptors and 154 shader payloads (3,301,384 bytes). The refreshed

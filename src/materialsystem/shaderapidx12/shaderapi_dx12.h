@@ -1180,6 +1180,8 @@ private:
 	};
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pClearRoot;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_pClearVS, m_ClearPS[RenderTargetBindingDX12::kMaxColorTargets + 1];
+	bool EnsureClearPrograms( int colorCount );
 	CUtlVector<ClearPassDX12> m_ClearPasses;
 	void DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect = nullptr, bool bStencilOnly = false, bool farDepthTest = false );
 
@@ -1204,6 +1206,8 @@ private:
 	ResolveTextureRecord *AcquireResolveTexture( const D3D12_RESOURCE_DESC &desc, HRESULT &hrCreation );
 	CUtlVector<ResolveTextureRecord *> m_ResolveTextures;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pBlitRoot;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_pBlitVS, m_BlitPS[static_cast<unsigned>( BlitEncodeDX12::HDRCubemap ) + 1];
+	bool EnsureBlitPrograms( BlitEncodeDX12 encode );
 	CUtlVector<BlitPassDX12> m_BlitPasses;
 	// bAdditive adds the (unencoded) source RGB onto a render-target destination instead of replacing it: no copy fast
 	// path, no scratch fallback, alpha and every destination sample's own colour are preserved.

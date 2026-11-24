@@ -794,6 +794,8 @@ ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel
 	return m_NamedShaderFiles[hShaderFile];
 }
 
+static bool ReflectRecordInputsDX12( ShaderRecordDX12 *record );
+
 // Both the loading pass and the draw must address the same physical twin.
 static bool HighresShaderName( const char *name, bool pixel, char (&out)[256] )
 {
@@ -834,6 +836,8 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 	ConVarRef motion( "r_motionvectors", true );
 	if ( motion.IsValid() && motion.GetBool() )
 		EnsureMotionShaders();
+	EnsureClearPrograms( 1 );
+	EnsureBlitPrograms( BlitEncodeDX12::None );
 	std::map<ShaderVcsFile *, std::vector<uint32_t>> statics;
 	CUtlHashtable<NamedShaderKey, ShaderVcsFile *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> requests;
 	const auto request = [&]( const char *name, bool pixel, int index ) -> ShaderVcsFile *
@@ -905,13 +909,14 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 		for ( size_t n = 0; file->StaticComboIndex( n, index ); ++n )
 			statics[file].push_back( index );
 	}
-	// These passes bind physical programs directly, without going through
-	// TakeSnapshot. Their small native, non-folded combo grids are bounded
-	// by the published VCS directory, not by guessed dynamic index ranges.
+	// Direct passes and late-spawned model materials need not have a snapshot
+	// at this point. In particular one model VS static block contains all
+	// compression/skinning/morph dynamics: first-draw decoding can take >30 ms.
 	if ( m_pDevice->Highres().EnhancedMap() )
 	{
 		static const struct { const char *name; bool pixel; } passes[] =
 		{
+			{ "pbr_model_vs51", false },
 			{ "depthwrite_instanced_vs51", false },
 			{ "shadow_depth_restore_vs51", false }, { "shadow_depth_restore_ps51", true },
 			{ "shadow_sky_depth_vs51", false }, { "shadow_sky_clip_ps51", true },
@@ -971,7 +976,7 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 			if ( !payload || ( file->TotalComboCount() > 16 && !m_Pipeline.ObservedShader( payload->tokens.Base(), payload->tokens.Count() ) ) ) continue;
 			if ( auto *record = ResolveNamedShader( key.name.String(), key.pixel, key.staticIndex, d ) )
 			{
-				ReflectNativeCBuffersDX12( record );
+				if ( record->legacyBytecode.IsEmpty() ) ReflectRecordInputsDX12( record );
 				m_NamedShaderCombos[m_NamedComboHints[key.pixel]]->owner->pinEpoch = m_LevelPinEpoch;
 			}
 		}
