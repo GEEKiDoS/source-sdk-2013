@@ -802,7 +802,7 @@ void CPipelineCacheDX12::BindDrawState( CCommandRecorderDX12 *pList, const D3D12
 // Purpose: Uploads constants and binds descriptor heaps, SRV/sampler tables and
 //          root CBVs for one draw, skipping state already bound in this recording
 //-----------------------------------------------------------------------------
-bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence )
+bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence, const BindingInputDX12 &input )
 {
 	const UINT padded = ( static_cast<UINT>( bytes ) + 255 ) & ~255u;
 	// Carve immutable output slices from one owner-side page reservation.
@@ -817,7 +817,7 @@ bool CPipelineCacheDX12::CaptureConstant( CCommandRecorderDX12 *list, UINT slot,
 		m_nCaptureRemaining = grant;
 		m_nCaptureFence = fence;
 	}
-	list->UploadConstant( slot, source, static_cast<UINT>( bytes ) );
+	list->UploadConstant( slot, source, static_cast<UINT>( bytes ), slot == 9 ? input.rows : nullptr, input.rowsOffset, input.rowsMask );
 	m_nCaptureRemaining -= padded;
 	return true;
 }
@@ -945,7 +945,8 @@ bool CPipelineCacheDX12::PrepareBindings( CCommandRecorderDX12 *pList, const Bin
 				++m_Stats.constantHits;
 				continue;
 			}
-			if ( !CaptureConstant( pList, i, input.nativeData[i], nBytes, input.retireFence ) )
+			m_NativeTableCache[stage].fence = 0; // A later allocation may abort this draw after changing a slot.
+			if ( !CaptureConstant( pList, i, input.nativeData[i], nBytes, input.retireFence, input ) )
 				return false;
 			++m_Stats.constantUploads;
 			last = { input.retireFence, version, 0, nBytes, 0 };

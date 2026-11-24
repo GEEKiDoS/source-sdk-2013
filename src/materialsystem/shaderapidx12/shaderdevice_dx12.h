@@ -256,6 +256,11 @@ public:
 
 	void RequestSceneRecordingBoundary() { m_bSceneBoundaryPending = true; }
 	bool BeginSceneDrawList();
+	void RetainModelRows( const std::shared_ptr<DrawModelRowsDX12> &rows )
+	{
+		auto &held = m_Frames[m_nFrameIndex].modelRows;
+		if ( held.empty() || held.back() != rows ) held.push_back( rows );
+	}
 	bool ParallelRecording() const { return m_RecordLanes[0].thread != nullptr; }
 
 	// Waits until the worker has issued every queued operation (header-inline so callers outside the DLL can use it).
@@ -697,6 +702,7 @@ private:
 		Microsoft::WRL::ComPtr<ID3D12CommandAllocator> extraAllocators[2];
 		Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList> extraLists[2];
 		CCommandRecorderDX12::ConstantState constants[3];
+		std::vector<std::shared_ptr<DrawModelRowsDX12>> modelRows;
 		uint64_t fence = 0;
 		CUtlVector<ID3D12Pageable *> retained;
 	};

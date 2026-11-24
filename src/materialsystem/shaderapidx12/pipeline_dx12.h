@@ -138,6 +138,8 @@ public:
 		uint64_t constantShaderIds[6] = {};
 		uint32_t consumedRegisters[6] = {};
 		// Native space-1 CBVs: slots 0-7 VS b0-b7, 8-15 PS b0-b7; only stages flagged in nativeStage are bound.
+		DrawModelRowsDX12 *rows = nullptr;
+		UINT rowsOffset = 0, rowsMask = 0;
 		const void *nativeData[16] = {};
 		uint32_t nativeSizes[16] = {};
 		uint64_t nativeVersions[16] = {};
@@ -424,7 +426,7 @@ private:
 	// Typed-null space-6 table for draws without screen-space inputs; rebuilt per recording fence / heap generation.
 	bool PrepareScreenSpaceNullTable( uint64_t nRetireFence );
 	bool AllocateUploadLocked( const void *pData, size_t nBytes, size_t nAllocationBytes, size_t nAlignment, uint64_t nRetireFence, D3D12_GPU_VIRTUAL_ADDRESS &nGpuAddress, ID3D12Resource **ppSource, size_t *pSourceOffset, const uint32_t *pSwapOffsets, size_t nSwapCount, size_t nVertexStride, unsigned char **ppMapped = nullptr );
-	bool CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence );
+	bool CaptureConstant( CCommandRecorderDX12 *list, UINT slot, const void *source, size_t bytes, uint64_t fence, const BindingInputDX12 &input );
 	uint64_t m_nCaptureFence = 0;
 	UINT m_nCaptureRemaining = 0;
 	void RetainGeometryLocked( ID3D12Resource *pResource, uint64_t nRetireFence );

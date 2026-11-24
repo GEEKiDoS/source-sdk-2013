@@ -89,8 +89,41 @@ void ReplayStage( IShaderDynamicAPI *api, bool vertex )
 }
 }
 
+int DX12StageModelRows( IShaderDynamicAPI *api, int limit )
+{
+	int live = 0;
+	dx12native::ModelRowsCall call{ limit, &live, nullptr };
+	api->SetPixelShaderConstant( dx12native::kModelRowsVar, reinterpret_cast<const float *>( &call ), 1 );
+	g_DX12Constants.modelRowsApi = api;
+	g_DX12Constants.modelRowsMask = 0x7f;
+	MarkDirty( g_DX12Constants.psFloatDirty, 40, 7 );
+	return live;
+}
+
+uint32_t DX12ModelRowsOffset( uint32_t stage, uint64_t layout )
+{
+	return g_DX12Constants.modelRowsMask && stage == dx12native::kStagePixel && layout == dx12cb::PBRMaterialPS::kLayoutHash ?
+		1 + offsetof( dx12cb::PBRMaterialPS, g_ModelLocalIndices ) : 0;
+}
+
+static void MaterializeModelRows()
+{
+	auto &s = g_DX12Constants;
+	float rows[7][4];
+	dx12native::ModelRowsCall call{ 0, nullptr, rows[0] };
+	s.modelRowsApi->SetPixelShaderConstant( dx12native::kModelRowsVar, reinterpret_cast<const float *>( &call ), 1 );
+	for ( unsigned i = 0; i < 7; ++i ) if ( s.modelRowsMask & ( 1u << i ) ) memcpy( s.psFloat[40+i], rows[i], 16 );
+	s.modelRowsMask = 0;
+}
+
 void DX12SetVertexShaderConstant( int reg, const float *data, int count, bool ) { StageRows( g_DX12Constants.vsFloat, g_DX12Constants.vsFloatDirty, reg, data, count ); }
-void DX12SetPixelShaderConstant( int reg, const float *data, int count, bool ) { StageRows( g_DX12Constants.psFloat, g_DX12Constants.psFloatDirty, reg, data, count ); }
+void DX12SetPixelShaderConstant( int reg, const float *data, int count, bool )
+{
+	auto &s = g_DX12Constants;
+	if ( s.modelRowsMask && data && reg >= 0 && reg < 47 && count > 40-reg )
+		for ( int i = MAX( 40, reg ); i < MIN( 47, reg+count ); ++i ) s.modelRowsMask &= ~( 1u << ( i-40 ) );
+	StageRows( s.psFloat, s.psFloatDirty, reg, data, count );
+}
 void DX12SetIntegerVertexShaderConstant( int reg, const int *data, int count, bool ) { StageRows( g_DX12Constants.vsInt, &g_DX12Constants.vsIntDirty, reg, data, count ); }
 void DX12SetIntegerPixelShaderConstant( int reg, const int *data, int count, bool ) { StageRows( g_DX12Constants.psInt, &g_DX12Constants.psIntDirty, reg, data, count ); }
 void DX12SetBooleanVertexShaderConstant( int reg, const int *data, int count, bool ) { StageBools( g_DX12Constants.vsBool, &g_DX12Constants.vsBoolDirty, reg, data, count ); }
@@ -215,6 +248,8 @@ void DX12GatherLegacyRegisters( const dx12native::NativeCBufferLegacyMapDX12 &ma
 void DX12FlushNativeBlocks( IShaderDynamicAPI *api )
 {
 	DX12ConstantStaging &s = g_DX12Constants;
+	if ( s.modelRowsMask && ( s.psPassthrough || ( s.psWriter && s.psWriter != &DX12WriteBlockFromStaging<dx12cb::PBRMaterialPS> ) ) )
+		MaterializeModelRows();
 	if ( s.vsWriter ) s.vsWriter( api, s );
 	if ( s.psWriter ) s.psWriter( api, s );
 	// A passthrough stage replays only what was staged for THIS draw. Registers staged for earlier draws already

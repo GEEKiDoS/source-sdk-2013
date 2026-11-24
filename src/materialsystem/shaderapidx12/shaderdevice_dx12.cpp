@@ -650,6 +650,7 @@ bool CShaderDeviceDX12::BeginRecording()
 		for ( int i = 0; i < frame.retained.Count(); ++i )
 			frame.retained[i]->Release();
 		frame.retained.RemoveAll();
+		frame.modelRows.clear();
 		frame.fence = 0;
 	}
 	{
@@ -1763,10 +1764,16 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			break;
 		case Op::UploadConstant:
 		{
-			UINT slot, bytes;
-			get( slot ); get( bytes );
+			DrawModelRowsDX12 *rows; UINT rowOffset, mask, slot, bytes;
+			get( rows ); get( rowOffset ); get( mask ); get( slot ); get( bytes );
 			const UINT padded = ( bytes + 255 ) & ~255u;
 			memcpy( constants.mapped, p, bytes );
+			if ( rows )
+			{
+				float resolved[7][4]; rows->Read( resolved[0] );
+				for ( UINT i=0; i<7; ++i ) if ( mask & (1u << i) )
+					memcpy( constants.mapped + rowOffset + i*16, resolved[i], 16 );
+			}
 			if ( padded != bytes ) memset( constants.mapped + bytes, 0, padded - bytes );
 			constants.addresses[slot] = constants.cursor;
 			constants.sizes[slot] = padded;
@@ -2321,6 +2328,7 @@ void CShaderDeviceDX12::ShutdownDevice()
 			frame.retained[i]->Release();
 		frame.retained.RemoveAll();
 		frame.allocator.Reset();
+		frame.modelRows.clear();
 		frame.fence = 0;
 	}
 	ReportDebugMessages();

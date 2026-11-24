@@ -1295,6 +1295,7 @@ struct LightingViewStateDX12
 	LightingPacketDX12 *packet = nullptr;
 	uint64_t fence = 0, heap = 0;
 	uint64_t modelLightEpoch = 0;
+	std::shared_ptr<const CUtlVector<RuntimeShadowLightGpu>> modelLights;
 	DescriptorRangeDX12 table{};
 	D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 	Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> nullTable;
@@ -1317,20 +1318,25 @@ struct CLightingDX12::Impl
 	CUtlVector<LightingPacketDX12 *> freePackets;
 	CUtlMap<uint64_t, LightingStatusDX12, uint32_t> statuses{ DefLessFunc( uint64_t ) };
 	CUtlVector<DX12LightingSelectedLight> selected;
-	CUtlVector<DX12ModelLightNode> modelLightNodes;
+	using ModelNodes = CUtlVector<DX12ModelLightNode>;
+	std::shared_ptr<const ModelNodes> modelLightNodes;
 	struct ModelLightTest { uint32 generation = 0; Vector receiver, source; bool blocked = false; };
-	// Workers own disjoint exact-segment caches. Never share writes even on hash collisions.
-	std::array<ModelLightTest, 4096> modelLightTests[2]{};
-	ModelLightWorkDX12 modelLightWork;
 	ModelLightCellsDX12 modelLightCells;
-	// Reuse rows across views only when the complete ordered light table is identical.
-	CUtlVector<RuntimeShadowLightGpu> previousModelLights;
-	uint64_t modelLightEpoch = 1;
-	struct ModelLightingResult { uint32 mapGeneration = 0; uint64_t epoch = 0; int limit = 0; Vector origin; float rows[7][4]; };
-	std::array<ModelLightingResult, 512> modelLightingResults{};
-	// Per-light contribution at the current lighting origin, filled once per ModelLocalLighting miss.
+	std::shared_ptr<const CUtlVector<RuntimeShadowLightGpu>> previousModelLights;
 	struct ModelLightSample { Vector rgb, direction; float energy; bool blocked; };
-	CUtlVector<ModelLightSample> modelLightSamples;
+	struct ModelJob final : DrawModelRowsDX12
+	{
+		std::shared_ptr<const CUtlVector<RuntimeShadowLightGpu>> lightsRef;
+		std::shared_ptr<const ModelNodes> nodes;
+		Vector origin;
+		int limit = 0, proofCount = 0;
+		std::array<ModelCellResult, 256> proofs;
+		std::once_flag once;
+		float rows[7][4];
+		void Compute();
+		void Read( float *out ) override { std::call_once( once, [this] { Compute(); } ); memcpy( out, rows, sizeof( rows ) ); }
+	};
+	std::array<std::shared_ptr<ModelJob>,512> modelLightingResults{};
 	std::atomic<uint32> activeMap{ 0 };
 	bool highresMap = false;
 	uint64 nativeMapGeneration = 0;
@@ -1753,10 +1759,11 @@ void CLightingDX12::Shutdown()
 	s.statuses.RemoveAll();
 	s.modelLightCells.Clear();
 	s.selected.RemoveAll();
-	s.modelLightNodes.Purge();
+	s.modelLightNodes.reset();
 	s.mapNullTable.Reset();
 	s.currentReceiverPage.reset(); s.whiteReceiverPage.reset();
 	s.receiverMaps.clear(); s.receiverStats.clear(); s.carrierShaders.clear();
+	s.modelLightingResults.fill( nullptr ); s.previousModelLights.reset();
 	s.neutral = {};
 	s.projected = {};
 	s.activeMap = 0;
@@ -2085,7 +2092,9 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	{
 		s.modelLightCells.Clear();
 		s.selected.CopyArray( map.selectedLights, map.selectedLightCount );
-		s.modelLightNodes.CopyArray( map.modelLightNodes, map.modelLightNodeCount );
+		auto nodes = std::make_shared<Impl::ModelNodes>();
+		nodes->CopyArray( map.modelLightNodes, map.modelLightNodeCount );
+		s.modelLightNodes = std::move( nodes );
 		s.mapNullTable = nullTable;
 		s.activeMap.store( map.mapGeneration );
 		s.highresMap = true; s.nativeMapGeneration = map.nativeMapGeneration;
@@ -2140,7 +2149,7 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 	s.receiverStats[map.mapGeneration] = receiver->stats;
 	s.modelLightCells.Clear();
 	s.selected.CopyArray( map.selectedLights, map.selectedLightCount );
-	s.modelLightNodes.Purge();
+	s.modelLightNodes.reset();
 	s.mapNullTable = nullTable;
 	s.highresMap = false; s.nativeMapGeneration = 0;
 	s.activeMap.store( map.mapGeneration );
@@ -2195,12 +2204,19 @@ static bool ModelLightBlocked( const CUtlVector<DX12ModelLightNode> &nodes, cons
 
 int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 {
-	memset( rows, 0, 7 * 4 * sizeof( float ) );
-	for ( int i = 0; i < 4; ++i ) rows[0][i] = -1.0f;
+	std::shared_ptr<DrawModelRowsDX12> request;
+	const int live = CaptureModelRows( limit, request );
+	request->Read( rows[0] );
+	return live;
+}
+
+int CLightingDX12::CaptureModelRows( int limit, std::shared_ptr<DrawModelRowsDX12> &out )
+{
 	Impl &s = *m_Impl;
-	// Without a view packet nothing is blacked out: every engine slot may contribute.
-	if ( !s.views.Count() ) return 4;
-	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	static const auto neutral = std::make_shared<Impl::ModelJob>();
+	if ( !s.views.Count() ) { out = neutral; return 4; }
+	auto &scope = *s.views.Tail();
+	const LightingPacketDX12 &packet = *scope.packet;
 	const auto &lights = packet.lights;
 	// Every prop is lit by the same carriers: probes (or the ambient cube) plus the runtime light table, which holds
 	// every map light and the sun. The engine's per-model light list repeats the static worldlights (and the sun as a
@@ -2241,30 +2257,52 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		if ( changed )
 			++api.m_nNativePSEngineVersion;
 	}
-	if ( limit <= 0 ) return live;
+	if ( limit <= 0 ) { out = neutral; return live; }
 	limit = MIN( limit, 4 );
-	const Vector &origin = s.api->m_LightingOrigin;
-	auto &epoch = s.views.Tail()->modelLightEpoch;
-	if ( !epoch )
+	if ( !scope.modelLights )
 	{
-		if ( s.previousModelLights.Count() != lights.Count() || ( lights.Count() &&
-			memcmp( s.previousModelLights.Base(), lights.Base(), lights.Count() * sizeof( lights[0] ) ) ) )
+		if ( !s.previousModelLights || s.previousModelLights->Count() != lights.Count() || ( lights.Count() &&
+			memcmp( s.previousModelLights->Base(), lights.Base(), lights.Count()*sizeof(lights[0]) ) ) )
 		{
-			s.previousModelLights = lights;
-			++s.modelLightEpoch;
+			auto copy = std::make_shared<CUtlVector<RuntimeShadowLightGpu>>();
+			copy->CopyArray( lights.Base(), lights.Count() ); s.previousModelLights = std::move(copy);
 		}
-		epoch = s.modelLightEpoch;
+		scope.modelLights = s.previousModelLights;
 	}
-	// Use the high bits of the mixed hash: aligned map coordinates often have identical low mantissa bits.
-	uint32 hash = FloatBits( origin.x ) * 31u + FloatBits( origin.y );
-	hash = ( hash * 31u + FloatBits( origin.z ) ) * 2654435761u;
-	auto &cached = s.modelLightingResults[( ( hash >> 16 ) ^ uint32( limit ) ) % s.modelLightingResults.size()];
-	if ( cached.mapGeneration == packet.view.mapGeneration && cached.epoch == epoch &&
-		cached.limit == limit && cached.origin == origin )
+	const Vector origin = s.api->m_LightingOrigin;
+	uint32 hash = ((FloatBits(origin.x)*31u + FloatBits(origin.y))*31u + FloatBits(origin.z))*2654435761u;
+	auto &cached = s.modelLightingResults[((hash>>16)^uint32(limit)) % s.modelLightingResults.size()];
+	AUTO_LOCK(s.mutex);
+	if ( !cached || cached->lightsRef != scope.modelLights || cached->nodes != s.modelLightNodes || cached->limit != limit || cached->origin != origin )
 	{
-		memcpy( rows, cached.rows, sizeof( cached.rows ) );
-		return live;
+		cached = std::make_shared<Impl::ModelJob>();
+		cached->origin = origin; cached->limit = limit; cached->lightsRef = scope.modelLights; cached->nodes = s.modelLightNodes;
+		const auto *cell = cached->nodes && r_dx12_model_light_workers.GetBool() ? s.modelLightCells.Request(origin,*cached->nodes,s.selected) : nullptr;
+		if ( cell )
+		{
+			cached->proofCount = MIN(lights.Count(), int(cached->proofs.size()));
+			for ( int i=0; i<cached->proofCount; ++i )
+			{
+				const auto id = lights[i].lightId;
+				cached->proofs[i] = id<cell->result.size() && !memcmp(lights[i].origin,s.selected[id].origin,sizeof(lights[i].origin)) ? cell->result[id] : ModelCellResult::Mixed;
+			}
+		}
 	}
+	out = cached; return live;
+}
+
+void CLightingDX12::Impl::ModelJob::Compute()
+{
+	memset( rows, 0, sizeof( rows ) );
+	for ( auto &index : rows[0] ) index = -1.0f;
+	if ( !limit ) return;
+	const auto &lights = *lightsRef;
+	// Scratch and exact-ray hints belong to this executing lane; never share mutable results.
+	static thread_local CUtlVector<ModelLightSample> samples;
+	static thread_local std::array<ModelLightTest,4096> tests{};
+	static thread_local std::weak_ptr<const ModelNodes> lastNodes;
+	if ( lastNodes.lock() != nodes ) { for ( auto &t : tests ) t.generation = 0; lastNodes = nodes; }
+	const uint32 mapGeneration = 1; // zero denotes an empty hint; table reset on BSP identity change
 	rows[1][3] = 1.0f;
 	float scores[4] = {};
 	auto sample = [&]( const RuntimeShadowLightGpu &light, Vector &direction ) -> Vector
@@ -2295,57 +2333,46 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		}
 		return Vector( light.radiance[0], light.radiance[1], light.radiance[2] ) * falloff;
 	};
-	// Exclude map replacement while publishing work or consuming its cell. Replacement drains
-	// the two background lanes under this same mutex; callbacks never acquire it.
-	AUTO_LOCK( s.mutex );
-	const bool parallel = r_dx12_model_light_workers.GetBool();
-	const auto *cell = parallel ? s.modelLightCells.Request( origin, s.modelLightNodes, s.selected ) : nullptr;
-	auto blocked = [&]( const RuntimeShadowLightGpu &light, const Vector &direction, int lane )
+	auto blocked = [&]( int i, const RuntimeShadowLightGpu &light, const Vector &direction, int lane )
 	{
-		if ( !s.modelLightNodes.Count() ) return false;
+		if ( !nodes || !nodes->Count() ) return false;
 		const Vector end( light.origin[0], light.origin[1], light.origin[2] );
-		if ( cell && light.lightId < cell->result.size() )
-		{
-			const auto result = cell->result[light.lightId];
-			const auto &p = s.selected[light.lightId].origin;
-			if ( result != ModelCellResult::Mixed && end.x == p[0] && end.y == p[1] && end.z == p[2] )
-				return result == ModelCellResult::Blocked && ( end - origin ).LengthSqr() > 1.0f / 256.0f;
-		}
+		if ( i < proofCount && proofs[i] != ModelCellResult::Mixed )
+			return proofs[i] == ModelCellResult::Blocked && ( end - origin ).LengthSqr() > 1.0f / 256.0f;
 		// Share exact segments across a model's materials and passes. Do not
 		// quantize positions: opposite sides of a wall must not alias.
 		const uint32 bucket = ( FloatBits( origin.x ) >> 6 ) ^ ( FloatBits( origin.y ) >> 9 ) ^
 			( FloatBits( origin.z ) >> 12 ) ^ ( light.lightId * 2654435761u );
-		auto &tests = s.modelLightTests[lane];
-		auto &test = tests[bucket % tests.size()];
-		if ( test.generation != packet.view.mapGeneration || test.receiver != origin || test.source != end )
+		auto &cache = tests;
+		auto &test = cache[bucket % cache.size()];
+		if ( test.generation != mapGeneration || test.receiver != origin || test.source != end )
 		{
-			test.generation = packet.view.mapGeneration;
+			test.generation = mapGeneration;
 			test.receiver = origin;
 			test.source = end;
 			const Vector bias = direction * ( 1.0f / 32.0f );
 			test.blocked = ( end - origin ).LengthSqr() > 1.0f / 256.0f &&
-				ModelLightBlocked( s.modelLightNodes, origin + bias, end - bias );
+				ModelLightBlocked( *nodes, origin + bias, end - bias );
 		}
 		return test.blocked;
 	};
 	// Resize before submitting the immutable view/BSP query. No vector, API state, or descriptor allocator is
 	// mutated by both threads. Ranking and the ambient sum below stay in original light order (including ties).
-	s.modelLightSamples.SetCountNonDestructively( lights.Count() );
+	samples.SetCountNonDestructively( lights.Count() );
 	auto prepare = [&]( int begin, int end, int lane )
 	{
 		for ( int i = begin; i < end; ++i )
 		{
-			auto &contribution = s.modelLightSamples[i];
+			auto &contribution = samples[i];
 			contribution.rgb = sample( lights[i], contribution.direction );
 			contribution.energy = contribution.rgb.x * 0.2126f + contribution.rgb.y * 0.7152f + contribution.rgb.z * 0.0722f;
-			contribution.blocked = contribution.rgb.LengthSqr() != 0.0f && blocked( lights[i], contribution.direction, lane );
+			contribution.blocked = contribution.rgb.LengthSqr() != 0.0f && blocked( i, lights[i], contribution.direction, lane );
 		}
 	};
-	if ( parallel && !cell ) s.modelLightWork.Run( lights.Count(), prepare );
-	else prepare( 0, lights.Count(), 0 );
+	prepare( 0, lights.Count(), 0 );
 	for ( int i = 0; i < lights.Count(); ++i )
 	{
-		const auto &contribution = s.modelLightSamples[i];
+		const auto &contribution = samples[i];
 		const float energy = contribution.energy;
 		if ( energy <= 0.0f ) continue;
 		// Resident realtime lights precede static-only lights, preserving moving shadow receivers.
@@ -2373,7 +2400,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 	{
 		const auto &light = lights[int( rows[0][slot] )];
 		if ( light.realtimeWeight <= 0.0f || light.realtimeWeight >= 1.0f ) continue;
-		if ( s.modelLightSamples[int( rows[0][slot] )].blocked ) blockedSlots |= 1u << slot;
+		if ( samples[int( rows[0][slot] )].blocked ) blockedSlots |= 1u << slot;
 	}
 	rows[2][3] = float( blockedSlots );
 	for ( int i = 0; i < lights.Count(); ++i )
@@ -2381,7 +2408,7 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 		bool selected = false;
 		for ( int slot = 0; slot < limit; ++slot ) selected |= rows[0][slot] == float( i );
 		if ( selected ) continue;
-		const auto &contribution = s.modelLightSamples[i];
+		const auto &contribution = samples[i];
 		const Vector &rgb = contribution.rgb, &direction = contribution.direction;
 		if ( rgb.LengthSqr() == 0.0f || contribution.blocked ) continue;
 		// Retail's six-axis cosine projection, evaluated once at the lighting origin.
@@ -2392,12 +2419,6 @@ int CLightingDX12::ModelLocalLighting( int limit, float rows[7][4] )
 				rows[face][channel] += rgb[channel] * fabsf( direction[axis] );
 		}
 	}
-	cached.mapGeneration = packet.view.mapGeneration;
-	cached.epoch = epoch;
-	cached.limit = limit;
-	cached.origin = origin;
-	memcpy( cached.rows, rows, sizeof( cached.rows ) );
-	return live;
 }
 
 void CLightingDX12::BeginView( const DX12LightingViewPacket &view )
@@ -2916,7 +2937,7 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 				s.highresMap = false; s.nativeMapGeneration = 0;
 				s.modelLightCells.Clear();
 				s.selected.RemoveAll();
-				s.modelLightNodes.Purge();
+				s.modelLightNodes.reset();
 				s.mapNullTable.Reset();
 			}
 			// Unconsumed EndView results outlive map GPU storage; delayed callers consume them via GetStatus.

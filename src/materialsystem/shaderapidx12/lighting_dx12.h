@@ -90,6 +90,7 @@ public:
 	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
 	bool GetSunContactDirection( float out[4] );
 	int ModelLocalLighting( int limit, float rows[7][4] ) override;
+	int CaptureModelRows( int limit, std::shared_ptr<DrawModelRowsDX12> &out );
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );
 	void ForgetSunReceiverTexture( ShaderAPITextureHandle_t texture );
 	bool PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDrawDX12 &draw,

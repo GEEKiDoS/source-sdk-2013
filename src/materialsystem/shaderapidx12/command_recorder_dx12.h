@@ -22,6 +22,12 @@ namespace shaderapidx12
 typedef void ( *ExternalFnDX12 )( ID3D12GraphicsCommandList *, ID3D12Device *, const void * ) noexcept;
 
 // Fence-retained by the pipeline cache; workers never dereference shader API state.
+struct DrawModelRowsDX12
+{
+	virtual void Read( float *out ) = 0;
+	virtual ~DrawModelRowsDX12() = default;
+};
+
 struct RecordedPipelineDX12
 {
 	virtual ID3D12PipelineState *Resolve() = 0;
@@ -451,9 +457,10 @@ public:
 	}
 	// The CPU source is draw-local; never give its pointer to the workers.
 	// The mapped destination is reserved exclusively through the list fence.
-	void UploadConstant( UINT slot, const void *source, UINT bytes )
+	void UploadConstant( UINT slot, const void *source, UINT bytes, DrawModelRowsDX12 *rows, UINT offset, UINT mask )
 	{
-		auto *p = Begin( Op::UploadConstant, 2 * sizeof( UINT ) + bytes );
+		auto *p = Begin( Op::UploadConstant, 4 * sizeof( UINT ) + sizeof( rows ) + bytes );
+		Put( p, rows ); Put( p, offset ); Put( p, mask );
 		Put( p, slot );
 		Put( p, bytes );
 		memcpy( p, source, bytes );

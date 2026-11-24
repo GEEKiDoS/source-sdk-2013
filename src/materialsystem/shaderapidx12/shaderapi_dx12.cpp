@@ -2599,6 +2599,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			record->constantLayoutValid = true;
 		}
 		const uint32_t( &counts )[3] = record->constantCounts;
+		if ( pixel && m_LegacyRowMask && ( counts[0] > 40 || record->gameRegisters ) ) MaterializeLegacyRows();
 		const uint32_t inlineMask = record->inlineConstantMask;
 		ShaderRecordDX12::DerivedConstants &derived = record->derived;
 		for ( unsigned bank = 0; bank < 3; ++bank )
@@ -2826,6 +2827,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	const bool nativeVS = vsRecord && vsRecord->legacyBytecode.IsEmpty(), nativePS = psRecord && psRecord->legacyBytecode.IsEmpty();
 	bindingInput.nativeStage[0] = nativeVS;
 	bindingInput.nativeStage[1] = nativePS;
+	bindingInput.rows = nullptr; bindingInput.rowsMask = bindingInput.rowsOffset = 0;
 	// Keep the descriptor tables complete, but point unused slots to the
 	// persistent zero CBV instead of uploading the last material's stale data.
 	if ( !geometryStage )
@@ -2925,6 +2927,12 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 				bindingInput.nativeData[9 + slot] = m_NativePSBlocks[slot].bytes.Base();
 				bindingInput.nativeSizes[9 + slot] = m_NativePSBlocks[slot].byteSize;
 				bindingInput.nativeVersions[9 + slot] = m_NativePSBlocks[slot].version;
+				if ( !slot && m_NativePSBlocks[0].rows && ( bindingInput.nativeCBufferMask[1] & 2 ) )
+				{
+					const auto &block = m_NativePSBlocks[0];
+					bindingInput.rows = block.rows.get(); bindingInput.rowsMask = block.rowsMask; bindingInput.rowsOffset = block.rowsOffset;
+					m_pDevice->RetainModelRows( block.rows );
+				}
 			}
 	}
 	if ( nativeVS && vsRecord->gameRegisters )
@@ -4081,7 +4089,14 @@ void CShaderAPIDX12::ApplyNativeCBufferWrite( const dx12native::NativeCBufferWri
 {
 	NativeCBufferSlotDX12 &slot = bPixel ? m_NativePSBlocks[write.shaderRegister - 1] : m_NativeVSBlocks[write.shaderRegister - 2];
 	const unsigned nFirstBank = bPixel ? 3 : 0;
-	const bool unchanged = slot.written && slot.byteSize == write.byteSize && slot.legacyMap == write.legacyMap &&
+	auto rows = bPixel && write.modelRowsOffsetPlusOne ? m_StagedRows : nullptr;
+	if ( bPixel && !rows && m_LegacyRowMask )
+		for ( uint32_t i=0; i<write.legacyMap->entryCount; ++i )
+		{
+			const auto &e = write.legacyMap->entries[i];
+			if ( e.bank == dx12native::kLegacyFloat && e.reg < 47 && e.reg + e.elementCount > 40 ) { MaterializeLegacyRows(); break; }
+		}
+	const bool unchanged = slot.rows == rows && slot.rowsMask == write.modelRowsMask && slot.written && slot.byteSize == write.byteSize && slot.legacyMap == write.legacyMap &&
 		slot.layoutHash == write.layoutHash && !memcmp( slot.bytes.Base(), write.data, write.byteSize );
 	if ( unchanged && !memcmp( slot.mirrorVersions, m_ConstantVersions + nFirstBank, sizeof( slot.mirrorVersions ) ) )
 		return;
@@ -4091,6 +4106,10 @@ void CShaderAPIDX12::ApplyNativeCBufferWrite( const dx12native::NativeCBufferWri
 		memcpy( slot.bytes.Base(), write.data, write.byteSize );
 		slot.version = bPixel ? ++m_nNativePSVersion : ++m_nNativeVSVersion;
 	}
+	if ( rows && ( m_LegacyRows != rows || m_LegacyRowMask != write.modelRowsMask ) ) ++m_ConstantVersions[3];
+	if ( rows ) { m_LegacyRows = rows; m_LegacyRowMask = write.modelRowsMask; }
+	slot.rows = std::move( rows ); slot.rowsOffset = write.modelRowsOffsetPlusOne ? write.modelRowsOffsetPlusOne-1 : 0;
+	slot.rowsMask = write.modelRowsMask;
 	slot.legacyMap = write.legacyMap;
 	slot.layoutHash = write.layoutHash;
 	slot.byteSize = write.byteSize;
@@ -4207,13 +4226,28 @@ void CShaderAPIDX12::SetVertexShaderConstant( int var, float const *values, int 
 //-----------------------------------------------------------------------------
 // Purpose: Writes float pixel registers, or applies a native cbuffer bridge write for the pointer register
 //-----------------------------------------------------------------------------
+void CShaderDynamicDX12::MaterializeLegacyRows()
+{
+	float rows[7][4]; m_LegacyRows->Read( rows[0] );
+	for ( unsigned i=0; i<7; ++i ) if ( m_LegacyRowMask & (1u<<i) ) memcpy( m_PsFloat[40+i],rows[i],16 );
+	m_LegacyRowMask = 0; m_LegacyRows.reset();
+}
+
 void CShaderAPIDX12::SetPixelShaderConstant( int var, float const *values, int count, bool )
 {
 	ZoneNamedN( constants, "DX12 SetPixelConstants sampled", DX12_DRAW_ZONES_ACTIVE && ( m_nFrameCounter & 63 ) == 0 );
+	if ( var == dx12native::kModelRowsVar )
+	{
+		const auto &call = *reinterpret_cast<const dx12native::ModelRowsCall *>( values );
+		if ( call.destination ) m_StagedRows->Read( call.destination );
+		else *call.live = m_pDevice->Lighting().CaptureModelRows( call.limit, m_StagedRows );
+		return;
+	}
 	if ( var == dx12native::kDX12NativeCBufferPointerVar )
 	{
 		const dx12native::NativeCBufferWriteDX12 *write = reinterpret_cast<const dx12native::NativeCBufferWriteDX12 *>( values );
-		if ( !write || write->magic != dx12native::kDX12NativeCBufferWriteMagic || write->version != dx12native::kDX12NativeCBufferVersion || write->stage != dx12native::kStagePixel || write->registerSpace != 1 || write->shaderRegister < 1 || write->shaderRegister > 7 || !write->data || !write->legacyMap || write->byteSize == 0 || ( write->byteSize & 15 ) || write->byteSize > 65536 || write->legacyMap->layoutHash != write->layoutHash )
+		if ( !write || write->magic != dx12native::kDX12NativeCBufferWriteMagic || write->version != dx12native::kDX12NativeCBufferVersion || write->stage != dx12native::kStagePixel || write->registerSpace != 1 || write->shaderRegister < 1 || write->shaderRegister > 7 || !write->data || !write->legacyMap || write->byteSize == 0 || ( write->byteSize & 15 ) || write->byteSize > 65536 || write->legacyMap->layoutHash != write->layoutHash ||
+			( write->modelRowsOffsetPlusOne && ( write->shaderRegister != 1 || !m_StagedRows || write->modelRowsMask > 127u || write->byteSize < 112 || write->modelRowsOffsetPlusOne-1 > write->byteSize-112 ) ) )
 		{
 			Warning( "ShaderAPIDX12: rejected native PS cbuffer write (magic/version/stage/space/register/size/data/map validation failed)\n" );
 			return;
@@ -4224,7 +4258,10 @@ void CShaderAPIDX12::SetPixelShaderConstant( int var, float const *values, int c
 	if ( !values || var < 0 || count <= 0 )
 		return;
 	const int end = MIN( var + count, static_cast<int>( ARRAYSIZE( m_PsFloat ) ) );
-	bool changed = false;
+	const uint32_t oldMask = m_LegacyRowMask;
+	if ( oldMask ) for ( int r=MAX(var,40); r<MIN(end,47); ++r ) m_LegacyRowMask &= ~(1u<<(r-40));
+	if ( oldMask && !m_LegacyRowMask ) m_LegacyRows.reset();
+	bool changed = oldMask != m_LegacyRowMask;
 	for ( int r = var; r < end; ++r )
 	{
 		const __m128i incoming = _mm_loadu_si128( reinterpret_cast<const __m128i *>( values + ( r - var ) * 4 ) );
