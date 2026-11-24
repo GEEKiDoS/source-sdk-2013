@@ -1156,7 +1156,11 @@ bool CShaderDeviceDX12::ResizeView( View &view, int nWidth, int nHeight, bool bF
 	}
 	if ( view.swap && !view.suspended && !bForceBuffers && nWidth == view.width && nHeight == view.height )
 		return true;
-	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && view.swap && ( nWidth != view.width || nHeight != view.height ) )
+	// Engine listeners resize the window (SetWindowLong), which blocks until the window's thread pumps messages. Present
+	// resizes from the queued material thread while that main thread waits on it, so listeners run only on the
+	// window's own thread; the engine already handles a resize it sees there.
+	if ( !m_bChangingMode && g_pShaderDeviceDX12 == this && view.swap && ( nWidth != view.width || nHeight != view.height ) &&
+		GetWindowThreadProcessId( view.hwnd, NULL ) == GetCurrentThreadId() )
 	{
 		m_bChangingMode = true;
 		if ( g_pShaderDeviceMgrDX12 )
