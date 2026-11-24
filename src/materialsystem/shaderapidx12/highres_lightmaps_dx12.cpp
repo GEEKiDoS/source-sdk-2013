@@ -69,6 +69,8 @@ __declspec(noinline) void BreakOnHighresFailure(const char *message, const uint3
             auto &out = dump.draws[dump.drawCount];
             V_strncpy(out.vertexShader, note.vertexShader, sizeof(out.vertexShader)); V_strncpy(out.pixelShader, note.pixelShader, sizeof(out.pixelShader));
             out.meshToken = note.meshToken; out.firstIndex = note.firstIndex; out.indexCount = note.indexCount;
+            Warning("Highres candidate draw %llu: fence=%llu page=%u mesh=%llx first=%u count=%u VS=%s PS=%s\n",
+                ringCount-back,note.fence,note.page+1,note.meshToken,note.firstIndex,note.indexCount,out.vertexShader,out.pixelShader);
         }
         ++dump.drawCount;
         uint32 pair = 0;
