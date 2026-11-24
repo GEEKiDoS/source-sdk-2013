@@ -423,26 +423,17 @@ its bilinear neighbors). The independent half-texel axial bias and the
 geometric slope used by plane-corrected taps are unchanged. Neither change
 affects the world cascades or static sun map.
 
-Client-local archived `r_shadowmap_force_physics_shadows` defaults to zero.
-At one, native enhanced-map caster queries override authored `EF_NOSHADOW`
-only for ordinary non-gib solid physics props. Hidden/nonsolid entities,
-specialized subclasses, static-prop flags and material/translucency policy
-remain excluded. Effects and save flags never change; live policy/eligibility
-changes invalidate caster registration without requiring movement or respawn.
-The computed ordinary-physics identity adds a `DT_PhysicsProp` bit, requiring
-matching client/server DLLs. The user waived additional board-shadow fixtures;
-no independent visible board-shadow proof is claimed.
-
-Archived `r_shadowmap_cutout_noshadow_props` (default 1, read when the map's static-prop caster policy is built, so it
-applies at the next map load) lets static props authored with `disableshadows` (`STATIC_PROP_NO_SHADOW`) still cast
-native shadowmaps when one of their drawn materials is alpha-tested. Retail L4D2 maps flag every chain-link fence,
-razor wire and vine that way (c1m2: 790 of 2193 static props are NO_SHADOW, ~150 of them cutout models), which left
-fences shadowless under the sun. Opaque NO_SHADOW props keep the authored policy.
-
-Archived `r_shadowmap_force_door_shadows` (default 1) lets doors (`C_BasePropDoor`: `prop_door_rotating` and the
-checkpoint doors) cast native shadowmaps despite an authored `disableshadows` (EF_NOSHADOW). Retail maps disable door
-shadows (c1m3's `metal_door_112` doors), so a closed door let the realtime light of the room behind it through. The bake
-never sees doors (they are entities), so the light behind a closed door is the bake's minus its direct: dark.
+Native DX12 shadow maps ignore authored `disableshadows` for props. Every
+engine static prop is eligible regardless of `STATIC_PROP_NO_SHADOW`, including
+opaque props; the `sprp` data still registers and validates static receivers.
+For entities, only a `C_BreakableProp` (or subclass) drawing a studio model
+can bypass `EF_NOSHADOW`. That includes dynamic props, rotating and checkpoint
+prop doors, and physics props, irrespective of solidity or gib status.
+Brush models such as `func_brush` or `func_door` and non-prop entities still
+honor authored `EF_NOSHADOW`. Hidden props remain excluded; the depth pass
+continues to use the normal opaque/alpha-tested material paths.
+This policy has no separate controls and does not alter entity effects, save
+data, or baked lighting.
 
 Alpha-cutout casters: the engine renders prop/model shadow depth (and the flashlight depth texture) with its
 `DepthWrite` override materials, whose cutout is the pixel shader's `clip` against `$alphatestreference`. The backend

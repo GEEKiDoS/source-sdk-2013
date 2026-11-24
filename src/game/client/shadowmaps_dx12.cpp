@@ -5049,8 +5049,14 @@ void ShadowStatsCommand()
 class CReportCasterSink : public IShadowCasterSink
 {
 public:
-	virtual void Add( IClientRenderable *renderable, bool ) { entries.AddToTail(renderable); }
+	virtual void Add( IClientRenderable *renderable, bool isStaticProp )
+	{
+		entries.AddToTail(renderable);
+		staticProps += isStaticProp;
+	}
+	void Reset() { entries.RemoveAll(); staticProps = 0; }
 	CUtlVector<IClientRenderable *> entries;
+	int staticProps;
 };
 int PointerCompare( IClientRenderable * const *a, IClientRenderable * const *b )
 {
@@ -5170,7 +5176,7 @@ void ShadowReportCommand( const CCommand &args )
 	CReportCasterSink reported,exhaustive;
 	for ( int v=0;v<data->volumes.Count();++v )
 	{
-		reported.entries.RemoveAll(); exhaustive.entries.RemoveAll();
+		reported.Reset(); exhaustive.Reset();
 		ClientLeafSystem()->EnumerateShadowCasters(data->volumes[v].volume,reported);
 		ClientLeafSystem()->EnumerateShadowCastersExhaustive(data->volumes[v].volume,exhaustive);
 		reported.entries.Sort(PointerCompare); exhaustive.entries.Sort(PointerCompare);
@@ -5183,7 +5189,10 @@ void ShadowReportCommand( const CCommand &args )
 			else if ( (uintp)reported.entries[a]<(uintp)exhaustive.entries[b] ) { ++a; ++mismatch; }
 			else { ++b; ++mismatch; }
 		}
-		out.Printf("%s{\"light\":%d,\"testedCount\":%d,\"reportedCount\":%d,\"exhaustiveCount\":%d,\"mismatchCount\":%d,\"exceeds4096\":%s}",v?",":"",data->volumes[v].light,exhaustive.entries.Count(),reported.entries.Count(),exhaustive.entries.Count(),mismatch,exhaustive.entries.Count()>4096?"true":"false");
+		out.Printf("%s{\"light\":%d,\"testedCount\":%d,\"reportedCount\":%d,\"exhaustiveCount\":%d,"
+			"\"reportedStaticProps\":%d,\"exhaustiveStaticProps\":%d,\"mismatchCount\":%d,\"exceeds4096\":%s}",
+			v?",":"",data->volumes[v].light,exhaustive.entries.Count(),reported.entries.Count(),exhaustive.entries.Count(),
+			reported.staticProps,exhaustive.staticProps,mismatch,exhaustive.entries.Count()>4096?"true":"false");
 	}
 	const IDetailObjectSystem::ShadowReport_t &detail=data->detailReport;
 	out.Printf("],\"detailCases\":[{\"name\":\"fast\",\"fast\":true,\"matched\":%s,\"count\":%d},{\"name\":\"ordinary\",\"fast\":false,\"matched\":%s,\"count\":%d}],\"mapState\":{",detail.m_bShadowLitSprites?"true":"false",detail.m_nFastSprites,detail.m_bShadowLitSprites?"true":"false",detail.m_nOrdinarySprites);

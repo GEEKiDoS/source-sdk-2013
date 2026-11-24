@@ -20,7 +20,7 @@
 #include "engine/ivdebugoverlay.h"
 #include "vstdlib/jobthread.h"
 #include "tier1/utllinkedlist.h"
-#include "tier1/utlmap.h"
+#include "tier1/utlrbtree.h"
 #include "bitvec.h"
 #include "worldsize.h"
 #include "gamebspfile.h"
@@ -30,7 +30,7 @@
 #include "viewrender.h"
 #include "shadowmaps_dx12.h"
 #include "materialsystem/imaterial.h"
-#include "c_physicsprop.h"
+#include "c_breakableprop.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #if defined( L4D2 )
@@ -68,31 +68,6 @@ static ConVar r_portalsopenall( "r_portalsopenall", "0",
 , "Open all portals" );
 static ConVar cl_threaded_client_leaf_system("cl_threaded_client_leaf_system", "0"  );
 static ConVar r_shadowmap_validate_casters( "r_shadowmap_validate_casters", "0", FCVAR_CHEAT, "Compare shadow caster queries with an exhaustive registration/AABB scan." );
-static void ShadowPhysicsPolicyChanged( IConVar *pConVar, const char *pOldString, float flOldValue );
-static ConVar r_shadowmap_force_physics_shadows( "r_shadowmap_force_physics_shadows", "0", FCVAR_ARCHIVE,
-	"Allow solid ordinary physics props to cast native shadowmaps despite authored DisableShadow (does not change entity effects).",
-	ShadowPhysicsPolicyChanged );
-static ConVar r_shadowmap_cutout_noshadow_props( "r_shadowmap_cutout_noshadow_props", "1", FCVAR_ARCHIVE,
-	"Static props authored with disableshadows still cast native shadowmaps when a material is alpha-tested (chain-link fences, "
-	"razor wire, vines); retail kept them shadowless. Applies at the next map load." );
-static ConVar r_shadowmap_force_door_shadows( "r_shadowmap_force_door_shadows", "1", FCVAR_ARCHIVE,
-	"Doors (prop_door_rotating) cast native shadowmaps despite authored disableshadows, so a closed door blocks the light "
-	"behind it (does not change entity effects).",
-	ShadowPhysicsPolicyChanged );
-bool IsClientPropDoor( C_BaseEntity *pEntity ); // c_props.cpp
-
-// Native shadowmap casters may ignore an authored EF_NOSHADOW: solid physics props (r_shadowmap_force_physics_shadows)
-// and doors (r_shadowmap_force_door_shadows).
-static bool ShadowMapOverridesNoShadow( C_BaseEntity *pEntity, bool bPhysicsProp )
-{
-	if ( !ShadowMapsDX12_Active() )
-		return false;
-	if ( r_shadowmap_force_physics_shadows.GetBool() && bPhysicsProp &&
-		static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow() )
-		return true;
-	return r_shadowmap_force_door_shadows.GetBool() && IsClientPropDoor( pEntity );
-}
-
 
 DEFINE_FIXEDSIZE_ALLOCATOR( CClientRenderablesList, 1, CUtlMemoryPool::GROW_SLOW );
 
@@ -218,7 +193,6 @@ public:
 	virtual void EnumerateShadowsInLeaves( int leafCount, LeafIndex_t* pLeaves, IClientLeafShadowEnum* pEnum );
 	virtual void EnumerateShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
 	virtual void EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
-	void OnShadowPhysicsPolicyChanged();
 
 	// methods of ISpatialLeafEnumerator
 public:
@@ -263,7 +237,7 @@ private:
 	void RemoveUnlinkedShadowCaster( ClientRenderHandle_t handle );
 	void UpdateShadowCasterBounds( ClientRenderHandle_t handle );
 	void RecordShadowCasterBounds( ClientRenderHandle_t handle, const Vector &mins, const Vector &maxs );
-	const char *InitShadowStaticPropPolicy();
+	const char *InitShadowStaticProps();
 	bool IsEligibleShadowCaster( ClientRenderHandle_t handle );
 	void CollectShadowCaster( ClientRenderHandle_t handle, const ShadowCasterVolume_t &volume );
 	bool EnumerateShadowCasterLeaf( int leaf, const ShadowCasterVolume_t &volume );
@@ -362,7 +336,7 @@ private:
 		RENDER_FLAGS_STUDIO_MODEL	= 0x08,
 		RENDER_FLAGS_HASCHANGED		= 0x10,
 		RENDER_FLAGS_ALTERNATE_SORTING = 0x20,
-		RENDER_FLAGS_PHYSICS_PROP = 0x40,
+		RENDER_FLAGS_PROP = 0x40,
 	};
 
 	// All the information associated with a particular handle
@@ -397,7 +371,7 @@ private:
 		uint64				m_ShadowCasterReportStamp;
 		int					m_UnlinkedShadowCasterIndex;
 		Vector				m_ShadowCasterMins, m_ShadowCasterMaxs;
-		int					m_ShadowStaticPolicyIndex;
+		int					m_ShadowStaticPropIndex;
 		bool				m_bShadowCasterBoundsValid;
 		bool				m_bUpdatingShadowCasterBounds;
 		bool				m_bShadowCasterBoundsDirty;
@@ -495,8 +469,8 @@ private:
 	CUtlVector< ClientRenderHandle_t >	m_UnlinkedShadowCasters;
 	CUtlVector< ClientRenderHandle_t >	m_ShadowCasters[2];	// entities, then contiguous engine static props
 	CUtlVector< IMaterial * >			m_ShadowCasterMaterials;
-	// Authored sprp flags keyed by the engine's stable public collideable identity.
-	CUtlMap< ICollideable *, bool, int >	m_ShadowStaticPropPolicy;
+	// Validated sprp receiver identities, keyed by the engine's public collideables.
+	CUtlRBTree< ICollideable *, int >	m_ShadowStaticProps;
 	uint64								m_ShadowCasterQueryStamp;
 	// Retain every first-visited registration, including ineligible casters.
 	// Reuse only spatial traversal: eligibility, live bounds and sink content
@@ -531,35 +505,6 @@ private:
 CClientLeafSystem CClientLeafSystem::s_ClientLeafSystem;
 IClientLeafSystem *g_pClientLeafSystem = &CClientLeafSystem::s_ClientLeafSystem;
 EXPOSE_SINGLE_INTERFACE_GLOBALVAR( CClientLeafSystem, IClientLeafSystem, CLIENTLEAFSYSTEM_INTERFACE_VERSION, CClientLeafSystem::s_ClientLeafSystem );
-
-static void ShadowPhysicsPolicyChanged( IConVar *pConVar, const char *pOldString, float flOldValue )
-{
-	ConVarRef var( pConVar );
-	if ( var.GetBool() == ( atoi( pOldString ) != 0 ) || !g_pClientLeafSystem )
-		return;
-	CClientLeafSystem::s_ClientLeafSystem.OnShadowPhysicsPolicyChanged();
-}
-
-void CClientLeafSystem::OnShadowPhysicsPolicyChanged()
-{
-	InvalidateShadowCasterQuery();
-	if ( !ShadowMapsDX12_Active() )
-		return;
-	for ( ClientRenderHandle_t handle = m_Renderables.Head(); handle != m_Renderables.InvalidIndex(); handle = m_Renderables.Next( handle ) )
-	{
-		IClientRenderable *pRenderable = m_Renderables[handle].m_pRenderable;
-		C_BaseEntity *pEntity = pRenderable && pRenderable->GetIClientUnknown() ? pRenderable->GetIClientUnknown()->GetBaseEntity() : NULL;
-		if ( !pEntity || !pEntity->IsEffectActive( EF_NOSHADOW ) )
-			continue;
-		const bool bPhysics = ( m_Renderables[handle].m_Flags & RENDER_FLAGS_PHYSICS_PROP ) && static_cast<C_PhysicsProp *>( pEntity )->CanOverrideShadowMapNoShadow();
-		if ( !bPhysics && !IsClientPropDoor( pEntity ) )
-			continue;
-		// Invalidate membership and both rigid/overlay depth at the existing bounds,
-		// even when an already-loaded/restored prop has not moved this frame.
-		ShadowMapsDX12_InvalidateCasterRegistration( pRenderable );
-		RenderableChanged( handle );
-	}
-}
 
 void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &absMin, Vector &absMax );
 
@@ -665,7 +610,7 @@ void CalcRenderableWorldSpaceAABB_Fast( IClientRenderable *pRenderable, Vector &
 //-----------------------------------------------------------------------------
 // constructor, destructor
 //-----------------------------------------------------------------------------
-CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticPropPolicy( DefLessFunc( ICollideable * ) ), m_ShadowCasterQueryStamp(0),
+CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticProps( DefLessFunc( ICollideable * ) ), m_ShadowCasterQueryStamp(0),
 	m_ShadowCasterGeneration(0), m_CachedShadowCasterGeneration(0), m_CachedShadowCasterFrame(-1), m_bRecordShadowCasterCandidates(false),
 	m_DrawStaticProps(true), m_DrawSmallObjects(true)
 {
@@ -699,32 +644,10 @@ static void ReadShadowStaticPropRecord( const uint8 *bytes, StaticPropLump_t &pr
 	prop = record;
 }
 
-// True when a static prop model has an alpha-tested (cutout) material that draws: those depth-write through their
-// cutout like every other alpha-tested caster (r_shadowmap_cutout_noshadow_props).
-static bool ShadowStaticPropModelHasCutout( const char *pModelName )
-{
-	const int nModelIndex = modelinfo->GetModelIndex( pModelName );
-	const model_t *pModel = nModelIndex >= 0 ? modelinfo->GetModel( nModelIndex ) : NULL;
-	if ( !pModel )
-		return false;
-	static CUtlVector< IMaterial * > s_Materials;
-	const int nMaterials = modelinfo->GetModelMaterialCount( pModel );
-	s_Materials.SetCount( nMaterials );
-	if ( nMaterials )
-		modelinfo->GetModelMaterials( pModel, nMaterials, s_Materials.Base() );
-	for ( int i = 0; i < nMaterials; ++i )
-	{
-		IMaterial *pMaterial = s_Materials[i];
-		if ( pMaterial && !pMaterial->GetMaterialVarFlag( MATERIAL_VAR_NO_DRAW ) && pMaterial->IsAlphaTested() )
-			return true;
-	}
-	return false;
-}
-
-const char *CClientLeafSystem::InitShadowStaticPropPolicy()
+const char *CClientLeafSystem::InitShadowStaticProps()
 {
 	if ( !staticpropmgr )
-		return SHADOWMAP_ERR_INVALID_METADATA ": static-prop manager unavailable for authored caster policy";
+		return SHADOWMAP_ERR_INVALID_METADATA ": static-prop manager unavailable for receiver registration";
 
 	CUtlVector< ICollideable * > props;
 	staticpropmgr->GetAllStaticProps( &props );
@@ -732,7 +655,7 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 	if ( size == 0 && props.Count() == 0 )
 		return NULL;
 	if ( size <= 0 )
-		return SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster policy missing sprp data";
+		return SHADOWMAP_ERR_INVALID_METADATA ": missing sprp receiver data";
 
 	const int version = engine->GameLumpVersion( GAMELUMP_STATIC_PROPS );
 	int stride;
@@ -748,24 +671,24 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 	case 8: stride = BSP21_STATIC_PROP_V8_BYTES; break;
 	case 9: stride = BSP21_STATIC_PROP_V9_BYTES; break;
 	default:
-		return SHADOWMAP_ERR_INVALID_METADATA ": unsupported sprp version for authored caster policy (supported: 4-10)";
+		return SHADOWMAP_ERR_INVALID_METADATA ": unsupported sprp version for receiver registration (supported: 4-10)";
 	}
 
 	CUtlMemory< uint8 > bytes;
 	bytes.EnsureCapacity( size );
 	if ( !engine->LoadGameLump( GAMELUMP_STATIC_PROPS, bytes.Base(), size ) )
-		return SHADOWMAP_ERR_INVALID_METADATA ": cannot load engine-resolved sprp caster policy";
+		return SHADOWMAP_ERR_INVALID_METADATA ": cannot load engine-resolved sprp receiver data";
 
 	int offset = 0, dictCount, leafCount, propCount;
-	const uint8 *dictRecords, *records;
-	if ( !ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropDictLump_t ), dictCount, dictRecords ) ||
+	const uint8 *records;
+	if ( !ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropDictLump_t ), dictCount, records ) ||
 		!ReadShadowStaticPropArray( bytes.Base(), size, offset, sizeof( StaticPropLeafLump_t ), leafCount, records ) ||
 		!ReadShadowStaticPropArray( bytes.Base(), size, offset, stride, propCount, records ) || offset != size )
-		return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp arrays for authored caster policy";
+		return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp arrays for receiver registration";
 	if ( propCount != props.Count() )
-		return SHADOWMAP_ERR_INVALID_METADATA ": sprp caster policy and public static-prop counts differ";
+		return SHADOWMAP_ERR_INVALID_METADATA ": sprp receiver and public static-prop counts differ";
 
-	m_ShadowStaticPropPolicy.EnsureCapacity( propCount );
+	m_ShadowStaticProps.EnsureCapacity( propCount );
 	for ( int i = 0; i < propCount; ++i )
 	{
 		StaticPropLump_t prop;
@@ -788,23 +711,15 @@ const char *CClientLeafSystem::InitShadowStaticPropPolicy()
 		}
 		if ( prop.m_PropType >= dictCount || prop.m_FirstLeaf > leafCount ||
 			prop.m_LeafCount > leafCount - prop.m_FirstLeaf )
-			return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp record for authored caster policy";
+			return SHADOWMAP_ERR_INVALID_METADATA ": malformed sprp record for receiver registration";
 
 		// Engine GetAllStaticProps enumerates the same disk-indexed vector as
 		// GetStaticPropByIndex. Compare the public interfaces, never addresses
 		// inferred from private object strides, model names or positions.
 		ICollideable *pProp = staticpropmgr->GetStaticPropByIndex( i );
-		if ( !pProp || pProp != props[i] || m_ShadowStaticPropPolicy.Find( pProp ) != m_ShadowStaticPropPolicy.InvalidIndex() )
-			return SHADOWMAP_ERR_INVALID_METADATA ": public static-prop caster identity mismatch";
-		bool bCasts = ( prop.m_Flags & STATIC_PROP_NO_SHADOW ) == 0;
-		if ( !bCasts && r_shadowmap_cutout_noshadow_props.GetBool() )
-		{
-			StaticPropDictLump_t dict;
-			memcpy( &dict, dictRecords + prop.m_PropType * sizeof( StaticPropDictLump_t ), sizeof( dict ) );
-			dict.m_Name[sizeof( dict.m_Name ) - 1] = 0;
-			bCasts = ShadowStaticPropModelHasCutout( dict.m_Name );
-		}
-		m_ShadowStaticPropPolicy.Insert( pProp, bCasts );
+		if ( !pProp || pProp != props[i] || m_ShadowStaticProps.Find( pProp ) != m_ShadowStaticProps.InvalidIndex() )
+			return SHADOWMAP_ERR_INVALID_METADATA ": public static-prop receiver identity mismatch";
+		m_ShadowStaticProps.Insert( pProp );
 		ShadowMapsDX12_RegisterStaticPropReceiver( i, pProp, prop );
 	}
 	return NULL;
@@ -835,13 +750,13 @@ void CClientLeafSystem::LevelInitPreEntity()
 {
 	MEM_ALLOC_CREDIT();
 
-	m_ShadowStaticPropPolicy.Purge();
+	m_ShadowStaticProps.Purge();
 	if ( ShadowMapsDX12_MapState().featureMap )
 	{
-		const char *error = InitShadowStaticPropPolicy();
+		const char *error = InitShadowStaticProps();
 		if ( error )
 		{
-			m_ShadowStaticPropPolicy.Purge();
+			m_ShadowStaticProps.Purge();
 			ShadowMapsDX12_RejectMap( error );
 		}
 	}
@@ -904,7 +819,7 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 	m_ShadowCasters[0].Purge();
 	m_ShadowCasters[1].Purge();
 	m_ShadowCasterMaterials.Purge();
-	m_ShadowStaticPropPolicy.Purge();
+	m_ShadowStaticProps.Purge();
 	m_ShadowCasterQueryStamp = 0;
 	m_ShadowCasterCandidates.Purge();
 	m_SunLeaves.Purge();
@@ -1004,16 +919,12 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	InvalidateShadowCasterQuery();
 	ShadowMapsDX12_InvalidateCasterRegistration( pRenderable );
 
-	// Cache only network class identity, never the received ordinary-prop bit:
-	// render registration may precede its first network receive/save restoration.
+	// The C++ prop identity is stable for this registration. Model type and
+	// visibility remain live, since networked props can change both.
 	IClientUnknown *pUnknown = pRenderable->GetIClientUnknown();
 	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
-	ClientClass *pClientClass = pEntity ? pEntity->GetClientClass() : NULL;
-	if ( pClientClass && ( FStrEq( pClientClass->GetName(), "CPhysicsProp" ) ||
-		FStrEq( pClientClass->GetName(), "CPhysicsPropMultiplayer" ) ) )
-	{
-		flags |= RENDER_FLAGS_PHYSICS_PROP;
-	}
+	if ( pEntity && dynamic_cast< C_BreakableProp * >( pEntity ) )
+		flags |= RENDER_FLAGS_PROP;
 	ClientRenderHandle_t handle = m_Renderables.AddToTail();
 	RenderableInfo_t &info = m_Renderables[handle];
 
@@ -1057,7 +968,7 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	info.m_ShadowCasterTestStamp = 0;
 	info.m_ShadowCasterReportStamp = 0;
 	info.m_UnlinkedShadowCasterIndex = -1;
-	info.m_ShadowStaticPolicyIndex = -1;
+	info.m_ShadowStaticPropIndex = -1;
 	info.m_bShadowCasterBoundsValid = false;
 	info.m_bUpdatingShadowCasterBounds = false;
 	info.m_bShadowCasterBoundsDirty = true;
@@ -1874,32 +1785,38 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 	C_BaseEntity *pEntity = pUnknown ? pUnknown->GetBaseEntity() : NULL;
 	if ( pEntity && pEntity->IsEffectActive( EF_NODRAW ) )
 		return false;
-	if ( pEntity && pEntity->IsEffectActive( EF_NOSHADOW ) && !ShadowMapOverridesNoShadow( pEntity, ( flags & RENDER_FLAGS_PHYSICS_PROP ) != 0 ) )
+#if defined( L4D2 )
+	if ( ( flags & RENDER_FLAGS_PROP ) &&
+		( !m_Renderables[handle].m_bL4D2RenderingEnabled || !m_Renderables[handle].m_bL4D2DrawForLocalUser ) )
+		return false;
+#endif
+
+	const model_t *pModel = pRenderable->GetModel();
+	const int modelType = pModel ? modelinfo->GetModelType( pModel ) : mod_bad;
+	// Ignore authored EF_NOSHADOW only for native depth and only for studio
+	// props. Brush models and non-prop entities retain authored eligibility.
+	if ( pEntity && pEntity->IsEffectActive( EF_NOSHADOW ) &&
+		( !( flags & RENDER_FLAGS_PROP ) || modelType != mod_studio || !ShadowMapsDX12_Active() ) )
 		return false;
 
 	if ( ( flags & RENDER_FLAGS_STATIC_PROP ) && ShadowMapsDX12_MapState().featureMap )
 	{
 		ICollideable *pCollideable = pUnknown ? pUnknown->GetCollideable() : NULL;
-		// The admitted sprp table is read-only for the level. Keep its node
-		// index with the registration, but still verify the live identity.
-		int policy = m_Renderables[handle].m_ShadowStaticPolicyIndex;
-		if ( policy < 0 || !m_ShadowStaticPropPolicy.IsValidIndex( policy ) ||
-			m_ShadowStaticPropPolicy.Key( policy ) != pCollideable )
+		// All static props can cast regardless of STATIC_PROP_NO_SHADOW.
+		// Keep validating the live identity against the admitted receiver table.
+		int index = m_Renderables[handle].m_ShadowStaticPropIndex;
+		if ( !m_ShadowStaticProps.IsValidIndex( index ) || m_ShadowStaticProps.Element( index ) != pCollideable )
 		{
-			policy = m_ShadowStaticPropPolicy.Find( pCollideable );
-			m_Renderables[handle].m_ShadowStaticPolicyIndex = policy;
+			index = m_ShadowStaticProps.Find( pCollideable );
+			m_Renderables[handle].m_ShadowStaticPropIndex = index;
 		}
-		if ( policy == m_ShadowStaticPropPolicy.InvalidIndex() )
+		if ( index == m_ShadowStaticProps.InvalidIndex() )
 		{
-			ShadowMapsDX12_RejectMap( SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster identity is not in the admitted sprp policy" );
+			ShadowMapsDX12_RejectMap( SHADOWMAP_ERR_INVALID_METADATA ": static-prop caster identity is not in the admitted sprp table" );
 			return false;
 		}
-		if ( !m_ShadowStaticPropPolicy[policy] )
-			return false;
 	}
 
-	const model_t *pModel = pRenderable->GetModel();
-	int modelType = pModel ? modelinfo->GetModelType( pModel ) : mod_bad;
 	bool bTwoPass = ( flags & RENDER_FLAGS_TWOPASS ) != 0 || pRenderable->IsTwoPass();
 	if ( pModel && ( modelType == mod_studio || modelType == mod_brush ) )
 	{

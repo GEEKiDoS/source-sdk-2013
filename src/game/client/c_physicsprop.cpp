@@ -19,8 +19,6 @@
 #if defined( L4D2 )
 #include "studio.h"
 #endif
-#include "clientleafsystem.h"
-#include "shadowmaps_dx12.h"
 
 // memdbgon must be the last include file in a .cpp file!!!
 #include "tier0/memdbgon.h"
@@ -32,7 +30,6 @@ IMPLEMENT_CLIENTCLASS_DT(C_PhysicsProp, DT_PhysicsProp, CPhysicsProp)
 	RecvPropBool( RECVINFO( m_isCarryable ) ),
 	RecvPropInt( RECVINFO( m_spawnflags ) ),
 #endif
-	RecvPropBool( RECVINFO( m_bShadowMapOrdinaryPhysicsProp ) ),
 END_RECV_TABLE()
 
 ConVar r_PhysPropStaticLighting( "r_PhysPropStaticLighting", 
@@ -71,32 +68,17 @@ C_PhysicsProp::C_PhysicsProp( void )
 
 	// default true so static lighting will get recomputed when we go to sleep
 	m_bAwakeLastTime = true;
-	m_bShadowMapOrdinaryPhysicsProp = false;
-	m_bShadowMapOverrideEligibleLast = false;
 }
 
+#if defined( L4D2 )
 void C_PhysicsProp::OnDataChanged( DataUpdateType_t type )
 {
 	BaseClass::OnDataChanged( type );
-#if defined( L4D2 )
 	m_bStaticLightingEligible = TerrorModelSupportsStaticLighting( GetModel() );
 	if ( m_bStaticLightingEligible )
 		CreateModelInstance();
-#endif
-
-	bool eligible = CanOverrideShadowMapNoShadow();
-	if ( eligible != m_bShadowMapOverrideEligibleLast )
-	{
-		m_bShadowMapOverrideEligibleLast = eligible;
-		// Render registration can predate the first receive, including save restores.
-		// Identity/solidity/visibility changes also retire cached rigid silhouettes.
-		if ( RenderHandle() != INVALID_CLIENT_RENDER_HANDLE )
-		{
-			ShadowMapsDX12_InvalidateCasterRegistration( this );
-			ClientLeafSystem()->RenderableChanged( RenderHandle() );
-		}
-	}
 }
+#endif
 
 // OnInternalDrawModel rejects a draw only when the static-lighting bake of a sleep transition fails, which needs
 // r_PhysPropStaticLighting (and, in L4D2, a static-lighting model). Without them an awake prop draws like any
