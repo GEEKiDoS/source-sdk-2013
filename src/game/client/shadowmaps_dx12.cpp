@@ -1706,6 +1706,68 @@ struct ShadowCasterSnapshot_t
 };
 ShadowCasterSnapshot_t g_CasterSnapshot;
 
+// World-volume sun queries all share one static input stream. Keep engine
+// props with mutable geometry, and initially rejected registrations, live.
+// Their handles retain the cold walk's order independently of moving actors.
+struct StaticCasterStream_t
+{
+	uint32 map=0, generation=0;
+	uint64 revision=0;
+	CUtlVector<ShadowMapSceneCaster_t> geometry;
+	CUtlVector<ClientRenderHandle_t> exceptions;
+};
+StaticCasterStream_t g_StaticCasterStream;
+
+void CollectSpatialCasters( CShadowViewData &data, const ShadowCasterVolume_t &query, bool validate )
+{
+	IClientLeafSystem *leaf=ClientLeafSystem();
+	const Vector worldMin(MIN_COORD_FLOAT,MIN_COORD_FLOAT,MIN_COORD_FLOAT);
+	const Vector worldMax(MAX_COORD_FLOAT,MAX_COORD_FLOAT,MAX_COORD_FLOAT);
+	const bool whole=!validate && !query.m_nPlaneCount && query.m_vecMins==worldMin && query.m_vecMaxs==worldMax;
+	const uint64 revision=leaf->StaticCasterRevision();
+	const uint32 generation=g_StaticGeneration;
+	StaticCasterStream_t &stream=g_StaticCasterStream;
+	CCollectCasters sink(data);
+	if ( whole && stream.map==g_MapGeneration && stream.generation==generation && stream.revision==revision )
+	{
+		leaf->EnumerateDynamicShadowCasters(query,sink,stream.exceptions);
+		// A callback can remove or reclassify a prop. Don't consume even a
+		// single retained pointer if the generation moved during collection.
+		bool valid=revision==leaf->StaticCasterRevision() && generation==g_StaticGeneration;
+		for ( int i=0;valid && i<data.casters.Count();++i ) valid=!data.casters[i].immutable;
+		if ( valid )
+		{
+			for ( int i=0;i<stream.geometry.Count();++i )
+			{
+				ShadowMapSceneCaster_t caster=stream.geometry[i];
+				CollectRigidCasterContent(data,caster);
+				data.casters.AddToTail(caster);
+			}
+			return;
+		}
+		data.casters.RemoveAll(); data.casterKeys.RemoveAll(); data.casterContent.RemoveAll();
+		data.stats.uncertifiedCasters=0; data.casterContentGeneration=g_CasterContentGeneration;
+	}
+	leaf->EnumerateShadowCasters(query,sink);
+	if ( !whole || generation!=g_StaticGeneration || revision!=leaf->StaticCasterRevision() ) return;
+	stream.geometry.RemoveAll();
+	CLargeVarBitVec retained;
+	retained.Resize(INVALID_CLIENT_RENDER_HANDLE+1,true);
+	for ( int i=0;i<data.casters.Count();++i )
+	{
+		const ShadowMapSceneCaster_t &caster=data.casters[i];
+		if ( !caster.immutable ) continue;
+		retained.Set(caster.renderable->RenderHandle());
+		stream.geometry.AddToTail(caster);
+	}
+	leaf->GetShadowPropCandidates(stream.exceptions);
+	int n=0;
+	for ( int i=0;i<stream.exceptions.Count();++i )
+		if ( !retained.Get(stream.exceptions[i]) ) stream.exceptions[n++]=stream.exceptions[i];
+	stream.exceptions.SetCount(n);
+	stream.map=g_MapGeneration; stream.generation=generation; stream.revision=revision;
+}
+
 void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &query )
 {
 	ShadowCasterSnapshot_t &snapshot=g_CasterSnapshot;
@@ -1731,7 +1793,7 @@ void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &
 	snapshot.frame=-1;
 	const uint64 registrationGeneration=g_CasterRegistrationGeneration;
 	const uint32 staticGeneration=g_StaticGeneration;
-	CCollectCasters sink(data); ClientLeafSystem()->EnumerateShadowCasters(query,sink);
+	CollectSpatialCasters(data,query,validateCasters.GetBool());
 	// Bounds callbacks can invalidate the proof during enumeration. Never
 	// publish a partial snapshot under the newer generation.
 	if ( data.casterContentGeneration!=g_CasterContentGeneration ||

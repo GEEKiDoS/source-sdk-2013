@@ -254,6 +254,12 @@ public:
 	// Debug reference (r_shadowmap_report / acceptance only): brute-force test of EVERY registration's current world
 	// AABB against the volume with the same eligibility rules, bypassing the leaf walk. Not for per-frame use.
 	virtual void EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink ) = 0;
+	// Cold queries return the complete set. Warm queries visit the dynamic
+	// leaf index only; the caller supplies the retained immutable registrations.
+	virtual uint64 StaticCasterRevision() const = 0;
+	virtual void EnumerateDynamicShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink,
+		const CUtlVector<ClientRenderHandle_t> &liveProps ) = 0;
+	virtual void GetShadowPropCandidates( CUtlVector<ClientRenderHandle_t> &props ) const = 0;
 };
 
 
