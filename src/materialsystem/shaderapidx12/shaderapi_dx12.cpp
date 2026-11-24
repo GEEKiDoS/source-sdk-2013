@@ -51,6 +51,28 @@ CON_COMMAND( dx12_firstuse_stats, "Cumulative renderer first-use counts and CPU 
 		g_FirstUse.uploads.load(), g_FirstUse.creates.load(), g_FirstUse.libraryHits.load() );
 }
 
+// Only constructed on a CPU shader cache miss. Match the PSO trace's
+// PresentMon timebase, including failures and early returns.
+struct ShaderFirstUseTrace
+{
+	const char *name;
+	LARGE_INTEGER start{};
+	explicit ShaderFirstUseTrace( const char *label ) : name( label )
+	{
+		static const bool enabled = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
+		if ( enabled ) QueryPerformanceCounter( &start );
+	}
+	~ShaderFirstUseTrace()
+	{
+		if ( !start.QuadPart ) return;
+		LARGE_INTEGER end, hz;
+		QueryPerformanceCounter( &end );
+		QueryPerformanceFrequency( &hz );
+		Msg( "DX12 shader firstuse %s qpc_ms %.4f duration_ms %.4f\n", name,
+			start.QuadPart * 1000.0 / hz.QuadPart, ( end.QuadPart - start.QuadPart ) * 1000.0 / hz.QuadPart );
+	}
+};
+
 //-----------------------------------------------------------------------------
 // Purpose: FNV-1a key of a vertex layout's semantics, formats and offsets
 //-----------------------------------------------------------------------------
@@ -230,6 +252,7 @@ bool shaderapidx12::ReflectNativeCBuffersDX12( ShaderRecordDX12 *record )
 {
 	if ( !record->legacyBytecode.IsEmpty() || record->nativeReflectionReady )
 		return true;
+	ShaderFirstUseTrace trace( "reflection" );
 	Microsoft::WRL::ComPtr<ID3D12ShaderReflection> reflection;
 	const D3D12_SHADER_BYTECODE bytecode = record->Bytecode();
 	if ( !bytecode.pShaderBytecode || FAILED( ReflectShaderDX12( bytecode.pShaderBytecode, bytecode.BytecodeLength, &reflection ) ) )
@@ -771,17 +794,19 @@ ShaderVcsFile *CShaderAPIDX12::OpenNamedShader( const char *pszName, bool bPixel
 	return m_NamedShaderFiles[hShaderFile];
 }
 
-// One worker owns an entire file's CPU cache. Filesystem and GPU calls stay
-// on the loading owner, and every worker joins before rendering resumes.
-static void WarmShaderFiles( ShaderVcsFile **files, int count, std::atomic<int> &next )
+static bool ReflectRecordInputsDX12( ShaderRecordDX12 *record );
+
+// Both the loading pass and the draw must address the same physical twin.
+static bool HighresShaderName( const char *name, bool pixel, char (&out)[256] )
 {
-	CUtlString error;
-	for ( int i = next++; i < count; i = next++ )
-	{
-		uint32_t index;
-		for ( size_t n = 0; files[i]->StaticComboIndex( n, index ); ++n )
-			files[i]->LoadStaticCombo( index, error );
-	}
+	const char *marker = V_strstr( name, "_shadowmap_" );
+	const char *stage = marker ? marker : V_strrchr( name, '_' );
+	if ( !stage ) return false;
+	const bool retail = pixel ? !V_strcmp( name, "l4d2_lightmappedgeneric_ps20b" ) || !V_strcmp( name, "l4d2_water_ps20b" ) :
+		!V_strcmp( name, "l4d2_lightmappedgeneric_vs20" ) || !V_strcmp( name, "l4d2_water_vs20" );
+	const char *suffix = retail ? ( pixel ? "_ps51" : "_vs51" ) : marker ? marker + sizeof( "_shadowmap" ) - 1 : stage;
+	const int len = V_snprintf( out, sizeof( out ), "%.*s_highres%s", int( stage - name ), name, suffix );
+	return len > 0 && len < int( sizeof( out ) );
 }
 
 // The map-load owner transaction has drained queued material work. Snapshots
@@ -794,54 +819,189 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 	// Non-GameUI loads and short progress sequences take the same owner barrier.
 	unsigned done, total;
 	m_Pipeline.WarmRecipes( UINT_MAX, done, total );
+	m_Pipeline.WarmMaterialLayouts();
 	const uint64_t before = g_FirstUse.decodes.load();
 	const double start = Plat_FloatTime();
 	ReleaseLevelShaderPins();
-	CUtlString error;
+	// Provider discovery (including NGX init) and native AA compilation do
+	// not need a view. Keep history, feature dimensions and jitter draw-owned.
+	ConVarRef upscaleMode( "r_upscaler", true );
+	if ( upscaleMode.IsValid() && upscaleMode.GetInt() && m_pDevice->SceneSampleCount() == 1 )
+	{
+		ProbeUpscalerCapabilities();
+		auto kind = m_Upscaler.Resolve( upscaleMode.GetInt() );
+		if ( m_Upscaler.Initialized() && ( kind == UpscalerKindDX12::SmaaT2x || kind == UpscalerKindDX12::Taau ) )
+			m_Upscaler.EnsureNativeAAPipelines( kind );
+	}
+	ConVarRef motion( "r_motionvectors", true );
+	if ( motion.IsValid() && motion.GetBool() )
+		EnsureMotionShaders();
+	EnsureClearPrograms( 1 );
+	EnsureBlitPrograms( BlitEncodeDX12::None );
+	std::map<ShaderVcsFile *, std::vector<uint32_t>> statics;
+	CUtlHashtable<NamedShaderKey, ShaderVcsFile *, NamedShaderHash, NamedShaderEqual, NamedShaderKeyView> requests;
+	const auto request = [&]( const char *name, bool pixel, int index ) -> ShaderVcsFile *
+	{
+		const NamedShaderKeyView key{ name, index, -1, pixel };
+		auto found = requests.Find( key );
+		if ( found != requests.InvalidHandle() ) return requests[found];
+		ShaderVcsFile *file = OpenNamedShader( name, pixel );
+		requests.Insert( key, file );
+		if ( file )
+		{
+			const bool native = V_strnicmp( file->Path(), "shaders/fxc/", 12 ) != 0;
+			m_LevelShaderFiles.InsertOrReplace( file, native );
+			ComboFoldProjectionDX12 projection{};
+			const auto *fold = file->ComboFold();
+			if ( !fold || ProjectComboFoldDX12( *fold, index, 0, projection ) )
+				statics[file].push_back( fold ? projection.staticIndex : uint32_t( index ) );
+		}
+		return file;
+	};
 	FOR_EACH_HASHTABLE( m_NamedShaderReferences, entry )
 	{
 		const NamedShaderKey &key = m_NamedShaderReferences.Key( entry );
 		if ( !m_NamedShaderReferences[entry] || key.staticIndex < 0 )
 			continue;
-		ShaderVcsFile *file = OpenNamedShader( key.name.String(), key.pixel );
-		if ( !file )
-			continue;
-		// Retail FXC files may have thousands of unrelated static records.
-		// The authored static already includes every dynamic variant.
-		const bool native = V_strnicmp( file->Path(), "shaders/fxc/", 12 ) != 0;
-		m_LevelShaderFiles.InsertOrReplace( file, native );
-		if ( !native )
-			file->LoadStaticCombo( uint32_t( key.staticIndex ), error );
+		const char *name = key.name.String();
+		ShaderVcsFile *file = request( name, key.pixel, key.staticIndex );
+		if ( !file ) continue;
+		if ( !V_strcmp( name, "pbr_model_ps51" ) )
+		{
+			request( "pbr_model_depthprepass_ps51", true, key.staticIndex );
+			if ( ( key.staticIndex / kModelAlphaTestStride ) % 2 )
+				request( name, true, key.staticIndex - kModelAlphaTestStride );
+		}
+		if ( !V_strcmp( name, "pbr_world_ps51" ) || !V_strcmp( name, "pbr_world_highres_ps51" ) )
+			request( "pbr_world_depthprepass_ps51", true, key.staticIndex );
+		if ( !m_pDevice->Highres().EnhancedMap() ) continue;
+		char highres[256], early[256];
+		if ( !file->HighresAbi() && HighresShaderName( name, key.pixel, highres ) )
+		{
+			// Not all material stages are lightmap receivers.
+			char path[320];
+			V_snprintf( path, sizeof( path ), "shaders/%s/%s.vcs", key.pixel ? "psh" : "vsh", highres );
+			if ( g_pShaderDeviceMgrDX12->HostFileSystem()->FileExists( path, "GAME" ) )
+			{
+				file = request( highres, key.pixel, key.staticIndex );
+				name = highres;
+			}
+		}
+		if ( key.pixel && file && file->EarlyDepthTwin() )
+		{
+			const char *stage = V_strrchr( name, '_' );
+			if ( stage && V_snprintf( early, sizeof( early ), "%.*s_earlydepth%s", int( stage - name ), name, stage ) < int( sizeof( early ) ) )
+				request( early, true, key.staticIndex );
+		}
 	}
 	// Procedural detail and damage effects need not have a material snapshot yet.
 	static const struct { const char *name; bool pixel; } effects[] =
 	{
 		{ "terror_post_prepare_ps20b", true }, { "terror_engine_post_ps20b", true },
-		{ "screenspaceeffect_vs20", false }, { "dx12_detailshadowlit_vs51", false },
-		{ "dx12_detailshadowlit_ps51", true }, { "pbr_model_depthprepass_ps51", true }
+		{ "screenspaceeffect_vs20", false }
 	};
 	for ( const auto &effect : effects )
 	{
 		ShaderVcsFile *file = OpenNamedShader( effect.name, effect.pixel );
-		if ( file )
-			m_LevelShaderFiles.InsertOrReplace( file, true );
+		if ( !file ) continue;
+		m_LevelShaderFiles.InsertOrReplace( file, true );
+		uint32_t index;
+		for ( size_t n = 0; file->StaticComboIndex( n, index ); ++n )
+			statics[file].push_back( index );
 	}
-	CUtlVector<ShaderVcsFile *> files;
-	FOR_EACH_MAP( m_LevelShaderFiles, it )
-		if ( m_LevelShaderFiles[it] )
-			files.AddToTail( m_LevelShaderFiles.Key( it ) );
+	// Direct passes and late-spawned model materials need not have a snapshot
+	// at this point. In particular one model VS static block contains all
+	// compression/skinning/morph dynamics: first-draw decoding can take >30 ms.
+	if ( m_pDevice->Highres().EnhancedMap() )
+	{
+		static const struct { const char *name; bool pixel; } passes[] =
+		{
+			{ "pbr_model_vs51", false },
+			{ "depthwrite_instanced_vs51", false },
+			{ "shadow_depth_restore_vs51", false }, { "shadow_depth_restore_ps51", true },
+			{ "shadow_sky_depth_vs51", false }, { "shadow_sky_clip_ps51", true },
+			{ "dx12_detailshadowlit_vs51", false }, { "dx12_detailshadowlit_ps51", true },
+			{ "flashlight_bounce_vs51", false }, { "flashlight_bounce_ps51", true }
+		};
+		for ( const auto &pass : passes )
+		{
+			auto *file = OpenNamedShader( pass.name, pass.pixel );
+			if ( !file || file->ComboFold() ) continue;
+			uint32_t index;
+			for ( size_t i = 0; file->StaticComboIndex( i, index ); ++i )
+				request( pass.name, pass.pixel, int( index ) );
+		}
+	}
+	// Each worker owns one file's cache. Only decode reachable physical statics.
+	std::vector<decltype( statics )::value_type *> files;
+	for ( auto &job : statics )
+	{
+		auto &indices = job.second;
+		std::sort( indices.begin(), indices.end() );
+		indices.erase( std::unique( indices.begin(), indices.end() ), indices.end() );
+		files.push_back( &job );
+	}
 	std::atomic<int> next{ 0 };
-	std::thread workers[2];
+	const auto work = [&] {
+		CUtlString error;
+		for ( size_t i = next++; i < files.size(); i = next++ )
+			for ( auto index : files[i]->second ) files[i]->first->LoadStaticCombo( index, error );
+	};
+	std::thread workers[5];
 	try
 	{
-		for ( int i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.Count(); ++i )
-			workers[i] = std::thread( WarmShaderFiles, files.Base(), files.Count(), std::ref( next ) );
+		const unsigned cores = std::thread::hardware_concurrency();
+		for ( unsigned i = 0; i < ARRAYSIZE( workers ) && i + 1 < files.size() && i + 1 < cores; ++i )
+			workers[i] = std::thread( work );
 	}
 	catch ( const std::system_error & ) {} // Loading owner drains the remaining work.
-	WarmShaderFiles( files.Base(), files.Count(), next );
+	work();
 	for ( std::thread &worker : workers )
 		if ( worker.joinable() )
 			worker.join();
+	// Resolve only the material's authored statics, not every record decoded
+	// above for late-spawning effects. Skip holes in the compiler's combo grid.
+	FOR_EACH_HASHTABLE( requests, it )
+	{
+		ShaderVcsFile *file = requests[it];
+		if ( !file || !m_LevelShaderFiles.Element( m_LevelShaderFiles.Find( file ) ) ) continue;
+		const NamedShaderKey &key = requests.Key( it );
+		const ComboFoldTableDX12 *fold = file->ComboFold();
+		const unsigned dynamics = fold ? fold->originalDynamicCount : file->DynamicComboCount();
+		for ( unsigned d = 0; d < dynamics; ++d )
+		{
+			ComboFoldProjectionDX12 p{};
+			if ( fold && !ProjectComboFoldDX12( *fold, key.staticIndex, d, p ) ) continue;
+			auto *payload = file->DynamicPayload( fold ? p.staticIndex : key.staticIndex, fold ? p.dynamicIndex : d );
+			if ( !payload || ( file->TotalComboCount() > 16 && !m_Pipeline.ObservedShader( payload->tokens.Base(), payload->tokens.Count() ) ) ) continue;
+			if ( auto *record = ResolveNamedShader( key.name.String(), key.pixel, key.staticIndex, d ) )
+			{
+				if ( record->legacyBytecode.IsEmpty() ) ReflectRecordInputsDX12( record );
+				m_NamedShaderCombos[m_NamedComboHints[key.pixel]]->owner->pinEpoch = m_LevelPinEpoch;
+			}
+		}
+	}
+	FOR_EACH_HASHTABLE( m_NamedShaderCombos, it )
+	{
+		const NamedShaderKey &key = m_NamedShaderCombos.Key( it );
+		const auto *combo = m_NamedShaderCombos[it];
+		if ( !key.pixel || !combo || combo->owner->pinEpoch != m_LevelPinEpoch ) continue;
+		NamedShaderKeyView twin = key;
+		const bool cutout = !V_strcmp( twin.name, "pbr_model_ps51" ) && ( twin.staticIndex / kModelAlphaTestStride ) % 2;
+		char early[256];
+		if ( cutout )
+			twin.staticIndex -= kModelAlphaTestStride;
+		else if ( combo->Record()->nativeEarlyDepthTwin )
+		{
+			const char *stage = V_strrchr( twin.name, '_' );
+			if ( !stage || V_snprintf( early, sizeof( early ), "%.*s_earlydepth%s", int( stage - twin.name ), twin.name, stage ) >= int( sizeof( early ) ) ) continue;
+			twin.name = early;
+		}
+		else continue;
+		auto h = m_NamedShaderCombos.Find( twin );
+		if ( h != m_NamedShaderCombos.InvalidHandle() && m_NamedShaderCombos[h] )
+			m_Pipeline.WarmPixelVariant( combo->Record()->Bytecode(), m_NamedShaderCombos[h]->Record()->Bytecode(), cutout );
+	}
 	Msg( "DX12 level shader warmup: %llu canonical records in %.2f ms\n", g_FirstUse.decodes.load() - before, ( Plat_FloatTime() - start ) * 1000.0 );
 }
 
@@ -864,6 +1024,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveNamedShader( const char *pszName, bool 
 		hFound = m_NamedShaderCombos.Find( key );
 	if ( hFound != m_NamedShaderCombos.InvalidHandle() )
 		return m_NamedShaderCombos[hFound] ? m_NamedShaderCombos[hFound]->Record() : nullptr;
+	ShaderFirstUseTrace trace( pszName );
 	hFound = m_NamedShaderCombos.Insert( key, nullptr );
 	ShaderVcsFile *pFile = OpenNamedShader( pszName, bPixel );
 	if ( !pFile )
@@ -996,20 +1157,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 		const bool needsHighres = l4d2LegacyReceiver || ( pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi ) );
 		if ( needsHighres && record && !record->highresAbi )
 		{
-			const char *marker = V_strstr( pszName, "_shadowmap_" );
-			const char *stage = marker ? marker + sizeof( "_shadowmap_" ) - 1 : V_strrchr( pszName, '_' );
-			int length = -1;
-			if ( l4d2LegacyReceiver || ( !bPixel &&
-				( !V_strcmp( pszName, "l4d2_lightmappedgeneric_vs20" ) || !V_strcmp( pszName, "l4d2_water_vs20" ) ) ) )
-			{
-				const char *suffix = bPixel ? "_ps51" : "_vs51";
-				length = V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s",
-					int( stage ? stage - pszName : V_strlen( pszName ) ), pszName, suffix );
-			}
-			else
-				length = marker ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres_%s", int( marker - pszName ), pszName, stage ) :
-					stage ? V_snprintf( highresName, sizeof( highresName ), "%.*s_highres%s", int( stage - pszName ), pszName, stage ) : -1;
-			record = length > 0 && length < int( sizeof( highresName ) ) ? ResolveNamedShader( highresName, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
+			record = HighresShaderName( pszName, bPixel, highresName ) ? ResolveNamedShader( highresName, bPixel, nStaticIndex, nDynamicIndex ) : nullptr;
 			pszName = highresName;
 			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
 			{
@@ -6399,7 +6547,9 @@ void CShaderAPIDX12::PurgeUnusedVertexAndPixelShaders()
 	{
 		const NamedShaderKey &key = m_NamedShaderCombos.Key( it );
 		const UtlHashHandle_t reference = m_NamedShaderReferences.Find( NamedShaderKeyView{ key.name.String(), key.staticIndex, -1, key.pixel } );
-		if ( reference != m_NamedShaderReferences.InvalidHandle() && m_NamedShaderReferences[reference] )
+		const NamedShaderComboDX12 *pinned = m_NamedShaderCombos[it];
+		if ( ( pinned && pinned->owner->pinEpoch == m_LevelPinEpoch ) ||
+			( reference != m_NamedShaderReferences.InvalidHandle() && m_NamedShaderReferences[reference] ) )
 		{
 			it = m_NamedShaderCombos.NextHandle( it );
 			continue;

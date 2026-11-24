@@ -1904,6 +1904,14 @@ int AllowedShadowResolution( int requested )
 			requested, ShadowLevelBytes(requested)>>20, base>>20, dedicated>>20, limit, level );
 	return level;
 }
+// Changing shadow target resolution or re-enabling shadows invalidates
+// depth contents, not the model hardware/LOD identities prepared at signon.
+void InvalidateShadowDepthCaches()
+{
+	++g_StaticGeneration; if ( !g_StaticGeneration ) ++g_StaticGeneration;
+	++g_CasterContentGeneration;
+	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
+}
 void ApplyShadowResolution()
 {
 	int requested=r_shadowmap_resolution.GetInt();
@@ -1922,7 +1930,7 @@ void ApplyShadowResolution()
 		for ( int c=0;c<4;++c ) g_ViewPool[v]->cascadeFits[c]=SunCascadeFit_t();
 	DestroyTarget(g_SunSkyTarget);
 	g_ShadowResLevel=level; g_ShadowRes=kShadowResolution[level];
-	ShadowMapsDX12_InvalidateStatic();
+	InvalidateShadowDepthCaches();
 }
 void DetachLocalFace( LocalPage_t &page, LocalLight_t &local, int face, int owner )
 {
@@ -4250,6 +4258,25 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 	g_Lighting->RegisterStaticPropReceiver(uint64(reinterpret_cast<uintptr_t>(renderable)),receiver);
 	prop.publishedGeneration = cached->generation;
 }
+// Authored props have stable model handles by post-entity init. If a model
+// isn't ready yet, the main view retries the same registration pass.
+void ShadowMapsDX12_PrepareStaticPropReceivers()
+{
+	if ( !ShadowMapsDX12_Active() ) return;
+	static ConVarRef rootLOD("r_rootlod");
+	if ( g_StaticPropRegistrationRootLOD != rootLOD.GetInt() )
+	{
+		ClearStaticPropModelVisibility();
+		g_StaticPropRegistrationRootLOD = rootLOD.GetInt();
+	}
+	if ( g_StaticPropRegistrationComplete ) return;
+	g_StaticPropRegistrationComplete = true;
+	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	{
+		ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
+		if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;
+	}
+}
 bool ShadowMapsDX12_ShadowsEnabled() { return !g_ClientLevelShutdown && ShadowMapsDX12_Active() && r_shadowmap_enable.GetBool(); }
 static bool s_bInFeatureDepthView = false;
 bool ShadowMapsDX12_InFeatureDepthView() { return s_bInFeatureDepthView; }
@@ -4459,7 +4486,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	data->shadowsEnabled=g_FrameShadowsEnabled;
 	// Do not mutate targets retained by in-flight packets. Reenable invalidates
 	// CPU cache identities only; the usual leases/copy-on-write protect pixels.
-	if ( data->shadowsEnabled && !g_RuntimeShadowsWereEnabled ) ShadowMapsDX12_InvalidateStatic();
+	if ( data->shadowsEnabled && !g_RuntimeShadowsWereEnabled ) InvalidateShadowDepthCaches();
 	g_RuntimeShadowsWereEnabled=data->shadowsEnabled;
 	// Secondary world receivers keep the unshadowed packet (baked lightmaps and visibility).
 	// Their depth must not invalidate the main view's residency latch above.
@@ -4467,23 +4494,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 		data->shadowsEnabled=false;
 	// Admit every authored prop, independent of PVS/occlusion and draw order.
 	if ( kind == SHADOWMAP_VIEW_MAIN )
-	{
-		static ConVarRef rootLOD("r_rootlod");
-		if ( g_StaticPropRegistrationRootLOD != rootLOD.GetInt() )
-		{
-			ClearStaticPropModelVisibility();
-			g_StaticPropRegistrationRootLOD = rootLOD.GetInt();
-		}
-		if ( !g_StaticPropRegistrationComplete )
-		{
-			g_StaticPropRegistrationComplete = true;
-			FOR_EACH_MAP( g_StaticPropReceivers, prop )
-			{
-				ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
-				if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;
-			}
-		}
-	}
+		ShadowMapsDX12_PrepareStaticPropReceivers();
 	if ( !++g_ViewGeneration ) ++g_ViewGeneration;
 	data->packet.mapGeneration=g_MapGeneration; data->packet.viewGeneration=g_ViewGeneration;
 	data->packet.highresRoute=1; data->packet.nativeMapGeneration=native.nativeMapGeneration;
@@ -4786,10 +4797,8 @@ void ShadowMapsDX12_InvalidateCasterRegistration( IClientRenderable *renderable 
 }
 void ShadowMapsDX12_InvalidateStatic()
 {
-	++g_StaticGeneration; if ( !g_StaticGeneration ) ++g_StaticGeneration;
+	InvalidateShadowDepthCaches();
 	ClearStaticPropModelVisibility();
-	++g_CasterContentGeneration;
-	if ( !g_CasterContentGeneration ) ShadowMapsDX12_InvalidateCasterRegistration();
 }
 int ShadowMapsDX12_CasterSkyRegion( IClientRenderable *renderable )
 {

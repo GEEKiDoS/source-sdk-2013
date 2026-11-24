@@ -2412,6 +2412,49 @@ static D3D12_STENCIL_OP StencilOperationDX12( StencilOperation_t operation )
 	return operation >= STENCILOPERATION_KEEP && operation <= STENCILOPERATION_DECR ? static_cast<D3D12_STENCIL_OP>( operation ) : D3D12_STENCIL_OP_KEEP;
 }
 
+// Shader bytecode is independent of the PSO's format, sample and stencil state.
+bool CShaderAPIDX12::EnsureClearPrograms( int count )
+{
+	if ( !m_pClearVS || ( count && !m_ClearPS[count] ) )
+	{
+		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),1,1); }";
+		// One SV_Target per bound color target, up to RenderTargetBindingDX12::kMaxColorTargets (8).
+		static const char psSource[] = "cbuffer Color:register(b0){float4 color;}\n#if TARGET_COUNT == 0\nvoid main(){}\n#else\nstruct Output{float4 a:SV_Target0;\n#if TARGET_COUNT > 1\nfloat4 b:SV_Target1;\n#endif\n#if TARGET_COUNT > 2\nfloat4 c:SV_Target2;\n#endif\n#if TARGET_COUNT > 3\nfloat4 d:SV_Target3;\n#endif\n#if TARGET_COUNT > 4\nfloat4 e:SV_Target4;\n#endif\n#if TARGET_COUNT > 5\nfloat4 f:SV_Target5;\n#endif\n#if TARGET_COUNT > 6\nfloat4 g:SV_Target6;\n#endif\n#if TARGET_COUNT > 7\nfloat4 h:SV_Target7;\n#endif\n}; Output main(){Output o;o.a=color;\n#if TARGET_COUNT > 1\no.b=color;\n#endif\n#if TARGET_COUNT > 2\no.c=color;\n#endif\n#if TARGET_COUNT > 3\no.d=color;\n#endif\n#if TARGET_COUNT > 4\no.e=color;\n#endif\n#if TARGET_COUNT > 5\no.f=color;\n#endif\n#if TARGET_COUNT > 6\no.g=color;\n#endif\n#if TARGET_COUNT > 7\no.h=color;\n#endif\nreturn o;}\n#endif\n";
+		Microsoft::WRL::ComPtr<ID3DBlob> error;
+		if ( !m_pClearVS && FAILED( D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &m_pClearVS, &error ) ) ) return false;
+		if ( count )
+		{
+			char value[16];
+			V_snprintf( value, sizeof( value ), "%d", count );
+			const D3D_SHADER_MACRO defines[] = { { "TARGET_COUNT", value }, { nullptr, nullptr } };
+			if ( FAILED( D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, defines, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &m_ClearPS[count], &error ) ) ) return false;
+		}
+	}
+	return true;
+}
+
+bool CShaderAPIDX12::EnsureBlitPrograms( BlitEncodeDX12 encode )
+{
+	auto &ps = m_BlitPS[static_cast<unsigned>( encode )];
+	if ( !m_pBlitVS || !ps )
+	{
+		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),0,1); }";
+		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#if defined(PRESENT_GAMMA)||defined(PRESENT_HDR_SCALE)\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\n#ifdef PRESENT_HDR_SCALE\ncolor.rgb*=gamma.x;\n#endif\n#ifdef HDR_CUBEMAP\ncolor.rgb=pow(saturate(color.rgb),1.0/2.2);\n#endif\nreturn color;}";
+		Microsoft::WRL::ComPtr<ID3DBlob> error;
+		const char *name = encode == BlitEncodeDX12::Gamma ? "PRESENT_GAMMA" : encode == BlitEncodeDX12::HdrScale ? "PRESENT_HDR_SCALE" : "HDR_CUBEMAP";
+		const D3D_SHADER_MACRO defines[] = { { name, "1" }, { nullptr, nullptr } };
+		HRESULT hr = m_pBlitVS ? S_OK : D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &m_pBlitVS, &error );
+		if ( SUCCEEDED( hr ) )
+			hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, encode == BlitEncodeDX12::None ? nullptr : defines, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &error );
+		if ( FAILED( hr ) )
+		{
+			Warning( "ShaderAPIDX12: native blit compile failed (0x%08x): %s\n", unsigned( hr ), error ? static_cast<const char *>( error->GetBufferPointer() ) : "unknown" );
+			return false;
+		}
+	}
+	return true;
+}
+
 //-----------------------------------------------------------------------------
 // Purpose: Clears through a full-screen draw so color write masks, the stencil test and
 //          stencil writes apply like the DX9 "obey stencil" clears
@@ -2459,15 +2502,9 @@ void CShaderAPIDX12::DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const
 	}
 	if ( !pPipeline )
 	{
-		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),1,1); }";
-		// One SV_Target per bound color target, up to RenderTargetBindingDX12::kMaxColorTargets (8).
-		static const char psSource[] = "cbuffer Color:register(b0){float4 color;}\n#if TARGET_COUNT == 0\nvoid main(){}\n#else\nstruct Output{float4 a:SV_Target0;\n#if TARGET_COUNT > 1\nfloat4 b:SV_Target1;\n#endif\n#if TARGET_COUNT > 2\nfloat4 c:SV_Target2;\n#endif\n#if TARGET_COUNT > 3\nfloat4 d:SV_Target3;\n#endif\n#if TARGET_COUNT > 4\nfloat4 e:SV_Target4;\n#endif\n#if TARGET_COUNT > 5\nfloat4 f:SV_Target5;\n#endif\n#if TARGET_COUNT > 6\nfloat4 g:SV_Target6;\n#endif\n#if TARGET_COUNT > 7\nfloat4 h:SV_Target7;\n#endif\n}; Output main(){Output o;o.a=color;\n#if TARGET_COUNT > 1\no.b=color;\n#endif\n#if TARGET_COUNT > 2\no.c=color;\n#endif\n#if TARGET_COUNT > 3\no.d=color;\n#endif\n#if TARGET_COUNT > 4\no.e=color;\n#endif\n#if TARGET_COUNT > 5\no.f=color;\n#endif\n#if TARGET_COUNT > 6\no.g=color;\n#endif\n#if TARGET_COUNT > 7\no.h=color;\n#endif\nreturn o;}\n#endif\n";
-		Microsoft::WRL::ComPtr<ID3DBlob> pVS, pPS, pError;
-		char szColorCount[16];
-		V_snprintf( szColorCount, sizeof( szColorCount ), "%d", target.colorCount );
-		const D3D_SHADER_MACRO defines[] = { { "TARGET_COUNT", szColorCount }, { nullptr, nullptr } };
-		if ( FAILED( D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pVS, &pError ) ) || ( target.colorCount && FAILED( D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, defines, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError ) ) ) )
-			return;
+		if ( !EnsureClearPrograms( target.colorCount ) ) return;
+		auto &pVS = m_pClearVS;
+		auto &pPS = m_ClearPS[target.colorCount];
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 		desc.pRootSignature = m_pClearRoot.Get();
 		desc.VS = { pVS->GetBufferPointer(), pVS->GetBufferSize() };
@@ -2991,27 +3028,9 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 	}
 	if ( !pPSO )
 	{
-		static const char vsSource[] = "float4 main(uint id:SV_VertexID):SV_Position { float2 p=float2((id<<1)&2,id&2); return float4(p*float2(2,-2)+float2(-1,1),0,1); }";
-		static const char psSource[] = "Texture2D image:register(t0); SamplerState sampleState:register(s0); cbuffer Region:register(b0){float4 uv;\n#if defined(PRESENT_GAMMA)||defined(PRESENT_HDR_SCALE)\nfloat4 gamma;\n#endif\n} float4 main(float4 pos:SV_Position):SV_Target {float4 color=image.SampleLevel(sampleState, pos.xy*uv.xy+uv.zw,0);\n#ifdef PRESENT_GAMMA\ncolor.rgb=pow(saturate(color.rgb),gamma.xxx); color.rgb=pow(saturate(color.rgb),gamma.yyy); color.rgb=saturate(color.rgb*gamma.z+gamma.w);\n#endif\n#ifdef PRESENT_HDR_SCALE\ncolor.rgb*=gamma.x;\n#endif\n#ifdef HDR_CUBEMAP\ncolor.rgb=pow(saturate(color.rgb),1.0/2.2);\n#endif\nreturn color;}";
-		Microsoft::WRL::ComPtr<ID3DBlob> pVS, pPS, pError;
-		const D3D_SHADER_MACRO gammaDefines[] = { { "PRESENT_GAMMA", "1" }, { nullptr, nullptr } };
-		const D3D_SHADER_MACRO hdrDefines[] = { { "PRESENT_HDR_SCALE", "1" }, { nullptr, nullptr } };
-		const D3D_SHADER_MACRO cubemapDefines[] = { { "HDR_CUBEMAP", "1" }, { nullptr, nullptr } };
-		HRESULT hr = D3DCompile( vsSource, sizeof( vsSource ) - 1, nullptr, nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pVS, &pError );
-		if ( FAILED( hr ) )
-		{
-			Warning( "ShaderAPIDX12: native blit VS compile failed (0x%08x): %s\n", static_cast<unsigned>( hr ), pError ? static_cast<const char *>( pError->GetBufferPointer() ) : "unknown" );
-			return false;
-		}
-		pError.Reset();
-		const D3D_SHADER_MACRO *pDefines = encode == BlitEncodeDX12::Gamma ? gammaDefines :
-			encode == BlitEncodeDX12::HdrScale ? hdrDefines : encode == BlitEncodeDX12::HDRCubemap ? cubemapDefines : nullptr;
-		hr = D3DCompile( psSource, sizeof( psSource ) - 1, nullptr, pDefines, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pPS, &pError );
-		if ( FAILED( hr ) )
-		{
-			Warning( "ShaderAPIDX12: native blit PS compile failed (0x%08x): %s\n", static_cast<unsigned>( hr ), pError ? static_cast<const char *>( pError->GetBufferPointer() ) : "unknown" );
-			return false;
-		}
+		if ( !EnsureBlitPrograms( encode ) ) return false;
+		auto &pVS = m_pBlitVS;
+		auto &pPS = m_BlitPS[static_cast<unsigned>( encode )];
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
 		desc.pRootSignature = m_pBlitRoot.Get();
 		desc.VS = { pVS->GetBufferPointer(), pVS->GetBufferSize() };
@@ -3050,7 +3069,7 @@ bool CShaderAPIDX12::BlitTexture( ID3D12Resource *pSource, D3D12_RESOURCE_STATES
 		pass.quality = nQuality;
 		pass.encode = encode;
 		pass.additive = bAdditive;
-		hr = pNative->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pass.pipeline ) );
+		const HRESULT hr = pNative->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pass.pipeline ) );
 		if ( FAILED( hr ) )
 		{
 			Warning( "ShaderAPIDX12: native blit PSO failed (0x%08x), format %u samples %u encode %d additive %d\n", static_cast<unsigned>( hr ), static_cast<unsigned>( renderFormat ), nSamples, static_cast<int>( pass.encode ), pass.additive ? 1 : 0 );

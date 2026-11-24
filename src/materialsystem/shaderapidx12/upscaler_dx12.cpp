@@ -720,10 +720,10 @@ bool CUpscalerDX12::EnsureCompute()
 //-----------------------------------------------------------------------------
 // Purpose: Native TAAU uses only output-size histories. SMAA additionally needs spatial scratch and immutable LUTs.
 //-----------------------------------------------------------------------------
-bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
+bool CUpscalerDX12::EnsureNativeAAPipelines( UpscalerKindDX12 kind )
 {
-	const bool taau = desc.kind == UpscalerKindDX12::Taau;
-	if ( ( desc.Scaled() && !taau ) || !EnsureCompute() )
+	const bool taau = kind == UpscalerKindDX12::Taau;
+	if ( !EnsureCompute() )
 		return false;
 	const uint32_t first = taau ? kTaauPass : 0;
 	const uint32_t end = taau ? kTaauPass + 1 : kTaauPass;
@@ -755,6 +755,14 @@ bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12Comma
 			}
 		}
 	}
+	return true;
+}
+
+bool CUpscalerDX12::CreateSmaa( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
+{
+	const bool taau = desc.kind == UpscalerKindDX12::Taau;
+	if ( ( desc.Scaled() && !taau ) || !EnsureNativeAAPipelines( desc.kind ) )
+		return false;
 	SmaaState *state = new SmaaState;
 	for ( uint32_t i = 0; i < 2; ++i )
 		state->history[i] = CreateTexture( m_pDevice, desc.width, desc.height, DXGI_FORMAT_R16G16B16A16_FLOAT, kNpsr,

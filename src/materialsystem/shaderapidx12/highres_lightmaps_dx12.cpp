@@ -457,6 +457,7 @@ struct CHighresLightmapsDX12::Impl
     bool metadataUploaded = false, failureUsed = false;
     struct Readback { uint64 fence, generation, sourceAddress; ComPtr<ID3D12Resource> resource; };
     std::vector<Readback> readbacks;
+    ComPtr<ID3D12Resource> spareReadback;
     std::vector<uint8> scratch;
     std::vector<ViewStyles> views;
     uint64 nextViewSerial = 1, commonRetainedFence = 0, polledFence = ~uint64(0);
@@ -539,6 +540,7 @@ struct CHighresLightmapsDX12::Impl
         for (auto &group : sunGroups) group = {};
         separateSunRoute = 0;
         faceBuffer.Reset(); tileBuffer.Reset(); failureBuffer.Reset();
+        spareReadback.Reset();
         visibilityFaces.clear(); visibilityMeshes.clear(); visibilityDescriptors.Reset(); visibilityRetainedFence=0;
         for (uint32 i=0;i<4;++i) { visibilityBuffers[i].Reset(); visibilityStates[i]=D3D12_RESOURCE_STATE_COPY_DEST; }
         metadataUploaded = failureUsed = false;
@@ -588,6 +590,9 @@ struct CHighresLightmapsDX12::Impl
                 }
                 else if (!value[0]) cleanFence = r.fence;
                 D3D12_RANGE written{0,0}; r.resource->Unmap(0,&written);
+                // Recycle only after both the copy fence and the CPU validation
+                // read are complete. Other in-flight generations remain distinct.
+                if (!spareReadback) spareReadback=std::move(r.resource);
             }
             readbacks.erase(readbacks.begin()+i);
         }
@@ -601,6 +606,7 @@ struct CHighresLightmapsDX12::Impl
         const bool reuse = !readbacks.empty() && readbacks.back().fence == fence &&
             readbacks.back().generation == r.generation && readbacks.back().sourceAddress == r.sourceAddress;
         if (reuse) r.resource = readbacks.back().resource;
+        else if (spareReadback) r.resource=std::move(spareReadback);
         else if (!Buffer(device->NativeDevice(),256,D3D12_HEAP_TYPE_READBACK,D3D12_RESOURCE_FLAG_NONE,D3D12_RESOURCE_STATE_COPY_DEST,r.resource)) return false;
         api->m_Pipeline.RetainExternalResource(r.resource.Get(), fence);
         api->m_Pipeline.RetainExternalResource(failureBuffer.Get(),fence);
@@ -1529,6 +1535,10 @@ void CHighresLightmapsDX12::OnNativeAtlas(std::shared_ptr<const HlightNativeAtla
         TextureView(device,nullptr,DXGI_FORMAT_R32G32B32A32_FLOAT,false,1,Slot(device,s.neutral.descriptors.Get(),3));
         for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R16G16B16A16_FLOAT,true,1,Slot(device,s.neutral.descriptors.Get(),4+g));
         for (uint32 g=0;g<4;++g) TextureView(device,nullptr,DXGI_FORMAT_R8_UNORM,true,1,Slot(device,s.neutral.descriptors.Get(),8+g));
+        // The immutable atlas is complete. Queue its fence-owned copies in
+        // the loading transaction, not behind the first receiver's draw.
+        if (s.device->IsRecordingOwner() && s.device->CommandList() && !s.InitializeUploads())
+        { s.Fail("Highres lightmaps: native upload failed"); return; }
         // Publish only after every validation/allocation/descriptor succeeds.
         for (uint32 p=0;p<s.pages.size();++p) { auto *texture=s.api->FindTexture(s.pages[p].handle); texture->highresPage=p; texture->highresLayoutGeneration=s.atlas->layoutGeneration; }
         s.status.layoutGeneration=s.atlas->layoutGeneration; s.status.pageCount=uint32(s.pages.size()); s.status.state=DX12_HIGHRES_READY;

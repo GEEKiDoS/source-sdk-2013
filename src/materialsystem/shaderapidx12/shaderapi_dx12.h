@@ -410,7 +410,7 @@ public:
 
 	bool InitializeDeviceResources( CShaderDeviceDX12 *pDevice );
 	void WarmLevelShaderCombos();
-	void ReleaseLevelShaderPins() { m_LevelShaderFiles.Purge(); }
+	void ReleaseLevelShaderPins() { m_LevelShaderFiles.Purge(); ++m_LevelPinEpoch; }
 	bool ReserveTextureUpload( size_t bytes, uint64_t fence, ID3D12Resource **resource, size_t &offset, unsigned char **mapped )
 	{
 		return m_Pipeline.ReserveTextureUpload( bytes, fence, resource, offset, mapped );
@@ -769,6 +769,7 @@ private:
 	void CaptureShadowCaster( uint64 meshToken, const CMeshDX12 *mesh, const VertexBindingDX12 &stream0, CIndexBufferDX12 *indices, int firstIndex, int indexCount );
 	void FlushShadowCasterBatch( bool close ); // emits every group; close=false keeps the scope open (capacity overflow)
 	void SetMotionPass( int nMode );
+	bool EnsureMotionShaders();
 	bool EnsureMotionResources( int nMode );
 	bool PrepareMotionBinding( RenderTargetBindingDX12 &binding );
 	void DrawMotionReprojection();
@@ -1179,6 +1180,8 @@ private:
 	};
 
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pClearRoot;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_pClearVS, m_ClearPS[RenderTargetBindingDX12::kMaxColorTargets + 1];
+	bool EnsureClearPrograms( int colorCount );
 	CUtlVector<ClearPassDX12> m_ClearPasses;
 	void DrawMaskedClear( bool bRGB, bool bAlpha, bool bDepth, const D3D12_RECT *pRect = nullptr, bool bStencilOnly = false, bool farDepthTest = false );
 
@@ -1203,6 +1206,8 @@ private:
 	ResolveTextureRecord *AcquireResolveTexture( const D3D12_RESOURCE_DESC &desc, HRESULT &hrCreation );
 	CUtlVector<ResolveTextureRecord *> m_ResolveTextures;
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pBlitRoot;
+	Microsoft::WRL::ComPtr<ID3DBlob> m_pBlitVS, m_BlitPS[static_cast<unsigned>( BlitEncodeDX12::HDRCubemap ) + 1];
+	bool EnsureBlitPrograms( BlitEncodeDX12 encode );
 	CUtlVector<BlitPassDX12> m_BlitPasses;
 	// bAdditive adds the (unencoded) source RGB onto a render-target destination instead of replacing it: no copy fast
 	// path, no scratch fallback, alpha and every destination sample's own colour are preserved.
@@ -1283,11 +1288,13 @@ private:
 	bool m_bRasterOverride = false;
 	CUtlHashtable<CUtlString, ShaderVcsFile *, StringHashFunctor, StringEqualFunctor, const char *> m_NamedShaderFiles;
 	CUtlMap<ShaderVcsFile *, bool> m_LevelShaderFiles{ DefLessFunc( ShaderVcsFile * ) };
+	uint64_t m_LevelPinEpoch = 1;
 	struct NamedShaderRecordDX12
 	{
 		NamedShaderKey key;
 		ShaderRecordDX12 *record;
 		unsigned references = 0;
+		uint64_t pinEpoch = 0;
 		NamedShaderRecordDX12( NamedShaderKeyView view, ShaderRecordDX12 *value ) : key( view ), record( value ) {}
 	};
 	struct NamedShaderComboDX12

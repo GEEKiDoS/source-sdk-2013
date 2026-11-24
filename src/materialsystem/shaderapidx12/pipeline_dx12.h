@@ -80,6 +80,17 @@ public:
 	bool Initialize( ID3D12Device *pDevice, bool lowTier, IFileSystem *filesystem );
 	void Shutdown();
 	void WarmRecipes( unsigned budget, unsigned &done, unsigned &total );
+	bool ObservedShader( const unsigned char *data, size_t bytes ) const { return m_Recipes.ObservedShader( data, bytes ); }
+	void WarmMaterialLayouts()
+	{
+		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
+		m_Recipes.WarmLayouts( m_pDevice, roots, m_Library );
+	}
+	void WarmPixelVariant( D3D12_SHADER_BYTECODE from, D3D12_SHADER_BYTECODE to, bool readOnlyDepth )
+	{
+		ID3D12RootSignature *roots[] = { m_pRoot.Get(), m_pLightingRoot.Get(), m_pHighresRoot.Get() };
+		m_Recipes.WarmPixelVariant( from, to, readOnlyDepth, m_pDevice, roots, m_Library );
+	}
 	void BindDrawState( CCommandRecorderDX12 *pList, const D3D12_VIEWPORT &viewport, const D3D12_RECT &scissor, uint64_t nRetireFence );
 
 	D3D12_CPU_DESCRIPTOR_HANDLE NullShaderResourceView() const { return m_NullSrv; }
