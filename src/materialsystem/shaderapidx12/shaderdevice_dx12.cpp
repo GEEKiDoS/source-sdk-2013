@@ -761,11 +761,6 @@ uint64_t CShaderDeviceDX12::SubmitFrameSync()
 	// Current-frame completion remains mandatory in readback/resource lifecycle paths.
 	{
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 PreviousFrameWait", DX12_ZONES_ACTIVE );
-		// Sustained queue slack, not a particular GPU tier or output size.
-		if ( m_nFrameSyncFence && CompletedFenceValue() >= m_nFrameSyncFence )
-			m_nReadyFrameSyncs = MIN( m_nReadyFrameSyncs + 1, 16u );
-		else if ( m_nReadyFrameSyncs )
-			m_nReadyFrameSyncs -= MIN( m_nReadyFrameSyncs, 4u );
 		if ( !WaitForFence( m_nFrameSyncFence ) )
 			return 0;
 	}
@@ -2125,7 +2120,6 @@ void CShaderDeviceDX12::ShutdownDevice()
 	}
 	m_pfnSigner = nullptr;
 	m_nFenceValue = m_nFrameSyncFence = 0;
-	m_nReadyFrameSyncs = 0;
 	m_nFrameIndex = 0;
 	m_bRecording = false;
 	m_bFailed = false;

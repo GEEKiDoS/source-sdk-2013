@@ -402,7 +402,6 @@ public:
 	uint64_t RecordedBarriers() const { return m_Recorder.m_nBarrierCalls; }
 
 	uint64_t CompletedFenceValue() const { return m_pFence ? m_pFence->GetCompletedValue() : 0; }
-	bool HasFrameHeadroom() const { return m_nReadyFrameSyncs >= 8; }
 
 	void ReleaseResources() override;
 	void ReacquireResources() override;
@@ -682,7 +681,6 @@ private:
 	View *m_pCurrentView = nullptr;
 	HANDLE m_hFenceEvent = nullptr;
 	uint64_t m_nFenceValue = 0, m_nFrameSyncFence = 0;
-	unsigned m_nReadyFrameSyncs = 0;
 	HMODULE m_hSignerModule = nullptr;
 	SignDxbcFnDX12 m_pfnSigner = nullptr;
 	UINT m_nRtvStride = 0;
