@@ -41,9 +41,10 @@ ConVar r_shadowfromworldlights( "r_shadowfromworldlights", "1", 0xa, "Enable sha
 
 // C0D48E0/C0D4A00: replace the dirty/transparent queue portion of PreRender
 // by a call to this method, with the existing m_bUpdatingDirtyShadows guard held.
+extern ConVar r_shadow_debug_spew;
 void CClientShadowMgr::ReprojectDirtyShadows()
 {
-	ConVarRef spew( "r_shadow_debug_spew" );
+	const bool spew = r_shadow_debug_spew.GetBool();
 	if ( r_shadow_half_update_rate.GetBool() )
 	{
 		for ( unsigned short i = m_DeferredDirtyShadows.FirstInorder(); i != m_DeferredDirtyShadows.InvalidIndex(); i = m_DeferredDirtyShadows.NextInorder( i ) )
@@ -54,7 +55,7 @@ void CClientShadowMgr::ReprojectDirtyShadows()
 		}
 		const int deferred = m_DeferredDirtyShadows.Count();
 		const int budget = ( deferred + m_DirtyShadows.Count() ) / 2 + 1;
-		if ( spew.GetBool() ) DevMsg( "dirty shadows: %3d\n", budget );
+		if ( spew ) DevMsg( "dirty shadows: %3d\n", budget );
 		int count = clamp( budget - deferred, 0, m_DirtyShadows.Count() );
 		m_DeferredDirtyShadows.RemoveAll();
 		unsigned short i = m_DirtyShadows.FirstInorder();
@@ -72,7 +73,7 @@ void CClientShadowMgr::ReprojectDirtyShadows()
 	}
 	else
 	{
-		if ( spew.GetBool() ) DevMsg( "dirty shadows: %3d\n", m_DirtyShadows.Count() );
+		if ( spew ) DevMsg( "dirty shadows: %3d\n", m_DirtyShadows.Count() );
 		for ( unsigned short i = m_DirtyShadows.FirstInorder(); i != m_DirtyShadows.InvalidIndex(); i = m_DirtyShadows.NextInorder( i ) )
 			UpdateProjectedTextureInternal( m_DirtyShadows[i], false );
 	}

@@ -2434,7 +2434,8 @@ bool RenderDepth( CShadowViewData &data, DX12ShadowTarget_t target, int x, int y
 			scene.candidateIndices=&data.lightImmutableIndices;
 		}
 	}
-	scene.candidateFirst=0; scene.candidateCount=scene.candidateIndices->Count();
+	scene.candidateFirst=0;
+	scene.candidateCount=(immutable || dynamic) ? scene.candidateIndices->Count() : 0;
 	scene.x=x; scene.y=y; scene.size=size; scene.clear=clear;
 	scene.drawWorld=world; scene.drawStatic=immutable; scene.drawDynamic=dynamic; scene.drawDetail=detail; scene.orientedDetail=orientedDetail; scene.instanceCasters=r_shadowmap_instancing.GetBool();
 	scene.dynamicLayer=dynamicLayer;
