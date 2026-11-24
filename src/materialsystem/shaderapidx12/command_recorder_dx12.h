@@ -22,8 +22,8 @@ typedef void ( *ExternalFnDX12 )( ID3D12GraphicsCommandList *, ID3D12Device *, c
 
 // Chunk provider: returns a buffer of kChunkBytes.
 typedef unsigned char *( *AcquireChunkFnDX12 )( void *pContext );
-// Hands off [pChunk, pChunk + nBytes) for replay.
-typedef void ( *FlushChunkFnDX12 )( void *pContext, unsigned char *pChunk, size_t nBytes );
+// Graphics commands grow from the start; independent descriptor writes occupy the final descriptorBytes.
+typedef void ( *FlushChunkFnDX12 )( void *pContext, unsigned char *pChunk, size_t nBytes, size_t descriptorBytes );
 
 // Records the graphics command-list subset used by the renderer into byte chunks. The owning device
 // replays full chunks onto the native list on its submission worker, so driver work leaves the
@@ -85,12 +85,13 @@ public:
 	void Flush()
 	{
 		m_pLastHeader = nullptr;
-		if ( m_pChunk && m_nUsed )
-			m_pfnFlushChunk( m_pChunkContext, m_pChunk, m_nUsed );
+		if ( m_pChunk && ( m_nUsed || m_nDescriptorBytes ) )
+			m_pfnFlushChunk( m_pChunkContext, m_pChunk, m_nUsed, m_nDescriptorBytes );
 		else if ( m_pChunk )
 			m_pReleaseEmpty = m_pChunk;
 		m_pChunk = nullptr;
 		m_nUsed = 0;
+		m_nDescriptorBytes = 0;
 	}
 
 	// Returns an unused chunk to the caller on shutdown paths; null when the current chunk holds data.
@@ -417,21 +418,29 @@ private:
 	unsigned char *Begin( Op op, size_t payload )
 	{
 		const size_t total = ( sizeof( Header ) + payload + 7 ) & ~size_t( 7 );
-		if ( !m_pChunk || m_nUsed + total > kChunkBytes )
+		if ( !m_pChunk || m_nUsed + m_nDescriptorBytes + total > kChunkBytes )
 		{
 			Flush();
 			m_pChunk = TakeEmptyChunk();
 			if ( !m_pChunk )
 				m_pChunk = m_pfnAcquireChunk( m_pChunkContext );
 		}
-		Header *pHeader = reinterpret_cast<Header *>( m_pChunk + m_nUsed );
+		// These writes populate disjoint ranges. Sources are immutable CPU
+		// descriptors or copied CBV values, never another destination.
+		size_t start = m_nUsed;
+		if ( op == Op::CopyDescriptorTable || op == Op::WriteNativeCbvTable )
+		{
+			m_nDescriptorBytes += total;
+			start = kChunkBytes - m_nDescriptorBytes;
+		}
+		else
+			m_nUsed += total;
+		Header *pHeader = reinterpret_cast<Header *>( m_pChunk + start );
 		pHeader->op = op;
 		pHeader->pad = 0;
 		pHeader->size = static_cast<uint32_t>( total );
 		m_pLastHeader = pHeader;
-		unsigned char *payloadStart = m_pChunk + m_nUsed + sizeof( Header );
-		m_nUsed += total;
-		return payloadStart;
+		return reinterpret_cast<unsigned char *>( pHeader + 1 );
 	}
 
 	void WriteEvent( Op op, const char *name )
@@ -462,6 +471,7 @@ private:
 	unsigned char *m_pReleaseEmpty = nullptr;
 	Header *m_pLastHeader = nullptr;
 	size_t m_nUsed = 0;
+	size_t m_nDescriptorBytes = 0;
 };
 } // namespace shaderapidx12
 

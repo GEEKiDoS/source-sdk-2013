@@ -576,9 +576,9 @@ unsigned char *CShaderDeviceDX12::AcquireRecorderChunk( void *pContext )
 	return static_cast<CShaderDeviceDX12 *>( pContext )->AcquireCommandChunk();
 }
 
-void CShaderDeviceDX12::FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes )
+void CShaderDeviceDX12::FlushRecorderChunk( void *pContext, unsigned char *pChunk, size_t nBytes, size_t descriptorBytes )
 {
-	static_cast<CShaderDeviceDX12 *>( pContext )->FlushCommandChunk( pChunk, nBytes );
+	static_cast<CShaderDeviceDX12 *>( pContext )->FlushCommandChunk( pChunk, nBytes, descriptorBytes );
 }
 
 //-----------------------------------------------------------------------------
@@ -1811,6 +1811,8 @@ HRESULT CShaderDeviceDX12::RunSubmission( const SubmitOpDX12 &op )
 	switch ( op.kind )
 	{
 	case SubmitOpDX12::Replay:
+		if ( !m_hDescriptorThread )
+			WriteChunkDescriptors( op );
 		CCommandRecorderDX12::Replay( op.list, m_pDevice.Get(), op.chunk, op.chunkBytes );
 		{
 			AUTO_LOCK( m_ChunkMutex );
@@ -1885,13 +1887,14 @@ unsigned char *CShaderDeviceDX12::AcquireCommandChunk()
 //-----------------------------------------------------------------------------
 // Purpose: Queues a filled chunk for replay onto the current frame's list
 //-----------------------------------------------------------------------------
-void CShaderDeviceDX12::FlushCommandChunk( unsigned char *pChunk, size_t nBytes )
+void CShaderDeviceDX12::FlushCommandChunk( unsigned char *pChunk, size_t nBytes, size_t descriptorBytes )
 {
 	SubmitOpDX12 op{};
 	op.kind = SubmitOpDX12::Replay;
 	op.list = m_Frames[m_nFrameIndex].list.Get();
 	op.chunk = pChunk;
 	op.chunkBytes = nBytes;
+	op.descriptorBytes = descriptorBytes;
 	EnqueueSubmission( op );
 }
 
@@ -1902,6 +1905,33 @@ void CShaderDeviceDX12::ReleaseCommandChunks()
 		MemAlloc_FreeAligned( pChunk );
 	m_AllChunks.RemoveAll();
 	m_FreeChunks.RemoveAll();
+}
+
+void CShaderDeviceDX12::WriteChunkDescriptors( const SubmitOpDX12 &op )
+{
+	if ( op.descriptorBytes )
+		CCommandRecorderDX12::Replay( nullptr, m_pDevice.Get(), op.chunk + CCommandRecorderDX12::kChunkBytes - op.descriptorBytes, op.descriptorBytes );
+}
+
+// The owner publishes immutable chunks; the descriptor worker prepares the
+// next chunks while submit records the ready prefix. Only submit recycles a
+// chunk, and only its normal Execute signals the fence retiring the tables.
+uintp CShaderDeviceDX12::DescriptorThreadMain( void *pParam )
+{
+	auto &device = *static_cast<CShaderDeviceDX12 *>( pParam );
+	for ( ;; )
+	{
+		device.m_DescriptorWorkEvent.Wait();
+		uint32_t ready = device.m_nDescriptorsReady;
+		while ( ready != device.m_nSubmitHead )
+		{
+			device.WriteChunkDescriptors( device.m_SubmitOps[ready % ARRAYSIZE( device.m_SubmitOps )] );
+			device.m_nDescriptorsReady = ++ready;
+			device.m_SubmitWorkEvent.Set();
+		}
+		if ( device.m_bSubmitExit )
+			return 0;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -1916,7 +1946,7 @@ uintp CShaderDeviceDX12::SubmitThreadMain( void *pParam )
 		for ( ;; )
 		{
 			const uint32_t nTail = device.m_nSubmitTail;
-			if ( nTail == device.m_nSubmitHead )
+			if ( nTail == device.m_nDescriptorsReady )
 				break;
 			const SubmitOpDX12 &op = device.m_SubmitOps[nTail % ARRAYSIZE( device.m_SubmitOps )];
 			const HRESULT hr = device.RunSubmission( op );
@@ -1941,8 +1971,11 @@ void CShaderDeviceDX12::StartSubmitThread()
 	m_bSubmitExit = 0;
 	m_nSubmitHead = 0;
 	m_nSubmitTail = 0;
+	m_nDescriptorsReady = 0;
 	m_nSubmitError = S_OK;
 	m_hSubmitThread = CreateSimpleThread( &CShaderDeviceDX12::SubmitThreadMain, this );
+	if ( m_hSubmitThread )
+		m_hDescriptorThread = CreateSimpleThread( &CShaderDeviceDX12::DescriptorThreadMain, this );
 }
 
 void CShaderDeviceDX12::StopSubmitThread()
@@ -1952,6 +1985,13 @@ void CShaderDeviceDX12::StopSubmitThread()
 	FlushSubmissions();
 	m_bSubmitExit = 1;
 	m_SubmitWorkEvent.Set();
+	if ( m_hDescriptorThread )
+	{
+		m_DescriptorWorkEvent.Set();
+		ThreadJoin( m_hDescriptorThread );
+		ReleaseThreadHandle( m_hDescriptorThread );
+		m_hDescriptorThread = nullptr;
+	}
 	ThreadJoin( m_hSubmitThread );
 	ReleaseThreadHandle( m_hSubmitThread );
 	m_hSubmitThread = nullptr;
@@ -1972,7 +2012,13 @@ void CShaderDeviceDX12::EnqueueSubmission( const SubmitOpDX12 &op )
 		m_SubmitDoneEvent.Wait();
 	m_SubmitOps[nHead % ARRAYSIZE( m_SubmitOps )] = op;
 	m_nSubmitHead = nHead + 1;
-	m_SubmitWorkEvent.Set();
+	if ( m_hDescriptorThread )
+		m_DescriptorWorkEvent.Set();
+	else
+	{
+		m_nDescriptorsReady = nHead + 1;
+		m_SubmitWorkEvent.Set();
+	}
 }
 
 //-----------------------------------------------------------------------------

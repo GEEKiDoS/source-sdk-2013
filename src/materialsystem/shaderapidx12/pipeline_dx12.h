@@ -181,7 +181,6 @@ public:
 	};
 
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
-	void DeferNativeCbvs( bool defer ) { m_bDeferNativeCbvs = defer; }
 
 	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
 	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
@@ -427,7 +426,6 @@ private:
 		uint64_t fence = 0, heapGeneration = 0, descriptorEpoch = 0;
 	};
 
-	bool m_bDeferNativeCbvs = false;
 	CachedSrvTable m_SrvTables[512];
 	uint64_t m_nSrvDescriptorEpoch = 1;
 	CachedSrvTable *m_LastSrvTable = nullptr; // Borrows a slot in m_SrvTables, never a descriptor.
