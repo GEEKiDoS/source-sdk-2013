@@ -830,6 +830,7 @@ void CShaderAPIDX12::WarmLevelShaderCombos()
 	// Non-GameUI loads and short progress sequences take the same owner barrier.
 	unsigned done, total;
 	m_Pipeline.WarmRecipes( UINT_MAX, done, total );
+	m_Pipeline.WarmMaterialLayouts();
 	const uint64_t before = g_FirstUse.decodes.load();
 	const double start = Plat_FloatTime();
 	ReleaseLevelShaderPins();

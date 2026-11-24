@@ -98,7 +98,8 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
   On subsequent loads it holds the resulting PSOs on the device, independent of transient shader handles.
   Level warmup also resolves the material's present native dynamics and its highres, early-test and PBR
   coverage routes. From a material's pixel-shader twins and observed input layout/target recipes it prebuilds
-  matching early-test and read-only-depth PSOs. Unobserved mesh/pass combinations retain the exact draw-time path.
+  matching early-test and read-only-depth PSOs. It also replays each pass with mesh declarations seen for
+  its exact VS bytecode, so a stream change need not have a separately recorded full descriptor.
 - For seed capture use the release shader pack, play representative campaign sections at the supported quality/MSAA
   settings, and quit normally. The global `%LOCALAPPDATA%/SourceDX12/graphics-v1-<pack>.recipes` accumulates the
   union across sessions using that pack. Install the capture as a **loose** `shaders/pso/graphics-v1.recipes` in
@@ -111,7 +112,7 @@ Partial `genmat.py <slice>...` runs retain the first pair-table slice as the uni
 
   **GTX 1050 capture:** `test_3_2.dem`, `c5m4_quarter`, 960×540, `mat_queue_mode 2`, seek tick 15500.
   That capture used 355 observed descriptors and 154 shader payloads (3,301,384 bytes). The refreshed
-  portable catalog contains 620 descriptors and 199 payloads (5,129,736 bytes).
+  portable catalog retains 557 pass/layout templates from 628 observations, and 200 payloads (5,129,732 bytes).
   It was trained on multiple playbacks, then tested in **separate processes** with an empty renderer cache
   (`SOURCE_DX12_CACHE_HOME`) and immediately again with that run's library. The user's cache and the
   vendor's own driver cache were not cleared. This is a cold *application library*, not a fresh driver installation.

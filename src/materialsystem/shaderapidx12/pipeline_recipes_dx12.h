@@ -1,5 +1,6 @@
 #pragma once
 #include "persistent_pipeline_dx12.h"
+#include <algorithm>
 #include <map>
 
 namespace shaderapidx12
@@ -32,6 +33,7 @@ class CPipelineRecipesDX12
 	std::vector<uint64_t> m_Pending;
 	unsigned m_Next = 0;
 	size_t m_Bytes = 0;
+	size_t m_ExpandedRecipes = 0;
 	bool m_Dirty = false;
 	wchar_t m_Path[MAX_PATH]{};
 	static constexpr UINT kMagic = 0x31525350, kLimit = 8192, kBytes = 96 * 1024 * 1024;
@@ -152,19 +154,63 @@ public:
 	unsigned Next() const { return m_Next; }
 	uint64_t Pop() { return m_Pending[m_Next++]; }
 private:
-	void Describe( const Recipe &r, ID3D12RootSignature *root, D3D12_INPUT_ELEMENT_DESC (&layout)[32],
+	void Describe( const Recipe &r, const std::vector<Element> &input, ID3D12RootSignature *root, D3D12_INPUT_ELEMENT_DESC (&layout)[32],
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC &d ) const
 	{
 		const State &s = r.state;
 		d.pRootSignature = root;
 		D3D12_SHADER_BYTECODE *stages[] = { &d.VS, &d.PS, &d.GS };
 		for ( unsigned i = 0; i < 3; ++i ) if ( s.stages[i] ) { const Bytes &b = m_Blobs.at( s.stages[i] ); *stages[i] = { b.data(), b.size() }; }
-		for ( UINT i = 0; i < s.elements; ++i ) { const auto &el = r.layout[i]; layout[i] = { el.name, el.index, DXGI_FORMAT( el.format ), el.slot, el.offset, D3D12_INPUT_CLASSIFICATION( el.classification ), el.step }; }
-		d.InputLayout = { layout, s.elements }; d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE( s.topology );
+		for ( size_t i = 0; i < input.size(); ++i ) { const auto &el = input[i]; layout[i] = { el.name, el.index, DXGI_FORMAT( el.format ), el.slot, el.offset, D3D12_INPUT_CLASSIFICATION( el.classification ), el.step }; }
+		d.InputLayout = { layout, UINT( input.size() ) }; d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE( s.topology );
 		d.NumRenderTargets = s.colors; memcpy( d.RTVFormats, s.rt, sizeof( s.rt ) ); d.DSVFormat = s.ds; d.SampleDesc = s.samples; d.SampleMask = UINT_MAX;
 		d.RasterizerState = s.raster; d.BlendState = s.blend; d.DepthStencilState = s.depth;
 	}
+	void WarmDescriptor( const D3D12_GRAPHICS_PIPELINE_STATE_DESC &d, UINT root, ID3D12Device *device, CPersistentPipelineDX12 &lib )
+	{
+		const uint64_t key = lib.Key( d, root );
+		if ( m_Resident.count( key ) || m_Resident.size() >= kLimit ) return;
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		if ( !lib.Load( key, d, pso.GetAddressOf() ) )
+		{
+			if ( FAILED( device->CreateGraphicsPipelineState( &d, IID_PPV_ARGS( &pso ) ) ) ) return;
+			lib.Store( key, pso.Get() );
+		}
+		m_Resident.emplace( key, std::move( pso ) );
+	}
 public:
+	// The same material pass can arrive through different mesh streams. A
+	// declaration observed with the identical VS is already signature-compatible;
+	// don't wait for that declaration *and* this material to be drawn together.
+	void WarmLayouts( ID3D12Device *device, ID3D12RootSignature *const roots[3], CPersistentPipelineDX12 &lib )
+	{
+		if ( m_ExpandedRecipes == m_Recipes.size() ) return;
+		m_ExpandedRecipes = m_Recipes.size();
+		using Layout = std::vector<Element>;
+		std::map<uint64_t, std::vector<const Layout *>> layouts;
+		const auto same = []( const Layout &a, const Layout &b ) {
+			return a.size() == b.size() && ( a.empty() || !memcmp( a.data(), b.data(), a.size() * sizeof( Element ) ) );
+		};
+		for ( const auto &it : m_Recipes )
+		{
+			auto &seen = layouts[it.second.state.stages[0]];
+			if ( std::none_of( seen.begin(), seen.end(), [&]( const Layout *l ) { return same( *l, it.second.layout ); } ) )
+				seen.push_back( &it.second.layout );
+		}
+		for ( const auto &it : m_Recipes )
+		{
+			const auto &r = it.second;
+			if ( !roots[r.state.root] ) continue;
+			for ( auto *input : layouts.at( r.state.stages[0] ) )
+			{
+				if ( same( *input, r.layout ) ) continue;
+				D3D12_INPUT_ELEMENT_DESC layout[32];
+				D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
+				Describe( r, *input, roots[r.state.root], layout, d );
+				WarmDescriptor( d, r.state.root, device, lib );
+			}
+		}
+	}
 	void Replay( uint64_t key, ID3D12Device *device, ID3D12RootSignature *const roots[3], CPersistentPipelineDX12 &lib,
 		Microsoft::WRL::ComPtr<ID3D12PipelineState> &out, bool &created ) const
 	{
@@ -172,7 +218,7 @@ public:
 		if ( !roots[s.root] ) return;
 		D3D12_INPUT_ELEMENT_DESC layout[32];
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-		Describe( r, roots[s.root], layout, d );
+		Describe( r, r.layout, roots[s.root], layout, d );
 		if ( lib.Key( d, s.root ) != key ) return;
 		if ( !lib.Load( key, d, out.GetAddressOf() ) ) created = SUCCEEDED( device->CreateGraphicsPipelineState( &d, IID_PPV_ARGS( &out ) ) );
 	}
@@ -194,22 +240,14 @@ public:
 			if ( readOnlyDepth ? !s.depth.DepthEnable || !s.depth.DepthWriteMask : s.root != 2 || s.blend.AlphaToCoverageEnable ) continue;
 			D3D12_INPUT_ELEMENT_DESC layout[32];
 			D3D12_GRAPHICS_PIPELINE_STATE_DESC d{};
-			Describe( it.second, roots[s.root], layout, d );
+			Describe( it.second, it.second.layout, roots[s.root], layout, d );
 			d.PS = to;
 			if ( readOnlyDepth )
 			{
 				d.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
 				d.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL;
 			}
-			const uint64_t key = lib.Key( d, s.root );
-			if ( m_Resident.count( key ) || m_Resident.size() >= kLimit ) continue;
-			Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
-			if ( !lib.Load( key, d, pso.GetAddressOf() ) )
-			{
-				if ( FAILED( device->CreateGraphicsPipelineState( &d, IID_PPV_ARGS( &pso ) ) ) ) continue;
-				lib.Store( key, pso.Get() );
-			}
-			m_Resident.emplace( key, std::move( pso ) );
+			WarmDescriptor( d, s.root, device, lib );
 		}
 	}
 	void Publish( uint64_t key, ID3D12PipelineState *pso ) { m_Resident[key] = pso; }
