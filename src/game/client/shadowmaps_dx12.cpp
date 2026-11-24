@@ -38,6 +38,7 @@
 #include "optimize.h"
 #include "tier1/checksum_crc.h"
 #include "tier1/utlmap.h"
+#include "tier1/utlhashtable.h"
 #include "shaderapi/dx12staticpropvisibility.h"
 #include "tier0/vprof.h"
 #include "shadowmaps_dx12_selection.h"
@@ -325,8 +326,8 @@ struct StaticPropModelVisibility
 	bool valid;
 	CUtlVector<DX12StaticPropMeshIdentity> meshes;
 };
-CUtlMap<IClientRenderable *, StaticPropReceiverPose, int> g_StaticPropReceivers( DefLessFunc(IClientRenderable *) );
-CUtlMap<const model_t *, StaticPropModelVisibility *, int> g_StaticPropModels( DefLessFunc(const model_t *) );
+CUtlHashtable<IClientRenderable *, StaticPropReceiverPose, PointerHashFunctor> g_StaticPropReceivers;
+CUtlHashtable<const model_t *, StaticPropModelVisibility *, PointerHashFunctor> g_StaticPropModels;
 struct CasterSkyRegion_t
 {
 	Vector origin;
@@ -346,10 +347,10 @@ int g_StaticPropRegistrationRootLOD = -2147483647;
 
 void ClearStaticPropModelVisibility()
 {
-	FOR_EACH_MAP( g_StaticPropModels, i ) delete g_StaticPropModels[i];
+	FOR_EACH_HASHTABLE( g_StaticPropModels, i ) delete g_StaticPropModels[i];
 	g_StaticPropModels.Purge();
 	g_StaticPropRegistrationComplete = false;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop ) g_StaticPropReceivers[prop].publishedGeneration = 0;
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop ) g_StaticPropReceivers[prop].publishedGeneration = 0;
 	if ( g_Lighting ) { DX12ModelMeshMetadata empty = {}; g_Lighting->RegisterModelMeshMetadata(empty); }
 	if ( !++g_StaticPropModelGeneration ) ++g_StaticPropModelGeneration;
 }
@@ -371,7 +372,7 @@ const T *StaticPropVtxArray( const CUtlBuffer &bytes, const void *owner, int off
 void PublishModelMeshMetadata( const model_t *model, const studiohdr_t *hdr, const studiohwdata_t *hw )
 {
 	bool authoredStatic = false;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop )
 		if ( g_StaticPropReceivers.Key(prop)->GetModel() == model ) { authoredStatic = true; break; }
 	if ( !hw->m_pLODs ) return;
 	for ( int body = 0; body < hdr->numbodyparts; ++body )
@@ -1489,12 +1490,12 @@ struct ShadowModelImmutability_t
 	uint32 staticGeneration;
 	bool immutable;
 };
-CUtlMap<const model_t *, ShadowModelImmutability_t, int> g_ShadowModelImmutability( DefLessFunc(const model_t *) );
+CUtlHashtable<const model_t *, ShadowModelImmutability_t, PointerHashFunctor> g_ShadowModelImmutability;
 bool ShadowModelImmutable( const model_t *model )
 {
 	if ( !model ) return false;
-	int index=g_ShadowModelImmutability.Find(model);
-	if ( index!=g_ShadowModelImmutability.InvalidIndex() && g_ShadowModelImmutability[index].staticGeneration==g_StaticGeneration )
+	auto index=g_ShadowModelImmutability.Find(model);
+	if ( index!=g_ShadowModelImmutability.InvalidHandle() && g_ShadowModelImmutability[index].staticGeneration==g_StaticGeneration )
 		return g_ShadowModelImmutability[index].immutable;
 	studiohdr_t *studio=modelinfo->GetModelType(model)==mod_studio ? modelinfo->GetStudiomodel(model) : NULL;
 	bool immutable=studio && (studio->flags&STUDIOHDR_FLAGS_STATIC_PROP) && studio->numflexdesc==0 && !modelinfo->ModelHasMaterialProxy(model);
@@ -1511,7 +1512,7 @@ bool ShadowModelImmutable( const model_t *model )
 			if ( material->HasProxy() || (found && sway->GetIntValue()!=0) ) { immutable=false; break; }
 		}
 	}
-	if ( index==g_ShadowModelImmutability.InvalidIndex() ) index=g_ShadowModelImmutability.Insert(model);
+	if ( index==g_ShadowModelImmutability.InvalidHandle() ) index=g_ShadowModelImmutability.Insert(model);
 	g_ShadowModelImmutability[index].staticGeneration=g_StaticGeneration; g_ShadowModelImmutability[index].immutable=immutable;
 	return immutable;
 }
@@ -4294,15 +4295,14 @@ void ShadowMapsDX12_RegisterStaticPropReceiver( uint32 ordinal, ICollideable *pr
 	record.ordinal = ordinal; record.authored = authored;
 	CacheCasterSkyRegion( renderable, authored.m_Origin );
 	g_StaticPropRegistrationComplete = false;
-	const int found = g_StaticPropReceivers.Find(renderable);
-	if ( found == g_StaticPropReceivers.InvalidIndex() ) g_StaticPropReceivers.Insert(renderable,record);
+	const auto found = g_StaticPropReceivers.Find(renderable);
+	if ( found == g_StaticPropReceivers.InvalidHandle() ) g_StaticPropReceivers.Insert(renderable,record);
 	else g_StaticPropReceivers[found] = record;
 }
 
 void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 {
 	if ( !ShadowMapsDX12_Active() || !g_Lighting || !renderable ) return;
-	const int propIndex = g_StaticPropReceivers.Find(renderable);
 	const model_t *model = renderable->GetModel();
 	if ( !model || modelinfo->GetModelType(model) != mod_studio ) return;
 	MDLCACHE_CRITICAL_SECTION();
@@ -4311,13 +4311,13 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 	const studiohwdata_t *hw = handle != MDLHANDLE_INVALID ? mdlcache->GetHardwareData(handle) : NULL;
 	if ( !hdr || !hw || !hw->m_pLODs || hw->m_NumLODs <= 0 ||
 		hw->m_RootLOD < 0 || hw->m_RootLOD >= hw->m_NumLODs ) return;
-	int cacheIndex = g_StaticPropModels.Find(model);
-	StaticPropModelVisibility *cached = cacheIndex != g_StaticPropModels.InvalidIndex() ? g_StaticPropModels[cacheIndex] : NULL;
+	const auto cacheIndex = g_StaticPropModels.Find(model);
+	StaticPropModelVisibility *cached = cacheIndex != g_StaticPropModels.InvalidHandle() ? g_StaticPropModels[cacheIndex] : NULL;
 	if ( !cached || cached->header != hdr || cached->hardware != hw || cached->checksum != uint32(hdr->checksum) ||
 		cached->hardwareLODs != hw->m_pLODs || cached->rootLOD != hw->m_RootLOD ||
 		cached->lodCount != hw->m_NumLODs || cached->studioMeshCount != hw->m_NumStudioMeshes )
 	{
-		if ( cached ) { delete cached; g_StaticPropModels.RemoveAt(cacheIndex); }
+		if ( cached ) { delete cached; g_StaticPropModels.RemoveByHandle(cacheIndex); }
 		cached = new StaticPropModelVisibility;
 		cached->header = hdr; cached->hardware = hw; cached->checksum = hdr->checksum;
 		cached->hardwareLODs = hw->m_pLODs; cached->rootLOD = hw->m_RootLOD;
@@ -4329,7 +4329,8 @@ void ShadowMapsDX12_PrepareStaticPropReceiver( IClientRenderable *renderable )
 		g_StaticPropModels.Insert(model,cached);
 		PublishModelMeshMetadata(model,hdr,hw);
 	}
-	if ( propIndex == g_StaticPropReceivers.InvalidIndex() ) return;
+	const auto propIndex = g_StaticPropReceivers.Find(renderable);
+	if ( propIndex == g_StaticPropReceivers.InvalidHandle() ) return;
 	StaticPropReceiverPose &prop = g_StaticPropReceivers[propIndex];
 	if ( prop.publishedGeneration == cached->generation ) return;
 	DX12StaticPropReceiver receiver = {};
@@ -4357,7 +4358,7 @@ void ShadowMapsDX12_PrepareStaticPropReceivers()
 	}
 	if ( g_StaticPropRegistrationComplete ) return;
 	g_StaticPropRegistrationComplete = true;
-	FOR_EACH_MAP( g_StaticPropReceivers, prop )
+	FOR_EACH_HASHTABLE( g_StaticPropReceivers, prop )
 	{
 		ShadowMapsDX12_PrepareStaticPropReceiver(g_StaticPropReceivers.Key(prop));
 		if ( !g_StaticPropReceivers[prop].publishedGeneration ) g_StaticPropRegistrationComplete = false;
