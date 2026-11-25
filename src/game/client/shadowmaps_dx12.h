@@ -50,9 +50,9 @@ extern ConVar r_shadowmap_resolution;	// archived, default 1, clamped [0,3]: 0 l
 										// high is the original 2048 cascade / 512 local / 4096 static sun
 										// applied live at the next main view; recreates atlases and drops cached depth
 extern ConVar r_shadowmap_filter;		// archived, default 1, clamped [0,1]: 0 PCF, 1 PCSS; snapshotted per view packet
-extern ConVar r_shadowmap_spot_near;	// archived, default 4 Source units, clamped [.1,64]; snapshotted per receiver view
-										// spot shadow cameras only (including six-face spots), never influence/attenuation;
-										// effective near = min(setting,max(.1,far/2)); changes rebuild projection and static depth
+extern ConVar r_shadowmap_local_near;	// archived, default 16 Source units, clamped [.1,64]; snapshotted per receiver view
+										// spot and point shadow cameras only, never influence/attenuation; effective
+										// near = min(setting,max(.1,far/2)); changes rebuild projection and static depth
 extern ConVar r_shadowmap_debug;		// cheat, default 0: 0 normal, 1 cascade, 2 visibility, 3 local page/face, 4 caster bounds, 5/6 PCSS diagnostics
 extern ConVar r_shadowmap_autoexec;	// cheat, default "": acceptance automation; ';'-separated cfg list, item i exec'd on the
 										// (i+1)*60th playable main view of each map (no loading plaques/menu backgrounds; independent of `wait`)

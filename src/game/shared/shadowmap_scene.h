@@ -38,7 +38,7 @@ inline bool ShadowMapScene_IsWideSpot( float stopdot2 )				{ return stopdot2 <= 
 inline float ShadowMapScene_NarrowSpotTanHalfFov( float stopdot2 )	{ float c = clamp( stopdot2, 0.017452406f, 1.0f ); return sqrtf( MAX( 0.0f, 1.0f - c * c ) ) / c; } // tan(acos(stopdot2))
 
 // Cube faces: +X,-X,+Y,-Y,+Z,-Z with up vectors +Z,+Z,+Z,+Z,-Y,+Y, nominal 90deg FOV.
-// Point cameras use DX12_SHADOW_CUBE_NEAR; six-face spotlight cameras may use the client's separate near.
+// Shadow cameras use the client's r_shadowmap_local_near; influence volumes keep DX12_SHADOW_CUBE_NEAR.
 void ShadowMapScene_CubeFaceBasis( int face, Vector &forward, Vector &up, Vector &right );
 // Major-axis face selection (ties X, then Y, then Z) of a light-relative direction.
 int ShadowMapScene_SelectCubeFace( const Vector &lightToPoint );

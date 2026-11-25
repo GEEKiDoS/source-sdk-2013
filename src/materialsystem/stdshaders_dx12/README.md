@@ -438,11 +438,20 @@ light's emitter is left out of that light's casters (`ShadowCasterHousesLight`
 in `shadowmaps_dx12.cpp`). It still casts for every other light. c8m1's
 rooftop door lamp (`cs_office/Light_security.mdl`, `disableshadows`) houses the
 `light_spot` above the door; its opaque housing otherwise threw a ring-shaped
-shadow over the wall and door. The spot camera's 4-unit near plane cannot
-clip that housing, which extends about 15 units below the emitter. Props larger
-than 64 units on any axis (facades, skybox geometry) are never fixtures.
-This policy has no separate controls and does not alter entity effects, save
-data, or baked lighting.
+shadow over the wall and door; it extends about 15 units below the emitter.
+Props larger than 64 units on any axis (facades, skybox geometry) are never
+fixtures. This policy has no separate controls and does not alter entity
+effects, save data, or baked lighting.
+
+Local-light shadow cameras, spot and point alike, start at
+`r_shadowmap_local_near` (archived, default 16 units, clamped .1-64; replaces
+`r_shadowmap_spot_near`, which covered spots only, default 4). Anything closer
+to the emitter casts no shadow from that light, which clips fixtures that are
+not authored without shadows: the bulb socket over the c8m1 corridor at
+(2880 3264) threw a disc over the floor until 16 units (8 left a smaller disc).
+Receivers inside that distance get no shadow from the light (an invalid chart
+samples as lit). Influence volumes, illumination and caster transmission keep
+the .1-unit `DX12_SHADOW_CUBE_NEAR`.
 
 Shadow terminator: every shadow map holds the receiver's own mesh as flat facets
 while shading follows the interpolated vertex normal, so near the terminator of a

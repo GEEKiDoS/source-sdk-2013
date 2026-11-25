@@ -77,7 +77,7 @@ ConVar r_shadowmap_local_filter( "r_shadowmap_local_filter", "1", FCVAR_ARCHIVE,
 ConVar r_shadowmap_vram_limit( "r_shadowmap_vram_limit", "0.9", FCVAR_ARCHIVE, "Share of the adapter's dedicated video memory the game may need with its shadow maps. While the requested r_shadowmap_resolution would exceed it, a lower level is used (the setting is kept and retried when it changes or a map loads). Over the smaller OS budget, Windows moves textures and buffers to system memory before render targets. 0 disables the check", true, 0.0f, true, 1.0f );
 ConVar r_shadowmap_sun_angle( "r_shadowmap_sun_angle", "0.27", FCVAR_ARCHIVE, "Minimum sun angular radius in degrees for the PCSS sun filter (r_shadowmap_filter 1) when the map's light_environment authors a smaller SunSpreadAngle (0 makes PCSS behave like PCF); the bake is unchanged", true, 0.0f, true, 5.0f );
 ConVar r_shadowmap_skip_radiance( "r_shadowmap_skip_radiance", "0.0009765625", FCVAR_ARCHIVE, "Skip charted local shadows below this unshadowed direct RGB contribution by fading out the light between twice the cutoff and the cutoff; 0 samples exactly", true, 0.0f, false, 0.0f );
-ConVar r_shadowmap_spot_near( "r_shadowmap_spot_near", "4", FCVAR_ARCHIVE, "Spotlight shadow-camera near distance in Source units (including six-face spots); does not change illumination", true, 0.1f, true, 64.0f );
+ConVar r_shadowmap_local_near( "r_shadowmap_local_near", "16", FCVAR_ARCHIVE, "Local-light (spot and point) shadow-camera near distance in Source units: geometry closer to the emitter (lamp housings, bulb sockets) casts no shadow from it, and receivers that close are unshadowed; does not change illumination", true, 0.1f, true, 64.0f );
 ConVar r_shadowmap_autoexec( "r_shadowmap_autoexec", "", FCVAR_CHEAT, "Acceptance automation: cfg exec'd once per map after the first completed main receiver view" );
 ConVar r_shadowmap_debug( "r_shadowmap_debug", "0", FCVAR_CHEAT, "0 normal, 1 cascades, 2 visibility, 3 pages/faces, 4 caster bounds, 5 sun PCSS blockers, 6 sun PCSS radius; debug builds also check projection math", true, DX12_SHADOW_DEBUG_NONE, true, DX12_SHADOW_DEBUG_PCSS_RADIUS );
 ConVar r_shadowmap_instancing( "r_shadowmap_instancing", "1", FCVAR_ARCHIVE, "Batch rigid opaque static-prop shadow casters into instanced draws (identical depth); 0 draws every caster separately for A/B comparison", true, 0, true, 1 );
@@ -1130,10 +1130,10 @@ public:
 	{
 		active=true; ReleaseLeases();
 		memset(&packet,0,sizeof(packet)); memset(&stats,0,sizeof(stats));
-		// Freeze one finite setting for every spotlight face in this receiver packet.
+		// Freeze one finite setting for every local-light face in this receiver packet.
 		casterKeys.RemoveAll(); casterContent.RemoveAll();
-		spotShadowNear=r_shadowmap_spot_near.GetFloat();
-		spotShadowNear=ShadowMap_IsFiniteFloat(spotShadowNear) ? clamp(spotShadowNear,0.1f,64.0f) : 4.0f;
+		localShadowNear=r_shadowmap_local_near.GetFloat();
+		localShadowNear=ShadowMap_IsFiniteFloat(localShadowNear) ? clamp(localShadowNear,0.1f,64.0f) : 16.0f;
 		realtimeLocals.RemoveAll(); lightRanks.RemoveAll();
 		lights.RemoveAll(); targets.RemoveAll(); ranges.RemoveAll(); indices.RemoveAll(); tileSpecular.RemoveAll(); rects.RemoveAll(); casters.RemoveAll(); volumes.RemoveAll(); relevant.RemoveAll();
 		casterRanges.RemoveAll(); casterIndices.RemoveAll(); drawCandidateFirst=-1; drawCandidateCount=0;
@@ -1147,7 +1147,7 @@ public:
 	bool hasDetails;
 	bool shadowsEnabled;
 	Vector detailMins,detailMaxs;
-	float spotShadowNear;
+	float localShadowNear;
 	float receiverMaxDepth; // Camera-forward distance bound of every receiver pixel (FLT_MAX: unbounded).
 	DX12LightingViewPacket packet;
 	ShadowStats_t stats;
@@ -2948,10 +2948,10 @@ bool BuildLocal( CShadowViewData &data, int index, int relevantIndex )
 	gpu.shadowFar=MAX(gpu.shadowFar,local.influence.zNear+1.0f);
 	if ( !ShadowMap_IsFiniteFloat(gpu.shadowFar) || gpu.shadowFar<=local.influence.zNear )
 		return Fail(SHADOWMAP_ERR_INVALID_METADATA);
-	// Camera coverage only: CSR, receiver relevance and server transmission keep
-	// the shared .1-unit influence near. Points retain their original cube near.
-	// Tiny finite-radius spots retain .1; otherwise cap at half far so n < f.
-	gpu.shadowNear=local.world.type==emit_spotlight ? MIN(data.spotShadowNear,MAX(local.influence.zNear,gpu.shadowFar*0.5f)) : local.influence.zNear;
+	// Camera coverage only: CSR, receiver relevance and server transmission keep the shared .1-unit influence near.
+	// Spots and points alike start at r_shadowmap_local_near, so a fixture around the emitter (a bulb socket on a
+	// c8m1 corridor ceiling threw a disc over the floor) is clipped. Tiny finite-radius lights cap it at half far.
+	gpu.shadowNear=MIN(data.localShadowNear,MAX(local.influence.zNear,gpu.shadowFar*0.5f));
 	float nominalTan=local.influence.tanRenderedHalfFov*float(DX12_SHADOW_LOCAL_SLOT_USEFUL)/float(DX12_SHADOW_LOCAL_SLOT_SIZE);
 	gpu.tanRenderedHalfFov=nominalTan*float(g_ShadowRes.local)/float(g_ShadowRes.localUseful);
 	if ( !ShadowMap_IsFiniteFloat(gpu.shadowNear) || gpu.shadowNear<=0 || gpu.shadowNear>=gpu.shadowFar ||
