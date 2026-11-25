@@ -382,7 +382,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				// The precomputed sun contact mask affects runtime direct visibility before the baked cap.
 				bool charted;
 				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
-				[branch] if ( charted && sunResult.x > 0.0 )
+				[branch] if ( charted && sunResult.x > 0.0 && r.noScreenMasks == 0 )
 					sunResult.x *= DX12_SunContactVisibility( r.screenPos );
 			}
 		}
@@ -569,7 +569,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					// Like the sun's, this light's contact mask (when it has one) scales the map result before the bake cap.
 					// Not within twice the shadow camera's near distance: that is the light's own fixture, which the map
 					// ignores too; its trace toward an emitter inside the housing always reads occluded.
-					[branch] if ( realtimeVisibility > 0.0 && lightRange.distance > 2.0 * light.shadowNear )
+					[branch] if ( realtimeVisibility > 0.0 && r.noScreenMasks == 0 && lightRange.distance > 2.0 * light.shadowNear )
 						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, lightId );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}

@@ -5,7 +5,6 @@
 // generated mechanically by gensource.py, then reviewed. Combo directives are the ps20b set.
 #define DX12_LEGACY_PS20B 1
 #include "dx12_preamble.h"
-#include "envmap_filter.hlsli"
 //========= Copyright Valve Corporation, All rights reserved. ============//
 // Reconstructed from the native Water/WaterCheap PS2b programs. The SDK
 // flashlight is a separate additive pass; it must not add the base twice.
@@ -985,6 +984,9 @@ struct DX12_PS_INPUT
 	float3 highresNormal : TEXCOORD11;
 	float3 highresTangentS : TEXCOORD12;
 	float3 highresTangentT : TEXCOORD13;
+	nointerpolation float4 waterClipX : TEXCOORD14;
+	nointerpolation float4 waterClipY : TEXCOORD15;
+	nointerpolation float4 waterClipZ : TEXCOORD16;
 };
 PS_INPUT DX12ConvertInput( DX12_PS_INPUT dx12In )
 {
@@ -1128,119 +1130,9 @@ float4 WaterNormal( PS_INPUT i )
 #endif
 }
 
+#include "water_pbr.hlsli"
+
 float4 main( DX12_PS_INPUT dx12In ) : SV_Target0
 {
-	PS_INPUT i = DX12ConvertInput( dx12In );
-#if BASETEXTURE && REFLECT && !REFRACT
- HlightReceiver hlr = HighresLightmap_Begin( dx12In.shadowBaseLightmapUV, dx12In.shadowVertexLightmapUV );
- ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.position.xy );
- ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );
- ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );
-#endif
-
-#if FLOWMAP && FLOW_DEBUG == 1
-	return HighresLightmap_Finish( DX12FinishPixel( float4( FlowmapSampler.tex.Sample( FlowmapSampler.smp, i.bump * g_FlowParams1.x ).rgb, 1.0f ), dx12In.fog ) );
-#elif FLOWMAP && FLOW_DEBUG == 2
-	float noise = FlowNoiseSampler.tex.Sample( FlowNoiseSampler.smp, i.world.xy * float2( 1.0f, -1.0f ) * g_FlowParams2.z ).g;
-	return HighresLightmap_Finish( DX12FinishPixel( float4( noise, noise, noise, 1.0f ), dx12In.fog ) );
-#endif
-	float4 normal = WaterNormal( i );
-	float3 result;
-#if CHEAP
-	float3 worldNormal = normal.x * i.tangentS + normal.y * i.tangentT + normal.z * i.normal;
-	float3 eye = NormalizeSampler.tex.Sample( NormalizeSampler.smp, i.eye ).xyz;
-	float ndotv = dot( worldNormal, eye );
-	float3 reflectionVector = 2.0f * ndotv * worldNormal - dot( worldNormal, worldNormal ) * eye;
-	float3 reflection = Envmap_SampleLegacy( EnvmapSampler.tex, EnvmapSampler.smp, reflectionVector ).rgb * ENV_MAP_SCALE * g_ReflectTint.rgb;
-	float3 fogColor = g_WaterFogColor.rgb;
-#if HDRENABLED
-	fogColor = pow( fogColor, 2.2f );
-#endif
-#if FRESNEL
-	float fresnel = 1.0f - max( ndotv, 0.0f );
-	float fresnel2 = fresnel * fresnel;
-	fresnel *= fresnel2 * fresnel2;
-#else
-	float fresnel = g_ReflectTint.a;
-#endif
-	result = lerp( fogColor, reflection, fresnel ) * LINEAR_LIGHT_SCALE;
-#else
-	float4 screenUV = i.reflectRefract / i.projected.w;
-	float2 distortion = float2( dot( g_WorldToViewWater0, normal.xyz ), dot( g_WorldToViewWater1, normal.xyz ) ) * normal.a;
-	float depth = 1.0f;
-#if REFRACT && ABOVEWATER
-	float4 unwarped = RefractSampler.tex.Sample( RefractSampler.smp, screenUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
-	// The FP16 scene copy can contain alpha above one where the background
-	// did not write water depth. Retail's normalized target clamps it.
-	depth = saturate( unwarped.a );
-#endif
-	float4 scales = g_ReflectRefractScale;
-#if REFRACT && !BASETEXTURE
-	scales *= depth;
-#endif
-	float4 warpedUV = screenUV + distortion.xyyx * scales;
-	float tintRamp = 1.0f;
-#if REFRACT
-	float4 refraction = RefractSampler.tex.Sample( RefractSampler.smp, warpedUV.wz * g_InvViewportTransform.xy + g_InvViewportTransform.zw );
-#if ABOVEWATER
-	// Reject distortion across the shore instead of pulling unfogged objects
-	// over the water. The native shader falls back to the unwarped sample.
-	refraction = refraction.a >= 0.05f ? refraction : unwarped;
-	depth = saturate( refraction.a );
-	tintRamp = saturate( depth * 3.5f );
-	float3 refractedColor = lerp( refraction.rgb, refraction.rgb * g_RefractTint.rgb, tintRamp );
-	float3 fogColor = g_WaterFogColor.rgb;
-#if LIGHTMAPWATERFOG
-	fogColor *= LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap ).rgb * LIGHT_MAP_SCALE * LINEAR_LIGHT_SCALE;
-#endif
-	result = lerp( refractedColor, fogColor, depth );
-#else
-	float waterFog = saturate( (i.projected.z - g_WaterFogParams.x) / g_WaterFogParams.y );
-	result = lerp( refraction.rgb, g_WaterFogColor.rgb, waterFog );
-#endif
-#else
-	result = g_WaterFogColor.rgb;
-#endif
-#if REFLECT && !FLASHLIGHT
-	float3 reflection = ReflectSampler.tex.Sample( ReflectSampler.smp, warpedUV.xy ).rgb * g_ReflectTint.rgb;
-	float fresnel = 1.0f - saturate( dot( normalize( i.eye ), normal.xyz ) );
-	fresnel *= fresnel;
-	fresnel *= fresnel;
-#if REFRACT
-#if !BASETEXTURE
-	fresnel *= saturate( (depth - 0.05f) * 20.0f );
-#endif
-	reflection *= saturate( depth * 2.0f );
-	result += reflection * fresnel;
-#elif BASETEXTURE && !REFRACT
-	float4 base = BaseTextureSampler.tex.Sample( BaseTextureSampler.smp, i.bump );
-	float3 dp = saturate( float3( dot( normal.xyz, bumpBasis[0] ),
-		dot( normal.xyz, bumpBasis[1] ), dot( normal.xyz, bumpBasis[2] ) ) );
-	dp *= dp;
-	float3 lighting = HighresLightmap_Plane( hlr, 1, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap12.xy ) ).rgb * dp.x +
-		HighresLightmap_Plane( hlr, 2, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap12.wz ) ).rgb * dp.y + HighresLightmap_Plane( hlr, 3, LightmapSampler.tex.Sample( LightmapSampler.smp, i.lightmap3 ) ).rgb * dp.z;
-	float sum = dot(dp, float3(1,1,1));
- ShadowMapDirect hld = ShadowMap_GatherDirect(hls, ShadowMap_ShadeBumped(mul(bumpBasis[0], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), mul(bumpBasis[1], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), mul(bumpBasis[2], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal)), dp / sum));
- result = base.rgb * (lighting * ((cHlightRoute.x && !hlr.nativeOnly ? 1 : LIGHT_MAP_SCALE) / sum) + (hld.diffuse * hlr.valid)) + reflection * fresnel * base.a;
-#else
-	result = lerp( g_WaterFogColor.rgb, reflection, fresnel );
-#endif
-#endif
-#if FLASHLIGHT
-	float2 screenPos = (i.projected.xy / i.projected.w) * 0.5f + 0.5f;
-	float3 flashlight = DoFlashlight( g_FlashlightPos, i.world, i.flashlight, normal.xyz, g_FlashlightAttenuation.xyz, g_FlashlightAttenuation.w, FlashlightSampler, FlashlightDepthSampler, RandomRotationSampler, 0, FLASHLIGHTSHADOWS != 0, true, screenPos, false, cFlashlightColor, cFlashlightScreenScale, g_ShadowTweaks );
-	flashlight *= i.flashlight.w > 0.0f ? 1.0f : 0.0f;
-	result = flashlight * tintRamp * g_WaterFogColor.rgb * g_FlashlightTint * LINEAR_LIGHT_SCALE;
-#endif
-#endif
-	// SDK SetPixelShaderFogParams stores +start/range; native stores its
-	// negative. Both yield the native horizontal radial, squared fog blend.
-	float fog = min( g_PixelFogParams.z,
-		saturate( length( g_EyePos.xy - i.world.xy ) * g_PixelFogParams.w - g_PixelFogParams.x ) );
-#if FLASHLIGHT
-	result *= 1.0f - fog * fog;
-	return HighresLightmap_Finish( DX12FinishPixel( float4( result, 0.0f ), dx12In.fog ) );
-#else
-	return HighresLightmap_Finish( DX12FinishPixel( float4( lerp( result, g_LinearFogColor.rgb, fog * fog ), 1.0f ), dx12In.fog ) );
-#endif
+	return HighresLightmap_Finish( WaterPBR_Main( dx12In ) );
 }

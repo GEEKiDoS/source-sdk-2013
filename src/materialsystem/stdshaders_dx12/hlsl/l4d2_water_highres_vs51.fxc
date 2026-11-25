@@ -113,6 +113,9 @@ struct VS_OUTPUT
 	float3 highresNormal : TEXCOORD11;
 	float3 highresTangentS : TEXCOORD12;
 	float3 highresTangentT : TEXCOORD13;
+	nointerpolation float4 waterClipX : TEXCOORD14;
+	nointerpolation float4 waterClipY : TEXCOORD15;
+	nointerpolation float4 waterClipZ : TEXCOORD16;
 	DX12ClipDistances dx12Clip;	// SV_ClipDistance0/1 (trailing; pixel inputs omit it)
 };
 VS_OUTPUT DX12FinishVertex( VS_OUTPUT o )
@@ -175,5 +178,8 @@ o.highresPosition = mul( float4( v.position.xyz, 1 ), cModel[0] );
 o.highresNormal = normalize( mul( hlightObjectNormal, (float3x3)cModel[0] ) );
 o.highresTangentS = normalize( mul( v.tangentS, (float3x3)cModel[0] ) );
 o.highresTangentT = normalize( mul( v.tangentT, (float3x3)cModel[0] ) );
+o.waterClipX = mul( float4( 1, 0, 0, 0 ), cViewProj );
+o.waterClipY = mul( float4( 0, 1, 0, 0 ), cViewProj );
+o.waterClipZ = mul( float4( 0, 0, 1, 0 ), cViewProj );
 return DX12FinishVertex( o );
 }

@@ -54,6 +54,9 @@ struct ShadowMapReceiver
 	uint bakedLocalDirect; // Valid world highres owner with baked local-direct RGB.
 	uint2 unbakedLocalRange; // Sorted canonical selected-local indices in raw t1032.
 	uint bakedPropPrimitive; // 0xFFFFFFFF = dynamic/moved/unknown; topology lookup is lazy.
+	// 1: this surface is not in the scene depth the screen-space contact masks were traced from (water drawn after
+	// the opaque pass); a mask texel there belongs to whatever is behind it, so the receiver skips the masks.
+	uint noScreenMasks;
 };
 // The plane normal is translation invariant, so its derivatives may come from any translate of positionWS. Far from the
 // origin a world-space interpolant keeps ~1e-3 unit steps (float32 at |x| ~ 16k) while adjacent close-up pixels are ~5e-3
@@ -82,6 +85,7 @@ ShadowMapReceiver ShadowMap_BeginReceiverRelative( float3 positionWS, float3 rel
 	r.bakedLocalDirect = 0;
 	r.unbakedLocalRange = uint2( 0, 0 );
 	r.bakedPropPrimitive = 0xFFFFFFFF;
+	r.noScreenMasks = 0;
 	return r;
 }
 ShadowMapReceiver ShadowMap_BeginReceiver( float3 positionWS, float3 vertexNormalWS, float2 svPositionXY )
@@ -1238,6 +1242,9 @@ struct ShadowMapShading
 	float3 E;
 	float exponent;
 	bool specular;
+	float ggxA2; // > 0 selects the GGX specular lobe (ShadowMap_WithGGXSpecular) instead of Phong
+	float ggxF0;
+	float3 ggxN; // GGX shading normal; N is the first diffuse basis in bumped mode
 };
 ShadowMapShading ShadowMap_ShadeLambert( float3 N )
 {
@@ -1250,6 +1257,9 @@ ShadowMapShading ShadowMap_ShadeLambert( float3 N )
 	s.E = 0.0;
 	s.exponent = 1.0;
 	s.specular = false;
+	s.ggxA2 = 0.0;
+	s.ggxF0 = 0.0;
+	s.ggxN = N;
 	return s;
 }
 ShadowMapShading ShadowMap_ShadeHalfLambert( float3 N, bool halfLambert )
@@ -1273,6 +1283,46 @@ ShadowMapShading ShadowMap_WithSpecular( ShadowMapShading s, float3 eyeDirWS, fl
 	s.E = eyeDirWS;
 	s.exponent = specExponent;
 	return s;
+}
+// Dielectric GGX (height-correlated Smith, Schlick F), pi-premultiplied like pbr_brdf.hlsli PBR_Specular: Source
+// light units treat a Lambert surface's output as albedo * N.L * C. alpha2 is GGX alpha^2 (alpha = roughness^2).
+// Used by surfaces without a PBR material block (water); PBR shaders keep pbr_brdf.hlsli.
+static const float SHADOWMAP_MAX_SPECULAR = 60000.0;
+float ShadowMap_GGX( float3 L, float3 N, float3 V, float alpha2, float F0 )
+{
+	float NdotL = dot( N, L );
+	float result = 0.0;
+	[branch] if ( NdotL > 0.0 )
+	{
+		float NdotV = max( dot( N, V ), 1e-4 );
+		float3 H = normalize( L + V );
+		float NdotH = saturate( dot( N, H ) );
+		float VdotH = saturate( dot( V, H ) );
+		float d = NdotH * NdotH * ( alpha2 - 1.0 ) + 1.0;
+		float D = alpha2 / ( d * d );
+		float lambdaV = NdotL * sqrt( NdotV * NdotV * ( 1.0 - alpha2 ) + alpha2 );
+		float lambdaL = NdotV * sqrt( NdotL * NdotL * ( 1.0 - alpha2 ) + alpha2 );
+		float Vis = 0.5 / ( lambdaV + lambdaL );
+		float x = 1.0 - VdotH;
+		float x2 = x * x;
+		float F = F0 + ( 1.0 - F0 ) * x2 * x2 * x;
+		result = min( D * Vis, SHADOWMAP_MAX_SPECULAR ) * F * NdotL;
+	}
+	return result;
+}
+// GGX specular instead of Phong around shading normal N; E is the unit direction toward the eye.
+ShadowMapShading ShadowMap_WithGGXSpecular( ShadowMapShading s, float3 N, float3 eyeDirWS, float alpha2, float F0 )
+{
+	s.specular = true;
+	s.E = eyeDirWS;
+	s.ggxN = N;
+	s.ggxA2 = max( alpha2, 1e-6 );
+	s.ggxF0 = F0;
+	return s;
+}
+float ShadowMap_SpecularAngular( ShadowMapShading s, float3 L )
+{
+	return s.ggxA2 > 0.0 ? ShadowMap_GGX( L, s.ggxN, s.E, s.ggxA2, s.ggxF0 ) : ShadowMap_Angular( 3, L, s.N, 0.0, 0.0, 0.0, s.E, s.exponent );
 }
 struct ShadowMapDirect
 {
@@ -1319,7 +1369,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 				// Detail point receivers have no per-pixel surface and do not consume the mask.
 				bool charted;
 				sunResult = ShadowMap_SunResultCharted( r, 1.0, charted, csmWeight );
-				[branch] if ( charted && sunResult.x > 0.0 && s.mode != 4 )
+				[branch] if ( charted && sunResult.x > 0.0 && s.mode != 4 && r.noScreenMasks == 0 )
 					sunResult.x *= DX12_SunContactVisibility( r.screenPos );
 			}
 		}
@@ -1330,7 +1380,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		if ( angular > 0.0 ) d.diffuse += cSunRadiance.rgb * angular * d.sunVisibility;
 		if ( s.specular )
 		{
-			float specularAngular = ShadowMap_Angular( 3, L, s.N, 0.0, 0.0, 0.0, s.E, s.exponent );
+			float specularAngular = ShadowMap_SpecularAngular( s, L );
 			if ( specularAngular > 0.0 ) d.specular += cSunRadiance.rgb * specularAngular * d.sunVisibility;
 		}
 	}
@@ -1409,7 +1459,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 		float3 radiance = ShadowMap_StandardLightRadianceInRange( light, lightRange.offset, lightRange.distance, L );
 		float angular = ShadowMap_Angular( s.mode, L, s.N, s.basis1, s.basis2, s.weights, s.E, s.exponent );
 		float specularAngular = 0.0;
-		if ( s.specular ) specularAngular = ShadowMap_Angular( 3, L, s.N, 0.0, 0.0, 0.0, s.E, s.exponent );
+		if ( s.specular ) specularAngular = ShadowMap_SpecularAngular( s, L );
 		if ( ( angular > 0.0 || specularAngular > 0.0 ) && any( radiance != 0.0 ) )
 		{
 			const bool charted = light.realtimeWeight > 0.0 && ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) == 0;
@@ -1436,7 +1486,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.vertexNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 #if !defined( PBR_LEAF_VERTEX )
-					[branch] if ( realtimeVisibility > 0.0 && s.mode != 4 && lightRange.distance > 2.0 * light.shadowNear )
+					[branch] if ( realtimeVisibility > 0.0 && s.mode != 4 && r.noScreenMasks == 0 && lightRange.distance > 2.0 * light.shadowNear )
 						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, light.lightId );
 #endif
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
@@ -1479,6 +1529,7 @@ float3 ShadowMap_DetailDirect( float3 lightingOriginWS, float3 orientationNormal
 	r.bakedLocalDirect = 0;
 	r.unbakedLocalRange = uint2( 0, 0 );
 	r.bakedPropPrimitive = 0xFFFFFFFF;
+	r.noScreenMasks = 0;
 	ShadowMapShading s = ShadowMap_ShadeLambert( orientationNormalWS );
 	s.mode = 4;
 	ShadowMapDirect d = ShadowMap_GatherDirect( r, s );

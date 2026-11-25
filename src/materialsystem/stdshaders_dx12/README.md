@@ -222,12 +222,46 @@ and props. They stay outside the main view's PBR G-buffer/two-pass bracket, and 
 volumetrics run only in the main scene bracket, so SSR never replaces a water surface's planar reflection.
 Refraction views keep the full-quality path because they are seen almost directly through shallow water.
 
-The game-owned L4D2 water pixel shader (`l4d2_water_ps20b`, `stdshaders/l4d2_water.cpp`) now has an explicit
-native high-resolution twin (`l4d2_water_highres_{vs,ps}51`). Its sampler 3 remains the lightmap role, while the
-three reflection-with-base samples join the enhanced atlas and selected direct-light receiver. Cheap, refraction-only,
-flashlight and `LIGHTMAPWATERFOG` branches retain their original policy. The DX12 backend aliases the legacy
-`l4d2_water_{vs20,ps20b}` names to these native twins on enhanced maps; no legacy water exemption or retail-lightmap
-fallback remains.
+The game-owned L4D2 water pixel shader (`l4d2_water_ps20b`, `stdshaders/l4d2_water.cpp`) has an explicit native
+high-resolution twin (`l4d2_water_highres_{vs,ps}51`). On enhanced maps the backend routes **every** combo of the
+legacy `l4d2_water_{vs20,ps20b}` names to these twins (`ResolveActiveNamedShader`), not only the lightmap-reading
+cells; reflection views and shadow passes keep the legacy program. Sampler 3 remains the lightmap role, and the
+three reflection-with-base samples join the enhanced atlas and selected direct-light receiver.
+
+### Physically based L4D2 water
+
+The twin's shading is `native_src/water_pbr.hlsli`: `genhighres.py` replaces the generated `main` with
+`return WaterPBR_Main( dx12In );` and includes the file right before it, so it reads the twin's generated samplers,
+game registers, `PS_INPUT` and `WaterNormal` (flowmap, multitexture and single normal-map decoding stay generated
+from the retail source). The game DLL, its combos, sampler bindings, registers and every `$parameter` are unchanged;
+regenerate with `genmat.py water_refract` after generator changes. The model:
+
+- **Surface**: the rippled normal goes to world space through the vertex tangent frame. Exact dielectric Fresnel of
+  water (IOR 1.333, F0 0.0204), including total internal reflection when the camera is below the surface: Snell's
+  window shows the world above, the rest of the underside reflects the water body. `$nofresnel` cheap water keeps
+  `$reflectblendfactor`.
+- **Energy**: what is reflected is not transmitted (`lerp( transmitted, reflected, F )`, not retail's add), and
+  reflection no longer fades with water depth; only the first 5% of the fog range at the shore fades the surface.
+- **Reflection**: the planar reflection is read along the physically reflected ray. A ray R from the surface reads the
+  main camera's projection of its mirror image at infinity (`cViewProj` direction rows, three constant VS outputs
+  `waterClip*`); the flat mirror lands on the pixel itself, as retail. Ripple slopes follow the normal map times
+  `2 * $reflectamount` (retail's screen offset matches a true reflection only looking straight down at 0.5), and the
+  unresolved ripples (GGX roughness 0.08 plus pixel-footprint normal variance) are integrated over a 9-tap slope lobe.
+  The projection turns that isotropic lobe into vertical streaks at grazing angles, so reflections stretch as on real
+  water. `$reflecttint` still scales the result.
+- **Direct light**: the reflection target carries neither the sun nor local lights, so the surface adds their GGX
+  specular through the generic gather (`ShadowMap_WithGGXSpecular`), shadow-mapped: a low sun draws a glitter path
+  cut by pier and piling shadows. It is physically many times brighter than sunlit ground; bloom reacts accordingly
+  (`mat_postfx_bloom_intensity 0` shows the surface alone). Water receivers set `noScreenMasks`: screen-space contact
+  masks at a water pixel were traced for the underwater scene behind it and printed its outlines onto the surface.
+- **Volume**: Beer-Lambert. `$refracttint` is the transmittance of the first 1/3.5 of the fog range (retail's ramp end
+  point), exponential in between; extinction toward `$fogcolor` is exponential with optical depth 3 renormalized to
+  be opaque at `$fogend`. Seen from below, the fog applies to everything on the surface. `$lightmapwaterfog` lights the
+  body wherever it is visible, not only behind refraction.
+- **Flashlight pass**: the light refracted into the body (both Fresnel transmissions, retail's `$fogcolor *
+  $flashlighttint` scattering) plus the GGX glint.
+- **`$basetexture` film**: the lit base is attenuated by `1 - F * alpha`, and reflection and direct specular are added
+  times the base alpha.
 
 The above-water refraction shader uses the opaque framebuffer copy's alpha as
 normalized water depth. Sky/background pixels can carry alpha above one in the

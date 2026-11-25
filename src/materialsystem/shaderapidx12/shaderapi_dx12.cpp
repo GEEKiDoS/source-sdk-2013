@@ -1151,9 +1151,10 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 		ShaderRecordDX12 *record = ResolveNamedShader( pszName, bPixel, nStaticIndex, nDynamicIndex );
 		char highresName[256];
 		const ShaderRecordDX12 *pixel = bPixel ? record : reinterpret_cast<ShaderRecordDX12 *>( m_hBoundPS );
+		// L4D2 water takes its native twin in every combo: the twin carries the physically based water shading
+		// (stdshaders_dx12/native_src/water_pbr.hlsli), not only the lightmap-reading $basetexture/$lightmapwaterfog cells.
 		const bool l4d2LegacyReceiver = bPixel &&
-			( !V_strcmp( pszName, "l4d2_lightmappedgeneric_ps20b" ) ||
-			  ( !V_strcmp( pszName, "l4d2_water_ps20b" ) && m_ActiveSnapshot.fixed.textureEnabled[3] ) );
+			( !V_strcmp( pszName, "l4d2_lightmappedgeneric_ps20b" ) || !V_strcmp( pszName, "l4d2_water_ps20b" ) );
 		const bool needsHighres = l4d2LegacyReceiver || ( pixel && ( pixel->lightmapSamplerMask || pixel->highresAbi ) );
 		if ( needsHighres && record && !record->highresAbi )
 		{

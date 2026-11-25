@@ -123,14 +123,19 @@ def extra_vertex(text, logical):
             match = re.fullmatch(r'TEXCOORD(\d+)', member.group(6), re.I)
             if match: used.add(int(match.group(1)))
     decl = []
-    for typ, name in [('float2', 'shadowBaseLightmapUV'), ('float2', 'shadowVertexLightmapUV'), ('float3', 'highresPosition'),
-                      ('float3', 'highresNormal'), ('float3', 'highresTangentS'), ('float3', 'highresTangentT')]:
+    members = [('float2', 'shadowBaseLightmapUV'), ('float2', 'shadowVertexLightmapUV'), ('float3', 'highresPosition'),
+               ('float3', 'highresNormal'), ('float3', 'highresTangentS'), ('float3', 'highresTangentT')]
+    retail_water = logical == 'l4d2_water_vs20'
+    if retail_water:
+        # native_src/water_pbr.hlsli projects reflected directions: cViewProj's direction rows, constant per draw.
+        members += [('float4', 'waterClipX'), ('float4', 'waterClipY'), ('float4', 'waterClipZ')]
+    for typ, name in members:
         slot = next(n for n in range(32) if n not in used)
         used.add(slot)
-        interpolation = {'shadowBaseLightmapUV': 'centroid ', 'shadowVertexLightmapUV': 'nointerpolation '}.get(name, '')
+        interpolation = 'centroid ' if name == 'shadowBaseLightmapUV' else (
+            'nointerpolation ' if name == 'shadowVertexLightmapUV' or name.startswith('waterClip') else '')
         decl.append(f'\t{interpolation}{typ} {name} : TEXCOORD{slot};')
     text = text[:st[2]] + '\n' + '\n'.join(decl) + '\n' + text[st[2]:]
-    retail_water = logical == 'l4d2_water_vs20'
     for headers, bs, be in reversed(gs.main_defs(text)):
         arg = gs.param_parts(headers[0][1][0])[2]
         uv = 'lightmap' if retail_water else 'vLightmapTexCoord'
@@ -146,6 +151,9 @@ def extra_vertex(text, logical):
         else:
             ts, tt = ('tangentS', 'tangentT') if retail_water else ('vTangentS', 'vTangentT')
             code += f'o.highresTangentS = normalize( mul( {arg}.{ts}, (float3x3)cModel[0] ) );\no.highresTangentT = normalize( mul( {arg}.{tt}, (float3x3)cModel[0] ) );\n'
+        if retail_water:
+            code += ''.join(f'o.waterClip{axis} = mul( float4( {row} ), cViewProj );\n'
+                            for axis, row in (('X', '1, 0, 0, 0'), ('Y', '0, 1, 0, 0'), ('Z', '0, 0, 1, 0')))
         body = text[bs + 1:be]
         returns = list(re.finditer(r'\breturn\s+o\s*;', gs.mask(body)))
         if len(returns) != 1: raise RuntimeError('highres vertex needs final o return: ' + logical)
@@ -215,13 +223,8 @@ def transform(text, logical, stage, folded_names):
     elif logical == 'l4d2_water_ps20b':
         # Inlined retail flashlight helper: retain its eight-tap weights, but
         # translate its raw/compare depth reads as for the common helper.
+        # pixel_entry replaces main with native_src/water_pbr.hlsli.
         text = gs.gc.shadow_sampler_reads(text)
-        anchor = 'result = base.rgb * lighting * (LIGHT_MAP_SCALE / dot( dp, float3( 1, 1, 1 ) ))'
-        basis = ', '.join(f'mul(bumpBasis[{i}], float3x3(dx12In.highresTangentS, dx12In.highresTangentT, dx12In.highresNormal))' for i in range(3))
-        text = gs.shadow_replace(text, anchor,
-            'float sum = dot(dp, float3(1,1,1));\n'
-            ' ShadowMapDirect hld = ShadowMap_GatherDirect(hls, ShadowMap_ShadeBumped(' + basis + ', dp / sum));\n'
-            ' result = base.rgb * (lighting * ((cHlightRoute.x && !hlr.nativeOnly ? 1 : LIGHT_MAP_SCALE) / sum) + hld.diffuse)')
     if logical == 'water_ps20b':
         text = gs.shadow_replace(text, 'struct DrawWater_params_t\n{',
             'struct DrawWater_params_t\n{\n#if BASETEXTURE\n HlightReceiver hlightReceiver;\n ShadowMapReceiver hlightShadow;\n float3 hlightTangentS, hlightTangentT, hlightNormal;\n#endif')
@@ -275,8 +278,16 @@ def pixel_entry(text, logical, folded_names):
                     ' ShadowMap_SetBakedFace( smr, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );')
             text = text[:match.start()] + code + text[match.end():]
         return finish_pixels(text)
+    if logical == 'l4d2_water_ps20b':
+        # The native twin's shading is native_src/water_pbr.hlsli (physically based water), which builds its own
+        # receivers from the generated inputs; the retail body is replaced. Combos, samplers and registers are kept.
+        for headers, bs, be in reversed(gs.main_defs(text)):
+            text = text[:bs + 1] + '\n\treturn WaterPBR_Main( dx12In );\n' + text[be:]
+        first = min(header[0].start() for headers, _, _ in gs.main_defs(text) for header in headers)
+        line = text.rfind('\n', 0, first) + 1
+        text = text[:line] + '#include "water_pbr.hlsli"\n\n' + text[line:]
+        return finish_pixels(text)
     guard = {'water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT',
-             'l4d2_water_ps20b': 'BASETEXTURE && REFLECT && !REFRACT',
              'shatteredglass_ps20b': '1'}[logical]
     for headers, bs, be in reversed(gs.main_defs(text)):
         body = text[bs + 1:be]
@@ -286,7 +297,7 @@ def pixel_entry(text, logical, folded_names):
                 f' ShadowMapReceiver hls = ShadowMap_BeginReceiver( dx12In.highresPosition, dx12In.highresNormal, dx12In.{position}.xy );\n'
                 ' ShadowMap_SetBakedSun( hls, hlr.sun, hlr.sunDilated );\n'
                 ' ShadowMap_SetBakedFace( hls, hlr.faceId, hlr.q, hlr.localVisibilityEligible, hlr.bakedDirectEligible, hlr.unbakedLocalRange );\n')
-        if logical not in {'water_ps20b', 'l4d2_water_ps20b'}:
+        if logical != 'water_ps20b':
             code += ' ShadowMapDirect hld = ShadowMap_GatherDirect( hls, ShadowMap_ShadeLambert( dx12In.highresNormal ) );\n'
         code += '#endif\n'
         body = body[:conv.end()] + code + body[conv.end():]
