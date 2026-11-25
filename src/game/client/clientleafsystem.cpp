@@ -195,6 +195,10 @@ public:
 	virtual void EnumerateShadowsInLeaves( int leafCount, LeafIndex_t* pLeaves, IClientLeafShadowEnum* pEnum );
 	virtual void EnumerateShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
 	virtual void EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink );
+	virtual uint64 StaticCasterRevision() const { return m_StaticCasterRevision; }
+	virtual void EnumerateDynamicShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink,
+		const CUtlVector<ClientRenderHandle_t> &liveProps );
+	virtual void GetShadowPropCandidates( CUtlVector<ClientRenderHandle_t> &props ) const;
 
 	// methods of ISpatialLeafEnumerator
 public:
@@ -298,6 +302,8 @@ private:
 	{ 
 		return s_ClientLeafSystem.m_Renderables[renderable].m_LeafList;
 	}
+	static unsigned int &FirstDynamicInLeaf( int leaf ) { return s_ClientLeafSystem.m_Leaf[leaf].m_FirstDynamic; }
+	static unsigned int &FirstDynamicLeaf( ClientRenderHandle_t handle ) { return s_ClientLeafSystem.m_Renderables[handle].m_DynamicLeaves; }
 
 	static unsigned short& FirstShadowInLeaf( int leaf ) 
 	{ 
@@ -350,6 +356,7 @@ private:
 		int					m_EnumCount;	// Have I been added to a particular shadow yet?
 		int					m_TranslucencyCalculated;
 		unsigned int		m_LeafList;		// What leafs is it in?
+		unsigned int m_DynamicLeaves;
 		unsigned int		m_RenderLeaf;	// What leaf do I render in?
 		unsigned char		m_Flags;		// rendering flags
 		unsigned char		m_RenderGroup;	// RenderGroup_t type
@@ -415,6 +422,7 @@ private:
 	struct ClientLeaf_t
 	{
 		unsigned int	m_FirstElement;
+		unsigned int m_FirstDynamic;
 		unsigned short	m_FirstShadow;
 
 		unsigned short	m_FirstDetailProp;
@@ -457,6 +465,8 @@ private:
 
 	// Maintains the list of all renderables in a particular leaf
 	CBidirectionalSet< int, ClientRenderHandle_t, unsigned int, unsigned int >	m_RenderablesInLeaf;
+	CBidirectionalSet< int, ClientRenderHandle_t, unsigned int, unsigned int > m_DynamicInLeaf;
+	uint64 m_StaticCasterRevision = 1;
 
 	// Maintains a list of all shadows in a particular leaf 
 	CBidirectionalSet< int, ClientLeafShadowHandle_t, unsigned short, unsigned int >	m_ShadowsInLeaf;
@@ -618,6 +628,7 @@ CClientLeafSystem::CClientLeafSystem() : m_ShadowStaticProps( DefLessFunc( IColl
 {
 	// Set up the bi-directional lists...
 	m_RenderablesInLeaf.Init( FirstRenderableInLeaf, FirstLeafInRenderable );
+	m_DynamicInLeaf.Init( FirstDynamicInLeaf, FirstDynamicLeaf );
 	m_ShadowsInLeaf.Init( FirstShadowInLeaf, FirstLeafInShadow ); 
 	m_ShadowsOnRenderable.Init( FirstShadowOnRenderable, FirstRenderableInShadow );
 }
@@ -779,6 +790,7 @@ void CClientLeafSystem::LevelInitPreEntity()
 
 	ClientLeaf_t newLeaf;
 	newLeaf.m_FirstElement = m_RenderablesInLeaf.InvalidIndex();
+	newLeaf.m_FirstDynamic = m_DynamicInLeaf.InvalidIndex();
 	newLeaf.m_FirstShadow = m_ShadowsInLeaf.InvalidIndex();
 	memset( newLeaf.m_pSubSystemData, 0, sizeof( newLeaf.m_pSubSystemData ) );
 	newLeaf.m_FirstDetailProp = 0;
@@ -799,6 +811,8 @@ void CClientLeafSystem::LevelShutdownPostEntity()
 	m_ViewModels.Purge();
 	m_Renderables.Purge();
 	m_RenderablesInLeaf.Purge();
+	m_DynamicInLeaf.Purge();
+	++m_StaticCasterRevision;
 	m_Shadows.Purge();
 
 	// delete subsystem data
@@ -948,6 +962,8 @@ void CClientLeafSystem::NewRenderable( IClientRenderable* pRenderable, RenderGro
 	info.m_TranslucencyCalculatedView = VIEW_ILLEGAL;
 	info.m_FirstShadow = m_ShadowsOnRenderable.InvalidIndex();
 	info.m_LeafList = m_RenderablesInLeaf.InvalidIndex();
+	info.m_DynamicLeaves = m_DynamicInLeaf.InvalidIndex();
+	if ( flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
 	info.m_Flags = flags;
 	info.m_RenderGroup = (unsigned char)type;
 	info.m_EnumCount = 0;
@@ -1038,6 +1054,7 @@ void CClientLeafSystem::ChangeRenderableRenderGroup( ClientRenderHandle_t handle
 	if ( info.m_RenderGroup!=(unsigned char)group )
 	{
 		InvalidateShadowCasterQuery();
+		if ( info.m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
 		ShadowMapsDX12_InvalidateCasterRegistration( info.m_pRenderable );
 	}
 	info.m_RenderGroup = (unsigned char)group;
@@ -1526,6 +1543,8 @@ void CClientLeafSystem::AddRenderableToLeaf( int leaf, ClientRenderHandle_t rend
 #endif // DUMP_RENDERABLE_LEAFS
 
 	m_RenderablesInLeaf.AddElementToBucket(leaf, renderable);
+	if ( m_Renderables[renderable].m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
+	else m_DynamicInLeaf.AddElementToBucket( leaf, renderable );
 	if ( m_SunLeafRanks.Count() && m_SunLeafRanks[leaf]>=0 )
 		m_OccupiedSunRanks.Set(m_SunLeafRanks[leaf]);
 	RemoveUnlinkedShadowCaster( renderable );
@@ -1642,6 +1661,8 @@ void CClientLeafSystem::InsertIntoTree( ClientRenderHandle_t &handle )
 void CClientLeafSystem::RemoveFromTree( ClientRenderHandle_t handle )
 {
 	InvalidateShadowCasterQuery();
+	if ( m_Renderables[handle].m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
+	else m_DynamicInLeaf.RemoveElement( handle );
 	m_RenderablesInLeaf.RemoveElement( handle );
 	UpdateUnlinkedShadowCaster( handle );
 
@@ -1673,6 +1694,7 @@ void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 	if ( !m_Renderables.IsValidIndex( handle ) )
 		return;
 	InvalidateShadowCasterQuery();
+	if ( m_Renderables[handle].m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
 
 	if ( (m_Renderables[handle].m_Flags & RENDER_FLAGS_HASCHANGED ) == 0 )
 	{
@@ -1819,13 +1841,7 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 		}
 	}
 
-	bool bTwoPass = ( flags & RENDER_FLAGS_TWOPASS ) != 0 || pRenderable->IsTwoPass();
-	if ( pModel && ( modelType == mod_studio || modelType == mod_brush ) )
-	{
-		bTwoPass = bTwoPass || modelinfo->IsTranslucentTwoPass( pModel );
-	}
-	if ( bTwoPass )
-		return true;
+	if ( flags & RENDER_FLAGS_TWOPASS ) return true;
 
 	// Do not use the ordinary render bucket or FxBlend here: distance-faded engine
 	// static props can be in its translucent bucket while their materials are opaque.
@@ -1835,6 +1851,12 @@ bool CClientLeafSystem::IsEligibleShadowCaster( ClientRenderHandle_t handle )
 		bTranslucent = bTranslucent || pRenderable->IsTransparent();
 	}
 	if ( !bTranslucent && !pRenderable->UsesPowerOfTwoFrameBufferTexture() )
+		return true;
+
+	// Most eligible registrations are opaque. Only resolve the additional
+	// two-pass exceptions if the ordinary opaque test didn't admit this one.
+	if ( pRenderable->IsTwoPass() ) return true;
+	if ( ( modelType == mod_studio || modelType == mod_brush ) && modelinfo->IsTranslucentTwoPass( pModel ) )
 		return true;
 
 	// Actual cutout materials have a depth path even if the registration is marked
@@ -2092,6 +2114,38 @@ void CClientLeafSystem::EnumerateShadowCasters( const ShadowCasterVolume_t &volu
 	}
 }
 
+void CClientLeafSystem::GetShadowPropCandidates( CUtlVector<ClientRenderHandle_t> &props ) const
+{
+	props.RemoveAll();
+	for ( int i=0;i<m_ShadowCasterCandidates.Count();++i )
+	{
+		ClientRenderHandle_t h=m_ShadowCasterCandidates[i];
+		if ( m_Renderables.IsValidIndex(h) && (m_Renderables[h].m_Flags&RENDER_FLAGS_STATIC_PROP) ) props.AddToTail(h);
+	}
+}
+
+void CClientLeafSystem::EnumerateDynamicShadowCasters( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink,
+	const CUtlVector<ClientRenderHandle_t> &liveProps )
+{
+	VPROF_BUDGET( "EnumerateDynamicShadowCasters", "Shadowmaps" );
+	BeginShadowCasterQuery(volume);
+	// Only used after a complete world-volume walk established the leaf
+	// order. Filtering at insertion preserves first-visit order on relinks.
+	for ( int r=m_OccupiedSunRanks.FindNextSetBit(0); r>=0; r=m_OccupiedSunRanks.FindNextSetBit(r+1) )
+	{
+		for ( unsigned i=m_DynamicInLeaf.FirstElement(m_SunLeaves[r]); i!=m_DynamicInLeaf.InvalidIndex(); i=m_DynamicInLeaf.NextElement(i) )
+			CollectShadowCaster(m_DynamicInLeaf.Element(i),volume);
+	}
+	auto collectUnplaced=[&](ClientRenderHandle_t h)
+	{
+		if ( !(m_Renderables[h].m_Flags & RENDER_FLAGS_STATIC_PROP) ) CollectShadowCaster(h,volume);
+	};
+	for ( int i=0;i<m_DirtyRenderables.Count();++i ) collectUnplaced(m_DirtyRenderables[i]);
+	for ( int i=0;i<m_UnlinkedShadowCasters.Count();++i ) collectUnplaced(m_UnlinkedShadowCasters[i]);
+	for ( int i=0;i<liveProps.Count();++i ) CollectShadowCaster(liveProps[i],volume);
+	EmitShadowCasters(sink);
+}
+
 void CClientLeafSystem::EnumerateShadowCastersExhaustive( const ShadowCasterVolume_t &volume, IShadowCasterSink &sink )
 {
 	BeginShadowCasterQuery( volume );
@@ -2181,6 +2235,7 @@ void CClientLeafSystem::SetRenderGroup( ClientRenderHandle_t handle, RenderGroup
 	if ( pInfo->m_RenderGroup!=(unsigned char)group || ((pInfo->m_Flags&RENDER_FLAGS_TWOPASS)!=0)!=twoPass )
 	{
 		InvalidateShadowCasterQuery();
+		if ( pInfo->m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
 		ShadowMapsDX12_InvalidateCasterRegistration( pInfo->m_pRenderable );
 	}
 
@@ -3002,6 +3057,7 @@ void CClientLeafSystem::RenderableChanged( ClientRenderHandle_t handle )
 	InvalidateShadowCasterQuery();
 	RenderableInfo_t &info = m_Renderables[handle];
 	AUTO_LOCK( s_L4D2RenderableChangedMutex );
+	if ( info.m_Flags & RENDER_FLAGS_STATIC_PROP ) ++m_StaticCasterRevision;
 	info.m_nL4D2BoundsFlags &= ~L4D2_BOUNDS_CACHE_VALID;
 	if ( info.m_Flags & RENDER_FLAGS_HASCHANGED )
 	{

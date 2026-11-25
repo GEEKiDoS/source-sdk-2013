@@ -257,6 +257,7 @@ void CShaderAPIDX12::ReplayDepthPrepass( bool bBegin )
 	FlushBufferedPrimitives();
 	m_bDepthPrepass = bBegin;
 	m_bDepthPrepassResolved = !bBegin;
+	if ( m_pDevice ) m_pDevice->RequestSceneRecordingBoundary();
 	// Coverage twins use a different native material block binding; restore ordinary PS metadata on the
 	// first draw of the next pass even when the last material/dynamic index happens to be unchanged.
 	m_bNamedPixelShaderDirty = !m_ActiveSnapshot.pixelShaderName.empty();

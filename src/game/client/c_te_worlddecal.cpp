@@ -156,3 +156,42 @@ void TE_WorldDecal( IRecipientFilter& filter, float delay, KeyValues *pKeyValues
 
 	TE_WorldDecal( filter, 0.0f, &vecOrigin, effects->Draw_DecalIndexFromName( (char*)pDecalName ) );
 }
+
+#if defined( L4D2 )
+// Development fixture: emit real world impacts (not synthetic vertex data)
+// across visible brush faces and several subrects sharing one material page.
+CON_COMMAND_F( cl_test_world_decal_batches, "Project a grid of world decals, or place one at x y z", FCVAR_CHEAT )
+{
+	if ( args.ArgC() != 1 && args.ArgC() != 4 ) return;
+	C_BasePlayer *player = C_BasePlayer::GetLocalPlayer();
+	C_BaseEntity *world = cl_entitylist->GetEnt( 0 );
+	if ( !player || !world ) return;
+	Vector origin = player->EyePosition();
+	QAngle angles; engine->GetViewAngles( angles );
+	Vector forward, right, up;
+	AngleVectors( angles, &forward, &right, &up );
+	const int ids[] = { effects->Draw_DecalIndexFromName( "decals/concrete/concrete1_subrect" ),
+		effects->Draw_DecalIndexFromName( "decals/concrete/concrete2_subrect" ), effects->Draw_DecalIndexFromName( "decals/concrete/concrete3_subrect" ) };
+	if ( args.ArgC() == 4 )
+	{
+		Vector pos( V_atof( args[1] ), V_atof( args[2] ), V_atof( args[3] ) );
+		if ( !pos.IsValid() ) return;
+		effects->DecalShoot( ids[0], 0, world->GetModel(), world->GetAbsOrigin(), world->GetAbsAngles(), pos, NULL, 0 );
+		return;
+	}
+	int shots = 0;
+	static unsigned sequence;
+	for ( int k = 0; k < 96; ++k )
+	{
+		const unsigned s = ++sequence;
+		Vector dir = forward + right * ( 2.f * ( ( s * 73u ) % 251 ) / 250.f - 1.f )
+			+ up * ( 1.4f * ( ( s * 107u ) % 257 ) / 256.f - .7f );
+		trace_t tr;
+		UTIL_TraceLine( origin, origin + 3072.f * dir, MASK_SOLID_BRUSHONLY, player, COLLISION_GROUP_NONE, &tr );
+		if ( !tr.DidHitWorld() || tr.startsolid || ( tr.surface.flags & ( SURF_SKY | SURF_NODECALS ) ) ) continue;
+		effects->DecalShoot( ids[s % 3], 0, world->GetModel(), world->GetAbsOrigin(), world->GetAbsAngles(), tr.endpos, NULL, 0 );
+		++shots;
+	}
+	Msg( "Decal batch fixture: %d world impacts\n", shots );
+}
+#endif
