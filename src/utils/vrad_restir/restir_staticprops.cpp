@@ -594,6 +594,79 @@ static void AppendPropEmitterTriangle( CUtlVector<ReSTIRGpuEmitterTriangle> &tri
 	triangles.AddToTail( triangle );
 }
 
+// Empty (mins > maxs) unless a no-shadow prop of at most RESTIR_FIXTURE_MAX_EXTENT, grown by RESTIR_FIXTURE_MARGIN,
+// contains `origin`.
+ReSTIRLightFixture CReSTIRStaticPropMgr::FindLightFixture( const Vector &origin ) const
+{
+	for ( int pi = 0; pi < m_Props.Count(); ++pi )
+	{
+		const Prop &p = *m_Props[pi];
+		const Model &m = *m_Models[p.lump.m_PropType];
+		if ( !( p.lump.m_Flags & STATIC_PROP_NO_SHADOW ) || !m.header )
+			continue;
+		Vector localMins = m.header->hull_min, localMaxs = m.header->hull_max;
+		if ( localMins == vec3_origin && localMaxs == vec3_origin )
+		{
+			localMins = m.header->view_bbmin;
+			localMaxs = m.header->view_bbmax;
+		}
+		matrix3x4_t xform;
+		AngleMatrix( p.lump.m_Angles, p.lump.m_Origin, xform );
+		ReSTIRLightFixture bounds;
+		TransformAABB( xform, localMins, localMaxs, bounds.mins, bounds.maxs );
+		const Vector size = bounds.maxs - bounds.mins;
+		if ( MAX( size.x, MAX( size.y, size.z ) ) > RESTIR_FIXTURE_MAX_EXTENT )
+			continue;
+		bounds.mins -= Vector( RESTIR_FIXTURE_MARGIN, RESTIR_FIXTURE_MARGIN, RESTIR_FIXTURE_MARGIN );
+		bounds.maxs += Vector( RESTIR_FIXTURE_MARGIN, RESTIR_FIXTURE_MARGIN, RESTIR_FIXTURE_MARGIN );
+		if ( bounds.Contains( origin ) )
+			return bounds;
+	}
+	ReSTIRLightFixture none;
+	none.mins.Init( 1.0f, 1.0f, 1.0f );
+	none.maxs.Init( -1.0f, -1.0f, -1.0f );
+	return none;
+}
+
+void CReSTIRStaticPropMgr::ResolveLightFixtures( ReSTIRScene &scene ) const
+{
+	int housed = 0;
+	for ( int i = 0; i < scene.lights.Count(); ++i )
+	{
+		ReSTIRGpuLight &light = scene.lights[i];
+		if ( light.type != emit_point && light.type != emit_spotlight )
+			continue;
+		const Vector origin( light.origin[0], light.origin[1], light.origin[2] );
+		const ReSTIRLightFixture fixture = FindLightFixture( origin );
+		if ( !fixture.Contains( origin ) )
+			continue;
+		// Offsets are bounded by the extent limit plus margin, far inside int16 at 1/8 unit.
+		for ( int axis = 0; axis < 3; ++axis )
+		{
+			const int low = (int)floorf( ( fixture.mins[axis] - origin[axis] ) * 8.0f );
+			const int high = (int)ceilf( ( fixture.maxs[axis] - origin[axis] ) * 8.0f );
+			light.fixture[axis] = ( low & 0xffff ) | ( high << 16 );
+		}
+		light.lightFlags |= RESTIR_LIGHT_FIXTURE;
+		++housed;
+	}
+	scene.shadowLightFixtures.SetCount( scene.shadowLights.Count() );
+	for ( int li = 0; li < scene.shadowLights.Count(); ++li )
+	{
+		const dworldlight_t &light = scene.shadowLights[li].light;
+		ReSTIRLightFixture &fixture = scene.shadowLightFixtures[li];
+		if ( light.type == emit_skylight )
+		{
+			fixture.mins.Init( 1.0f, 1.0f, 1.0f );
+			fixture.maxs.Init( -1.0f, -1.0f, -1.0f );
+		}
+		else
+			fixture = FindLightFixture( light.origin );
+	}
+	if ( housed )
+		Msg( "%d point/spot lights housed by no-shadow static props (surfaces inside the housing unlit by it)\n", housed );
+}
+
 bool CReSTIRStaticPropMgr::AppendEmitters( ReSTIRScene &scene, const ReSTIROptions &options )
 {
 	// Geometry traversal mirrors vradstaticprops.cpp:1819-2017, but NO_SHADOW and the

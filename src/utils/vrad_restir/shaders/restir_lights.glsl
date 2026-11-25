@@ -108,9 +108,23 @@ vec3 EvaluateLight( uint lightIndex, vec3 origin, vec3 source, uint emitterTri )
 	return StandardLightRadiance( light, origin, source );
 }
 
+// restir_types.h RESTIR_LIGHT_FIXTURE: the no-shadow prop housing this emitter is not in the ray scene, but it hides
+// the surfaces inside its box (the wall behind a wall pack) from its own light.
+bool InsideLightFixture( ReSTIRGpuLight light, vec3 point )
+{
+	if ( ( light.lightFlags & RESTIR_LIGHT_FIXTURE ) == 0 )
+		return false;
+	ivec3 packed = ivec3( light.fixture0, light.fixture1, light.fixture2 );
+	vec3 offset = ( point - light.origin.xyz ) * 8.0;
+	return all( greaterThanEqual( offset, vec3( bitfieldExtract( packed, 0, 16 ) ) ) ) &&
+		all( lessThanEqual( offset, vec3( bitfieldExtract( packed, 16, 16 ) ) ) );
+}
+
 bool LightVisibility( uint lightIndex, vec3 origin, vec3 source, uint emitterTri, uint skipHitId )
 {
 	ReSTIRGpuLight light = lights[lightIndex];
+	if ( InsideLightFixture( light, origin ) )
+		return false;
 	vec3 offset = source - origin;
 	float distanceToLight = length( offset );
 	if ( distanceToLight <= RESTIR_DIST_EPSILON )

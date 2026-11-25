@@ -42,6 +42,7 @@
 // Light flags
 #define RESTIR_LIGHT_MATERIAL        0x1
 #define RESTIR_LIGHT_RUNTIME_DIRECT  0x2	// selected for runtime shadow maps: excluded from receiver direct only
+#define RESTIR_LIGHT_FIXTURE         0x4	// point/spot housed by a no-shadow prop: fixture0..2 hold the housing box
 
 // emittype_t
 #define EMIT_SURFACE     0
@@ -103,9 +104,9 @@ struct ReSTIRGpuLight					// 128 bytes
 	int  emissionTexture;				// EMIT_SURFACE: sceneTextures index (RGBA8 gamma), -1 uniform
 	int  lightFlags;					// RESTIR_LIGHT_*
 	int  sourceEntity;					// BSP entity index provenance, -1 none (surface/material emitters)
-	int  pad0;							// scalars: an ivec3 would be 16-byte aligned and grow the std430 stride to 144
-	int  pad1;
-	int  pad2;
+	int  fixture0;						// RESTIR_LIGHT_FIXTURE: x, y, z housing extents, int16 min (low) / max (high)
+	int  fixture1;						// offsets from origin in 1/8 units. Scalars: an ivec3 would be 16-byte aligned
+	int  fixture2;						// and grow the std430 stride to 144
 };
 
 struct ReSTIRGpuEmitterTriangle			// 64 bytes, front-facing

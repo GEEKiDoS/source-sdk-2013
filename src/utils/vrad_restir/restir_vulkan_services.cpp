@@ -121,8 +121,14 @@ bool CReSTIRVulkanDevice::ComputeLocalVisibility( const CUtlVector<ReSTIRGpuVisi
 	gpu.RunService( RESTIR_PIPE_LOCAL_VISIBILITY, queries.Base(), sizeof( ReSTIRGpuVisibilityQuery ),
 		visibility.Base(), sizeof( float ), queries.Count(), 1, RESTIR_RAY_MASK_STATIC_SUN );
 	for ( int i = 0; i < visibility.Count(); ++i )
+	{
 		if ( !_finite( visibility[i] ) || visibility[i] < 0.0f || visibility[i] > 1.0f )
 			gpu.Fail( "local visibility readback contains a nonfinite or out-of-range scalar" );
+		// restir_types.h shadowLightFixtures: the housing hides these receivers from their own emitter.
+		if ( gpu.scene->InsideLightFixture( (int)queries[i].selectedLightIndex,
+			Vector( queries[i].position[0], queries[i].position[1], queries[i].position[2] ) ) )
+			visibility[i] = 0.0f;
+	}
 	return true;
 }
 

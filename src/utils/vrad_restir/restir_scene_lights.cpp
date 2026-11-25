@@ -1606,6 +1606,7 @@ bool ReSTIR_SceneBuildLights( ReSTIRSceneBuildContext &context, ReSTIRScene &sce
 	FinishActiveLightOrder( scene );
 	if ( !ResolveShadowLights( *context.options, scene ) )
 		return false;
+	g_ReSTIRStaticPropMgr.ResolveLightFixtures( scene );
 	if ( !BuildMaterialSurfaceLights( context, scene, texlightFaces ) )
 	{
 		return false;

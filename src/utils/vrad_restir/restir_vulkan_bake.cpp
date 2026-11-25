@@ -211,6 +211,12 @@ static void BakeLocalVisibility( CReSTIRVulkanDevice::Impl &gpu, CUtlVector< CUt
 				first += count;
 			}
 		}
+		// restir_types.h shadowLightFixtures: the housing hides these receivers from their own emitter. Test the
+		// point the baked direct light is evaluated at (hlight_output.cpp BuildFaceDirect), not the biased ray origin:
+		// exterior luxels snap onto the face there, which can put them inside the housing.
+		for ( int luxel = 0; luxel < plane.Count(); ++luxel )
+			if ( gpu.scene->InsideLightFixture( light, gpu.scene->localDirectPositions[luxel] ) )
+				plane[luxel] = 0;
 	}
 	if ( verbose )
 		Msg( "Hybrid visibility: world queries=%llu elapsed=%.3f s\n",

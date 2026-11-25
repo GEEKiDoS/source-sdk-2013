@@ -76,6 +76,10 @@ public:
 	int Count() const;
 	bool AppendTriangles( ReSTIRScene &scene, bool textureShadows );
 	bool AppendEmitters( ReSTIRScene &scene, const ReSTIROptions &options );
+	// Marks point/spot lights inside a no-shadow prop (RESTIR_LIGHT_FIXTURE, packed housing box) and fills
+	// scene.shadowLightFixtures (restir_types.h) for the selected lights.
+	void ResolveLightFixtures( ReSTIRScene &scene ) const;
+	ReSTIRLightFixture FindLightFixture( const Vector &origin ) const;
 	const ReSTIRPropVisibilityData *GetVisibility() const;
 	// Loaded model peer data. mstudiomodel_t::CacheVertexData receives a pointer to this struct
 	// (passed as GetVertexData's pModelData) because studiohdr_t::SetVertexBase is a no-op on

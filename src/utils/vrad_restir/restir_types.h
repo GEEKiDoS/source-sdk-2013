@@ -65,6 +65,8 @@
                                           // light is REMOVED from the written worldlights lump and carried in the 'rshd'
                                           // sidecar; native lightmap/VHV/texel/detail outputs omit its direct term; every
                                           // bounce keeps it. Enhanced world RGB adds exact local diffuse with baked V.
+#define RESTIR_LIGHT_FIXTURE         0x4  // point/spot inside a no-shadow static prop (shadowLightFixtures): `fixture` holds
+                                          // the housing box; receivers inside it get no light from this light
 
 //-----------------------------------------------------------------------------
 // Options (parsed by vrad_restir.cpp, read-only everywhere else)
@@ -232,7 +234,8 @@ struct ReSTIRGpuLight					// 128 bytes
 	int			lightFlags;				// RESTIR_LIGHT_*
 	int			sourceEntity;			// index of the originating entity in the entity lump (ShadowMapLightDisk::sourceEntity), -1 none.
 										// Set before insertion into ReSTIRScene::lights; whole records travel through FinishActiveLightOrder
-	int			pad[3];
+	int			fixture[3];				// RESTIR_LIGHT_FIXTURE: housing box x/y/z, each int16 min (low) / max (high) offset
+										// from origin in 1/8 units (ReSTIRLightFixture); receivers inside get no light
 };
 COMPILE_TIME_ASSERT( sizeof( ReSTIRGpuLight ) == 128 );
 
@@ -321,6 +324,18 @@ struct ReSTIRGpuLuxel					// 32 bytes. One grid point of the (w)x(h) luxel grid
 //-----------------------------------------------------------------------------
 // Host-side scene (built once by CReSTIRSceneBuilder, uploaded once by the backend)
 //-----------------------------------------------------------------------------
+#define RESTIR_FIXTURE_MARGIN 8.0f
+#define RESTIR_FIXTURE_MAX_EXTENT 64.0f	// larger props (facades, skybox geometry) are never a light's fixture
+struct ReSTIRLightFixture
+{
+	Vector mins, maxs;
+	bool Contains( const Vector &point ) const
+	{
+		return point.x >= mins.x && point.x <= maxs.x && point.y >= mins.y && point.y <= maxs.y &&
+			point.z >= mins.z && point.z <= maxs.z;
+	}
+};
+
 struct ReSTIRScene
 {
 	// Geometry
@@ -382,6 +397,15 @@ struct ReSTIRScene
 														// resolved shadowSourceRadius / shadowSunAngularRadius, sourceEntity provenance.
 														// BakeStorage removes these lights from the written worldlights lump by identity
 														// (exportLightToGpuLight -> RESTIR_LIGHT_RUNTIME_DIRECT), never by record compare.
+	// Parallel to shadowLights: the housing of a local light whose emitter lies inside a no-shadow static prop (lamp
+	// cage, wall pack), grown by RESTIR_FIXTURE_MARGIN; empty (mins > maxs) for the sun and unhoused lights. Baked
+	// visibility of the light is zero for receivers inside it: the housing hides that surface from its own emitter,
+	// but no-shadow props are not in the ray scene. Filled by CReSTIRStaticPropMgr::ResolveLightFixtures.
+	CUtlVector<ReSTIRLightFixture>		shadowLightFixtures;
+	bool InsideLightFixture( int shadowLight, const Vector &point ) const
+	{
+		return shadowLight < shadowLightFixtures.Count() && shadowLightFixtures[shadowLight].Contains( point );
+	}
 
 	bool IsReceiverStyle( int style ) const
 	{
