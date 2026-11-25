@@ -1439,10 +1439,16 @@ come from `public/shaderapi/projected_light_limits.h`. Space 4 carries the v3 pr
 the exact hardware-filtered path when all eight corners can see the biased sample point. If any corner is blocked, it
 manually filters only visible corners, multiplying trilinear weights by validity and renormalizing before SH decode.
 The hardware path retains the 0.25 coverage gate.
-On models a resident brick with no admissible corner contributes no indirect light. Falling back there to the engine
-ambient cube or vertex lighting would undo the occlusion: on c1m1 thin pipes the result looked like dashed white highlights
-where the normal-biased lookup approaches the wall. The engine cube and vertex stream remain the fallback when the brick is
-absent or no grid is bound. The detail-sprite vertex shader still uses its authored color wherever probe decode fails.
+On models, when the free-distance test rejects every corner of a resident cell, `Probe_DecodeQuad` retries once with the
+lookup moved toward the eye by one probe spacing (at most half the eye distance). A pocket thinner than the spacing has
+every surrounding probe behind a surface: on c1m1 the strip of a table's lower shelf against the wall, under the table
+top, sampled a cell whose corners were under the shelf, above the table top or in the wall, and drew black with the cell
+boundary as a 2-pixel staircase. The line of sight leaves through the pocket's open side, where the probes see the light
+that enters it. A resident brick that still has no admissible corner contributes no indirect light. Falling back there
+to the engine ambient cube or vertex lighting would undo the occlusion: on c1m1 thin pipes the result looked like dashed
+white highlights where the normal-biased lookup approaches the wall. The engine cube and vertex stream remain the
+fallback when the brick is absent or no grid is bound. The detail-sprite vertex shader still uses its authored color
+wherever probe decode fails.
 `shaderapidx12_smoke -case pbrgpu` checks energy, workflow equivalence, the isotropic/Lambert limits and
 parallax; `-case probegpu` the probe decode.
 

@@ -128,7 +128,7 @@ NekoPixelOutput main( NekoPixelInput input )
 	bool resident;
 	// All costume parts sample the actor's lighting origin, not the changing
 	// skinned position or bump normal. Direct visibility stays per pixel below.
-	if ( Probe_DecodeQuad( g_NekoProbeOrigin.xyz, 0.0, ( uint( input.pos.x ) & 1 ) | ( ( uint( input.pos.y ) & 1 ) << 1 ),
+	if ( Probe_DecodeQuad( g_NekoProbeOrigin.xyz, 0.0, 0.0, ( uint( input.pos.x ) & 1 ) | ( ( uint( input.pos.y ) & 1 ) << 1 ),
 						   sh, resident ) )
 	{
 		// The real L1 basis in pbr_probe is ordered Y, Z, X. Its luminance

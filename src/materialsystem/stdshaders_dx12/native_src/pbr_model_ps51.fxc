@@ -422,7 +422,7 @@ PBR_PSOut main( DX12_PS_INPUT i )
 	// alive, so it runs here, in uniform control flow before the wound clip and the alpha-test kill.
 	ProbeSH probe;
 	bool probeBrickResident;
-	const bool probeDecoded = Probe_DecodeQuad( P, vertexNormal, ( uint( i.svPos.x ) & 1u ) | ( ( uint( i.svPos.y ) & 1u ) << 1u ), probe, probeBrickResident );
+	const bool probeDecoded = Probe_DecodeQuad( P, vertexNormal, i.toEye, ( uint( i.svPos.x ) & 1u ) | ( ( uint( i.svPos.y ) & 1u ) << 1u ), probe, probeBrickResident );
 #endif
 	float alpha = g_BaseTint.a * vertexColor.a;
 #if INFECTED
@@ -482,9 +482,10 @@ PBR_PSOut main( DX12_PS_INPUT i )
 		ssrPayload ? specularSum.radiance * ( LINEAR_LIGHT_SCALE * transmission ) : 0.0, ssrPayload ? PBR_SpecularDistance( specularSum ) : 0.0 );
 #else
 
-	// A loaded brick with no admissible corner is not missing probe data: its visibility/validity rejected this
-	// sample. Do not replace that occlusion with the engine ambient cube or runtime-generated static-prop vertex
-	// light. A genuinely absent brick (including unloaded streaming bricks) still needs the old fallback.
+	// A loaded brick with no admissible corner, even after Probe_DecodeQuad's retry toward the eye, is not missing probe
+	// data: its visibility/validity rejected this sample. Do not replace that occlusion with the engine ambient cube or
+	// runtime-generated static-prop vertex light. A genuinely absent brick (including unloaded streaming bricks) still
+	// needs the old fallback.
 	float3 ambient = 0.0;
 	bool useEngineAmbient = true;
 #if defined( PBR_MATTE_LEAF )
