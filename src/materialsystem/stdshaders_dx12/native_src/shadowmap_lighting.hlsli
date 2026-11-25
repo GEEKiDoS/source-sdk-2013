@@ -1423,11 +1423,16 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
 				float realtimeVisibility = bakedVisibility;
-				// Local lights use only their shadow-map visibility; Bend contact shadows are sun-only.
+				// Local lights with a Bend mask this frame (screenspace_contact.hlsli) take it like the sun; vertex-lit
+				// leaves and detail point receivers have no per-pixel surface and do not consume it.
 				[branch] if ( charted && bakedVisibility > 0.0 )
 				{
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
+#if !defined( PBR_LEAF_VERTEX )
+					[branch] if ( realtimeVisibility > 0.0 && s.mode != 4 )
+						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, light.lightId );
+#endif
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
 				if ( bakedDelta )

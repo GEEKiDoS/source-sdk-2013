@@ -26,18 +26,21 @@ class IFileSystem;
 namespace shaderapidx12
 {
 // Register space 6: backend-owned screen-space inputs (ishaderapidx12screenspace.h, native_src/screenspace_view.hlsli).
-// t0 Texture2D<float> sun contact visibility, t1 reserved, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (256 B),
+// t0 Texture2D<float> sun contact visibility, t1 reserved, t2 / t3 final scene depth; b0 DX12ScreenSpaceView (272 B),
 // b1 DX12Volumetric (80 B). The sun shadow-chart sky clip (ishaderapidx12lighting.h, native_src/shadow_sky_clip.hlsli)
 // adds t4 Texture2D<float> sky entry depth and b2 DX12ShadowSkyClip (16 B). Forward screen-space effects of the draws
 // after the opaque bracket (screenspace_dx12.cpp, native_src/pbr_forward_screenspace.hlsli) add t5 Texture2D<float4>
 // SSR scene colour (from its mip 1), t6 Texture2D<float> SSR view depth and t7 Texture2D<float> GTAO term, with the
 // DX12_SCREENSPACE_FORWARD_* flags in the view block's control.z. No sampler.
 constexpr UINT DX12_SCREENSPACE_REGISTER_SPACE = 6;
-constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 8;
+constexpr UINT DX12_SCREENSPACE_TABLE_COUNT = 12;
 constexpr UINT DX12_SCREENSPACE_T_SHADOW_SKY_CLIP = 4;
 constexpr UINT DX12_SCREENSPACE_T_SSR_SCENE = 5;
 constexpr UINT DX12_SCREENSPACE_T_SSR_DEPTH = 6;
 constexpr UINT DX12_SCREENSPACE_T_AO = 7;
+// t8..t11 Texture2D<float>: Bend contact masks of up to four local lights (screenspace_contact.hlsli).
+constexpr UINT DX12_SCREENSPACE_T_LOCAL_CONTACT = 8;
+constexpr UINT DX12_SCREENSPACE_LOCAL_CONTACTS = 4;
 constexpr uint32_t DX12_SCREENSPACE_FORWARD_SSR = 0x10000u, DX12_SCREENSPACE_FORWARD_AO = 0x20000u, DX12_SCREENSPACE_FORWARD_AO_PACKED = 0x40000u;
 constexpr UINT DX12_SCREENSPACE_B_VIEW = 0;
 constexpr UINT DX12_SCREENSPACE_B_VOLUMETRIC = 1;
@@ -186,8 +189,9 @@ public:
 	bool PrepareBindings( CCommandRecorderDX12 *pList, const BindingInputDX12 &input );
 	void BeginNativeCapture() { m_bLastSrvTableIsPrevious = false; m_nCaptureRemaining = 0; memset( m_LastNativeSlots, 0, sizeof( m_LastNativeSlots ) ); memset( m_NativeTableCache, 0, sizeof( m_NativeTableCache ) ); }
 
-	// Typed null view matching the space-6 declaration of slot t0..t7: Texture2D<float> even slots below the SSR pair,
-	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth and AO term.
+	// Typed null view matching the space-6 declaration of slot t0..t11: Texture2D<float> even slots below the SSR pair,
+	// Texture2DMS<float> odd ones, Texture2D<float4> SSR scene colour, Texture2D<float> SSR depth, AO term and the four
+	// local-light contact masks.
 	static D3D12_SHADER_RESOURCE_VIEW_DESC ScreenSpaceNullSrvDesc( UINT nSlot )
 	{
 		D3D12_SHADER_RESOURCE_VIEW_DESC srv{};

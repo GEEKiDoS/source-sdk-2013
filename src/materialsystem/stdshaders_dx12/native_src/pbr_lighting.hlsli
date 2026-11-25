@@ -566,6 +566,9 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					light.fadeEnd = lightRange.fade.y;
 					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
+					// Like the sun's, this light's contact mask (when it has one) scales the map result before the bake cap.
+					[branch] if ( realtimeVisibility > 0.0 )
+						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, lightId );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}
 #if defined( PBR_MODEL_LOCAL_SELECTION )
@@ -574,10 +577,18 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				if ( modelFallbackBlocked ) bakedVisibility = 0.0;
 #endif
 				specularVisibility = lerp( bakedVisibility, realtimeVisibility, realtimeWeight );
+				// Normal-mapping self-shadowing (nms.hlsli) scales this light's whole term, like the sun's. A baked delta
+				// has its baked endpoint in the lightmap, so the delta also removes that endpoint's shadowed share.
+				float nmsVisibility = 1.0;
+#if NMS
+				[branch] if ( nmsInput.enabled != 0.0 && dot( s.N, L ) > 0.0 )
+					nmsVisibility = PBR_NMSVisibility( bumpTexture, bumpSampler, nmsInput, L );
+#endif
+				specularVisibility *= nmsVisibility;
 				if ( bakedDelta )
 				{
-					diffuseVisibility = ( realtimeVisibility - bakedVisibility ) * realtimeWeight;
-					visibility = realtimeVisibility * realtimeWeight;
+					diffuseVisibility = nmsVisibility * ( bakedVisibility + ( realtimeVisibility - bakedVisibility ) * realtimeWeight ) - bakedVisibility;
+					visibility = realtimeVisibility * realtimeWeight * nmsVisibility;
 				}
 				else
 				{
@@ -631,6 +642,10 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 				[branch] if ( any( radiance != 0.0 ) )
 				{
 					float3 lightSpecular = radiance * PBR_Specular( s, L ) * bakedVisibility;
+#if NMS
+					[branch] if ( nmsInput.enabled != 0.0 && dot( s.N, L ) > 0.0 )
+						lightSpecular *= PBR_NMSVisibility( bumpTexture, bumpSampler, nmsInput, L );
+#endif
 					d.specular += lightSpecular;
 					PBR_AddSpecular( specularSum, lightSpecular, lightDistance );
 				}

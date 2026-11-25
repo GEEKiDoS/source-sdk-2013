@@ -2167,6 +2167,38 @@ bool CLightingDX12::GetSunContactDirection( float out[4] )
 	memcpy( out, packet.view.constants.cSunTravel, sizeof( packet.view.constants.cSunTravel ) );
 	return true;
 }
+int CLightingDX12::GetContactLights( const float eye[3], int limit, float origins[][4], uint32 *lightIds )
+{
+	Impl &s = *m_Impl;
+	if ( limit <= 0 || !s.views.Count() ) return 0;
+	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return 0;
+	if ( packet.view.constants.cShadowView1[3] & DX12_SHADOW_VIEW_UNSHADOWED ) return 0;
+	// The shader applies a mask only to a charted light, so only those are candidates.
+	struct Candidate { float score; int light; };
+	CUtlVectorFixedGrowable<Candidate, 16> candidates;
+	for ( int i = 0; i < packet.lights.Count(); ++i )
+	{
+		const RuntimeShadowLightGpu &light = packet.lights[i];
+		if ( !( light.realtimeWeight > 0.f ) || ( light.visibilityFlags & DX12_SHADOW_VISIBILITY_UNSHADOWED ) || !light.faceCount )
+			continue;
+		const float dx = light.origin[0] - eye[0], dy = light.origin[1] - eye[1], dz = light.origin[2] - eye[2];
+		const float distance = sqrtf( dx * dx + dy * dy + dz * dz );
+		// Unbounded lights rank by distance alone, as if 4096 units wide.
+		const float radius = light.attenuationRadius > 0.f ? light.attenuationRadius : 4096.f;
+		if ( distance > radius + 2048.f ) continue; // its light cannot reach anything near the camera
+		candidates.AddToTail( Candidate{ distance / radius, i } );
+	}
+	candidates.Sort( []( const Candidate *a, const Candidate *b ) { return a->score < b->score ? -1 : a->score > b->score ? 1 : 0; } );
+	const int count = MIN( limit, candidates.Count() );
+	for ( int k = 0; k < count; ++k )
+	{
+		const RuntimeShadowLightGpu &light = packet.lights[candidates[k].light];
+		origins[k][0] = light.origin[0]; origins[k][1] = light.origin[1]; origins[k][2] = light.origin[2]; origins[k][3] = 1.f;
+		lightIds[k] = light.lightId;
+	}
+	return count;
+}
 
 // Query immutable structural BSP leaves, not live engine collision from the
 // material thread. Shrinking the segment slightly at both ends keeps a light

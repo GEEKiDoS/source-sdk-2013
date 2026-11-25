@@ -584,9 +584,11 @@ it rises above the ray (which climbs `dot(L, geometric normal) / |L.xy|` per uni
 0.25 units above it. UV derivatives turn the world trace length into transformed UV, so the result does not depend on
 texture resolution or `$basetexturetransform`. Samples read the normal prefiltered to the step footprint, and the step
 positions carry a texture-space interleaved-gradient offset, so long traces resolve to a soft edge instead of speckle or
-stairs. It multiplies only the runtime sun's direct term after CSM/baked visibility (on enhanced maps the world sun is
-runtime, so it reaches brushes too); ambient probes, lightmaps, local lights and projected flashlight lights are
-unchanged. SSBump materials are skipped: their texture already carries baked self-shadowing. `r_pbr_nms_length`
+stairs. It multiplies the runtime sun's direct term after CSM/baked visibility (on enhanced maps the world sun is
+runtime, so it reaches brushes too) and every local light the pixel evaluates: realtime-weighted and unbaked lights
+(a baked delta also removes the shadowed share of its lightmap endpoint) and the baked-only specular terms. Baked-only
+diffuse stays in the lightmap, and ambient probes and projected flashlight lights are unchanged. Each light costs one
+trace. SSBump materials are skipped: their texture already carries baked self-shadowing. `r_pbr_nms_length`
 (default 4 world units) and `r_pbr_nms_steps` (default 8, capped at 16) control the trace; the cvars live in the client
 (`shadowmaps_dx12.cpp`) and `pbr_helper.cpp` binds them on first use, since the client registers them after the shader
 DLL loads. Cost on the c1m1 rooftop with a fully normal-mapped floor (RTX 4070 SUPER, 1080p): about +0.08-0.10 ms GPU
@@ -816,8 +818,8 @@ When that attachment is live without the full SSR payload, the unused slots belo
 their pipeline formats are UNKNOWN because there is no resource in those slots.
 The opaque viewmodel colour draw writes the same attachment with its own projection; it participates only
 as a receiver. Translucents never write or receive the effect.
-A softened hit-plane test and six depth taps towards the measured light reduce through-wall leaks.
-The trace samples the world projection even for hands. Off-screen or hidden blockers cannot be inferred.
+A softened hit-plane test (8 units behind the measured hit plane) limits through-wall leaks. There is no
+screen-space occlusion trace toward the measured light: its depth taps carved foreground silhouettes into the bounce.
 
 `volumetric_ps51` runtime contract (screen-space volumetric march): the low-quality profile (`r_volumetric_quality 0`,
 8 light-segment samples) runs the march at quarter resolution (one texel per 4x4 full-resolution footprint), while
@@ -1718,22 +1720,26 @@ The view block keeps the bracket's camera, `cScreenControl.z` carries `DX12_SCRE
 with the march steps (`r_ssr_forward_steps`, archived, default 16, at most 32; 0 turns the forward reflections off) and
 the refinements (the profile's plus three), `cScreenEyeLength.w` / `cScreenForwardThickness.w` `r_ssr_max_distance` /
 `r_ssr_thickness`; payload capture stays off. Translucent draws reuse the SSR camera but not the opaque
-sun contact mask. Only a viewmodel draw with its own mask bound at t0 enables contacts after the opaque pass.
+contact masks. Only a viewmodel draw with its own masks bound enables contacts after the opaque pass.
 
-**Sun contact shadows** (`r_contactshadows 1`, off by default) supplement a valid sun shadow chart.
-The backend projects the direction toward the sun with the current raster camera and runs Bend Studio's
-`BuildDispatchList` over the viewport. Each 64-thread group loads depth along a shared light ray and
-compares the samples in group-shared memory. The result is a visibility mask; material shaders read it
-once for the sun, before applying the baked visibility cap. It does not affect ambient light, local lights,
-projected lights or flashlights. Screen-space shadows cannot see offscreen casters.
+**Contact shadows** (`r_contactshadows 1`, off by default) supplement a valid sun shadow chart and the charts of up to
+`r_contactshadows_local` (default 4, max 4) realtime-shadowed local lights, picked per receiver scope nearest relative
+to their radius first (`CLightingDX12::GetContactLights`). For each light the backend projects the direction toward the
+sun (w 0) or the light's position (w 1) with the current raster camera and runs Bend Studio's `BuildDispatchList` over
+the viewport. Each 64-thread group loads depth along a shared light ray and compares the samples in group-shared memory.
+The result is one R32F visibility mask per light: the sun's at t0, local lights' at t8..t11, with `cScreenContactLights`
+naming each slot's light (1 + lightId) and `cScreenContactParams.w` whether the sun's is valid. Material shaders read a
+light's mask once, before applying its baked visibility cap; a light without one is unoccluded. It does not affect
+ambient light, unshadowed or baked-only lights, projected lights or flashlights. Each mask is one full-screen pass.
+Screen-space shadows cannot see offscreen casters.
 
 World and viewmodels use their respective projection and depth layer. `r_contactshadows_quality` selects
 16, 32 or 60 screen-pixel samples (0/1/2). The old length and thickness in Source units no longer apply.
 `r_contactshadows_surface_thickness` (0.005) and `r_contactshadows_edge_threshold` (0.02) are fractions
 of the remaining device-depth range, and `r_contactshadows_contrast` defaults to 4.
 
-`r_contactshadows_debug 1` (`sv_cheats 1`) displays the sun contact visibility on supported receivers:
-white is neutral, darker is more occluded. It does not enable the effect.
+`r_contactshadows_debug 1` (`sv_cheats 1`) displays the minimum contact visibility over the masked lights on supported
+receivers: white is neutral, darker is more occluded. It does not enable the effect.
 The debug view uses single-pass PBR lighting and bypasses SSR, GTAO, and volumetrics. Sky and HUD are not receivers.
 
 - Reflection (`PBR_ForwardSSR`, envmapped materials with nonzero response, LIGHTPASS 0/1): one mirror ray per pixel

@@ -899,7 +899,8 @@ private:
 		DX12SSRSettings ssr{};
 		bool active = false;          // between a valid BeginView replay and its EndView
 		bool contactReplay = false;   // between BeginContactDepth / EndContactDepth: draws write private depth only (or are dropped)
-		bool contactsEnabled = false; // the current receiver scope has a completed sun visibility mask
+		bool contactsEnabled = false; // the current receiver scope has a completed contact mask (sun and/or local lights)
+		uint32 contactLocalMax = 0;   // DX12ScreenSpaceViewDesc::contactLocalLights of the bracket
 		bool ssrCapture = false;      // control.w: fresh PBR writers attach G-buffer targets 3/4/5 in this bracket
 		uint64_t viewFrame = ~0ull, contactFrame = ~0ull;
 		bool contactHasViewModelDepth = false;
@@ -957,13 +958,22 @@ private:
 		D3D12_GPU_VIRTUAL_ADDRESS constants = 0;
 		uint64_t constantsFence = 0, constantsVersion = 0, uploadedVersion = 0;
 	} m_ContactDepth;
-	struct SunContactShadowDX12
+	// Bend contact masks: the sun's (t0) and up to DX12_SCREENSPACE_LOCAL_CONTACTS local lights' (t8 + i), R32F at the
+	// receiver scope's viewport size. contactLights / sunReady describe what the last RunContactShadowPasses wrote.
+	struct ContactShadowsDX12
 	{
-		ShaderAPITextureHandle_t handle = 0;
-	} m_SunContact;
-	bool EnsureSunContactTexture( int nWidth, int nHeight );
-	bool RunSunContactShadowPass();
-	void ReleaseSunContactResources();
+		ShaderAPITextureHandle_t sun = 0;
+		ShaderAPITextureHandle_t local[DX12_SCREENSPACE_LOCAL_CONTACTS] = {};
+		uint32 contactLights[DX12_SCREENSPACE_LOCAL_CONTACTS] = {}; // 1 + lightId; 0 slot unused
+		bool sunReady = false;
+	} m_Contacts;
+	bool EnsureContactTexture( ShaderAPITextureHandle_t &handle, int nWidth, int nHeight, const char *pName );
+	bool DispatchContactShadow( ShaderAPITextureHandle_t target, const VMatrix &worldToClip, const float lightPosition[4], int width, int height );
+	// Writes the masks of the current receiver scope; true when any mask is ready.
+	bool RunContactShadowPasses();
+	void PublishContactMasks( DX12ScreenSpaceViewConstants &constants ) const;
+	bool PrepareContactMaskSrv( UINT slot, ID3D12Resource *&pResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv );
+	void ReleaseContactShadowResources();
 	bool EnsureContactDepthResources();
 	void TransitionContactDepth( D3D12_RESOURCE_STATES desiredState );
 	bool PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInputDX12 &input );

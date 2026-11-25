@@ -335,6 +335,10 @@ void CShaderAPIDX12::ReplayScreenSpaceBeginView( const DX12ScreenSpaceViewDesc &
 	DX12ScreenSpaceViewConstants &constants = state.constants;
 	constants.control[0] = 0;
 	constants.contactControl[0] = 0;
+	// Contact mask state is backend-owned: no mask until this bracket's EndContactDepth publishes one.
+	constants.contactParams[3] = 0.f;
+	memset( constants.contactLights, 0, sizeof( constants.contactLights ) );
+	state.contactLocalMax = view.contactLocalLights;
 	const float flViewportWidth = constants.viewport[2], flViewportHeight = constants.viewport[3];
 	if ( m_pDevice && m_pDevice->CommandList() && m_pDevice->SceneColor() && m_pDevice->SceneDepth() &&
 	     m_RenderTargets[0] == SHADER_RENDERTARGET_BACKBUFFER && m_hDepthTarget == SHADER_RENDERTARGET_DEPTHBUFFER &&
@@ -461,43 +465,24 @@ void CShaderAPIDX12::TransitionContactDepth( D3D12_RESOURCE_STATES desiredState 
 	contact.state = desiredState;
 }
 
-bool CShaderAPIDX12::EnsureSunContactTexture( int nWidth, int nHeight )
+bool CShaderAPIDX12::EnsureContactTexture( ShaderAPITextureHandle_t &handle, int nWidth, int nHeight, const char *pName )
 {
-	TextureRecord *record = m_SunContact.handle ? FindTexture( m_SunContact.handle ) : nullptr;
+	TextureRecord *record = handle ? FindTexture( handle ) : nullptr;
 	if ( !record )
 	{
-		m_SunContact.handle = CreateTexture( nWidth, nHeight, 1, IMAGE_FORMAT_R32F, 1, 1,
-			TEXTURE_CREATE_RENDERTARGET, "DX12_SunContactShadow", "RenderTargets" );
-		record = m_SunContact.handle ? FindTexture( m_SunContact.handle ) : nullptr;
+		handle = CreateTexture( nWidth, nHeight, 1, IMAGE_FORMAT_R32F, 1, 1, TEXTURE_CREATE_RENDERTARGET, pName, "RenderTargets" );
+		record = handle ? FindTexture( handle ) : nullptr;
 	}
 	return record && DiscardResizeComputeTarget( *record, nWidth, nHeight );
 }
 
-bool CShaderAPIDX12::RunSunContactShadowPass()
+// One Bend wavefront pass into `target` toward lightPosition, homogeneous world space: w 0 the direction toward a
+// directional light, w 1 a local light's position.
+bool CShaderAPIDX12::DispatchContactShadow( ShaderAPITextureHandle_t target, const VMatrix &worldToClip, const float lightPosition[4], int width, int height )
 {
-	if ( !m_pDevice || !m_pDevice->CommandList() || !m_ContactDepth.resource ||
-		!( m_ScreenSpace.active || m_ScreenSpace.viewModelContacts ) )
-		return false;
-	const int width = static_cast<int>( m_ScreenSpace.constants.viewport[2] );
-	const int height = static_cast<int>( m_ScreenSpace.constants.viewport[3] );
-	float sunTravel[4];
-	if ( width <= 0 || height <= 0 || !m_pDevice->Lighting().GetSunContactDirection( sunTravel ) ||
-		!EnsureSunContactTexture( width, height ) )
-		return false;
-	VMatrix worldToClip;
-	MatrixMultiply( m_Matrices[MATERIAL_PROJECTION], m_Matrices[MATERIAL_VIEW], worldToClip );
-	const bool jitter = UpscalerJitterActive( false );
-	const float jitterX = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[0] : 0.f ) ) / width;
-	const float jitterY = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[1] : 0.f ) ) / height;
-	for ( int column = 0; column < 4; ++column )
-	{
-		worldToClip[0][column] += jitterX * worldToClip[3][column];
-		worldToClip[1][column] -= jitterY * worldToClip[3][column];
-	}
-	// cSunTravel points from the sun; Bend marches toward the light.
-	Vector4D lightDirection( -sunTravel[0], -sunTravel[1], -sunTravel[2], 0.f ), lightProjection;
-	Vector4DMultiply( worldToClip, lightDirection, lightProjection );
-	// Use the same limiting homogeneous coordinate for XY and Z at the horizon.
+	Vector4D lightProjection;
+	Vector4DMultiply( worldToClip, Vector4D( lightPosition[0], lightPosition[1], lightPosition[2], lightPosition[3] ), lightProjection );
+	// Use the same limiting homogeneous coordinate for XY and Z at the horizon (or a light in the camera plane).
 	const float minimumW = 0.000002f * 64.f;
 	if ( fabsf( lightProjection.w ) < minimumW )
 		lightProjection.w = lightProjection.w < 0.f ? -minimumW : minimumW;
@@ -529,7 +514,7 @@ bool CShaderAPIDX12::RunSunContactShadowPass()
 	dispatch.m_nConstantBytes = sizeof( constants );
 	dispatch.m_Srv[0].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCREEN_CONTACT_DEPTH;
 	dispatch.m_Uav[0].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE;
-	dispatch.m_Uav[0].m_hTexture = m_SunContact.handle;
+	dispatch.m_Uav[0].m_hTexture = target;
 	dispatch.m_Uav[0].m_nMipCount = 1;
 	for ( int i = 0; i < list.DispatchCount; ++i )
 	{
@@ -543,11 +528,69 @@ bool CShaderAPIDX12::RunSunContactShadowPass()
 	return true;
 }
 
-void CShaderAPIDX12::ReleaseSunContactResources()
+// The current receiver scope's masks: the sun's when it is shadowmapped, then up to the bracket's contactLocalMax
+// realtime-shadowed local lights (CLightingDX12::GetContactLights). Each is independent: a light that fails keeps no mask.
+bool CShaderAPIDX12::RunContactShadowPasses()
 {
-	if ( m_SunContact.handle )
-		DeleteTexture( m_SunContact.handle );
-	m_SunContact = {};
+	ContactShadowsDX12 &masks = m_Contacts;
+	masks.sunReady = false;
+	memset( masks.contactLights, 0, sizeof( masks.contactLights ) );
+	if ( !m_pDevice || !m_pDevice->CommandList() || !m_ContactDepth.resource ||
+		!( m_ScreenSpace.active || m_ScreenSpace.viewModelContacts ) )
+		return false;
+	const int width = static_cast<int>( m_ScreenSpace.constants.viewport[2] );
+	const int height = static_cast<int>( m_ScreenSpace.constants.viewport[3] );
+	if ( width <= 0 || height <= 0 )
+		return false;
+	VMatrix worldToClip;
+	MatrixMultiply( m_Matrices[MATERIAL_PROJECTION], m_Matrices[MATERIAL_VIEW], worldToClip );
+	const bool jitter = UpscalerJitterActive( false );
+	const float jitterX = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[0] : 0.f ) ) / width;
+	const float jitterY = ( 1.f + 2.f * ( jitter ? m_UpscalerJitter[1] : 0.f ) ) / height;
+	for ( int column = 0; column < 4; ++column )
+	{
+		worldToClip[0][column] += jitterX * worldToClip[3][column];
+		worldToClip[1][column] -= jitterY * worldToClip[3][column];
+	}
+	bool any = false;
+	float sunTravel[4];
+	if ( m_pDevice->Lighting().GetSunContactDirection( sunTravel ) && EnsureContactTexture( masks.sun, width, height, "DX12_SunContactShadow" ) )
+	{
+		// cSunTravel points from the sun; Bend marches toward the light.
+		const float towardSun[4] = { -sunTravel[0], -sunTravel[1], -sunTravel[2], 0.f };
+		any = masks.sunReady = DispatchContactShadow( masks.sun, worldToClip, towardSun, width, height );
+	}
+	float origins[DX12_SCREENSPACE_LOCAL_CONTACTS][4];
+	uint32 lightIds[DX12_SCREENSPACE_LOCAL_CONTACTS];
+	const int count = m_pDevice->Lighting().GetContactLights( m_ScreenSpace.constants.eyeLength,
+		MIN( static_cast<int>( m_ScreenSpace.contactLocalMax ), static_cast<int>( DX12_SCREENSPACE_LOCAL_CONTACTS ) ), origins, lightIds );
+	static const char *const kNames[DX12_SCREENSPACE_LOCAL_CONTACTS] = { "DX12_LocalContactShadow0", "DX12_LocalContactShadow1", "DX12_LocalContactShadow2", "DX12_LocalContactShadow3" };
+	for ( int k = 0; k < count; ++k )
+	{
+		if ( EnsureContactTexture( masks.local[k], width, height, kNames[k] ) && DispatchContactShadow( masks.local[k], worldToClip, origins[k], width, height ) )
+		{
+			masks.contactLights[k] = lightIds[k] + 1u;
+			any = true;
+		}
+	}
+	return any;
+}
+
+// Which masks a receiver scope's constants may read: the sun's (contactParams.w) and the local slots' light ids.
+void CShaderAPIDX12::PublishContactMasks( DX12ScreenSpaceViewConstants &constants ) const
+{
+	constants.contactParams[3] = m_Contacts.sunReady ? 1.f : 0.f;
+	memcpy( constants.contactLights, m_Contacts.contactLights, sizeof( constants.contactLights ) );
+}
+
+void CShaderAPIDX12::ReleaseContactShadowResources()
+{
+	if ( m_Contacts.sun )
+		DeleteTexture( m_Contacts.sun );
+	for ( ShaderAPITextureHandle_t handle : m_Contacts.local )
+		if ( handle )
+			DeleteTexture( handle );
+	m_Contacts = {};
 }
 
 //-----------------------------------------------------------------------------
@@ -650,18 +693,32 @@ void CShaderAPIDX12::ReplayEndContactDepth()
 	if ( !bPrepared )
 		return;
 	TransitionContactDepth( D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE );
-	const bool sunReady = RunSunContactShadowPass();
+	const bool ready = RunContactShadowPasses();
 	contact.tableFence = 0;
 	state.forwardTableFence = 0;
-	state.contactsEnabled = sunReady;
+	state.contactsEnabled = ready;
 	state.contactFrame = m_nFrameCounter;
 	if ( state.viewModelContacts )
 		state.forwardConstantsFence[1] = 0;
 	else
 	{
-		state.constants.contactControl[0] = sunReady ? 1u : 0u;
+		state.constants.contactControl[0] = ready ? 1u : 0u;
+		PublishContactMasks( state.constants );
 		++contact.constantsVersion;
 	}
+}
+
+// A space-6 contact slot's view: the sun mask at t0, local masks at t8..t11, each once its texture exists (its
+// constants say whether this scope wrote it). Other slots and absent masks keep the typed null.
+bool CShaderAPIDX12::PrepareContactMaskSrv( UINT slot, ID3D12Resource *&pResource, D3D12_SHADER_RESOURCE_VIEW_DESC &srv )
+{
+	ShaderAPITextureHandle_t handle = 0;
+	if ( slot == 0 )
+		handle = m_Contacts.sun;
+	else if ( slot >= DX12_SCREENSPACE_T_LOCAL_CONTACT && slot < DX12_SCREENSPACE_T_LOCAL_CONTACT + DX12_SCREENSPACE_LOCAL_CONTACTS )
+		handle = m_Contacts.local[slot - DX12_SCREENSPACE_T_LOCAL_CONTACT];
+	D3D12_SAMPLER_DESC unusedSampler{};
+	return !handle || PrepareSampledTexture( handle, false, &pResource, srv, unusedSampler, nullptr, false, 0, 1 );
 }
 
 //-----------------------------------------------------------------------------
@@ -704,8 +761,6 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 	CPipelineCacheDX12 &pipeline = m_Pipeline;
 	const uint64_t fence = m_pDevice->NextFenceValue();
 	const bool bContacts = m_ScreenSpace.contactsEnabled;
-	if ( bContacts && !m_SunContact.handle )
-		return false;
 	// Every draw reserves before reusing the cached table: the lighting, highres, projected-light, probe and ordinary
 	// tables allocated after it reserve again, and a rollover there would leave this table in a stale heap generation.
 	// The count covers this table plus the largest reservation that follows it (lighting's, which includes its own
@@ -719,16 +774,12 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 			return false;
 		ID3D12Device *pNative = m_pDevice->NativeDevice();
 		const UINT stride = pNative->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
-		D3D12_SAMPLER_DESC sunSampler{};
 		for ( UINT slot = 0; slot < DX12_SCREENSPACE_TABLE_COUNT; ++slot )
 		{
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
 			ID3D12Resource *pResource = nullptr;
-			if ( slot == 0 )
-			{
-				if ( !PrepareSampledTexture( m_SunContact.handle, false, &pResource, srv, sunSampler, nullptr, false, 0, 1 ) )
-					return false;
-			}
+			if ( !PrepareContactMaskSrv( slot, pResource, srv ) )
+				return false;
 			D3D12_CPU_DESCRIPTOR_HANDLE cpu = table.cpu;
 			cpu.ptr += SIZE_T( slot ) * stride;
 			pNative->CreateShaderResourceView( pResource, &srv, cpu );
@@ -739,7 +790,7 @@ bool CShaderAPIDX12::PrepareScreenSpaceBinding( CPipelineCacheDX12::BindingInput
 	if ( contact.constantsFence != fence || contact.uploadedVersion != contact.constantsVersion )
 	{
 		D3D12_GPU_VIRTUAL_ADDRESS address = 0;
-		if ( !pipeline.UploadTransient( &m_ScreenSpace.constants, sizeof( m_ScreenSpace.constants ), 256, 256, fence, address ) )
+		if ( !pipeline.UploadTransient( &m_ScreenSpace.constants, sizeof( m_ScreenSpace.constants ), 512, 256, fence, address ) )
 			return false;
 		contact.constants = address;
 		contact.constantsFence = fence;
@@ -767,7 +818,7 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 	const bool ssr = state.forwardSSR && state.forwardSSRFrame == m_nFrameCounter && m_SSR.scene.handle && m_SSR.scene.mipLevels >= 2 &&
 		m_SSR.depth[m_SSR.current ^ 1].handle;
 	const bool aoAvailable = m_SSR.aoTerm && m_SSR.aoFrame == m_nFrameCounter && m_SSR.aoViewModel && m_SSR.aoWidth > 0 && m_SSR.aoHeight > 0;
-	const bool contacts = viewModel && state.viewModelContacts && state.contactsEnabled && m_SunContact.handle;
+	const bool contacts = viewModel && state.viewModelContacts && state.contactsEnabled;
 	const bool debugContacts = viewModel && state.viewFrame == m_nFrameCounter && state.constants.contactControl[3] != 0;
 	if ( !( ssr || ( viewModel && aoAvailable ) || contacts || debugContacts ) )
 		return;
@@ -802,9 +853,9 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 		{
 			D3D12_SHADER_RESOURCE_VIEW_DESC srv = CPipelineCacheDX12::ScreenSpaceNullSrvDesc( slot );
 			ID3D12Resource *pResource = nullptr;
-			if ( contacts && slot == 0 )
+			if ( contacts && ( slot == 0 || slot >= DX12_SCREENSPACE_T_LOCAL_CONTACT ) )
 			{
-				if ( !PrepareSampledTexture( m_SunContact.handle, false, &pResource, srv, unusedSampler, nullptr, false, 0, 1 ) )
+				if ( !PrepareContactMaskSrv( slot, pResource, srv ) )
 					return fail();
 			}
 			else if ( slot == DX12_SCREENSPACE_T_SSR_SCENE && pScene )
@@ -854,11 +905,18 @@ void CShaderAPIDX12::PrepareForwardScreenSpaceBinding( CPipelineCacheDX12::Bindi
 			constants.control[1] = static_cast<uint32>( m_SSR.aoWidth ) | ( static_cast<uint32>( m_SSR.aoHeight ) << 16 );
 			constants.control[2] |= DX12_SCREENSPACE_FORWARD_AO | ( m_SSR.aoPacked ? DX12_SCREENSPACE_FORWARD_AO_PACKED : 0u );
 		}
-		// The SSR camera snapshot comes from the opaque bracket. Publish a contact scope only
-		// when *this* draw's table has a mask at t0; a null SRV would read as fully shadowed.
+		// The SSR camera snapshot comes from the opaque bracket. Publish a contact scope and its masks only when *this*
+		// draw's table binds them; a null SRV would read as fully shadowed.
 		constants.contactControl[0] = contacts ? 2u : 0u;
+		if ( contacts )
+			PublishContactMasks( constants );
+		else
+		{
+			constants.contactParams[3] = 0.f;
+			memset( constants.contactLights, 0, sizeof( constants.contactLights ) );
+		}
 		constants.contactControl[3] = debugContacts ? 1u : 0u;
-		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 256, 256, fence, state.forwardConstantsAddress[kind] ) )
+		if ( !pipeline.UploadTransient( &constants, sizeof( constants ), 512, 256, fence, state.forwardConstantsAddress[kind] ) )
 			return fail();
 		state.forwardConstantsFence[kind] = fence;
 	}
@@ -873,7 +931,7 @@ void CShaderAPIDX12::ReleaseScreenSpaceResources()
 {
 	if ( m_ContactDepth.eventOpen && m_pDevice )
 		m_pDevice->EndGpuPIXEvent();
-	ReleaseSunContactResources();
+	ReleaseContactShadowResources();
 	m_ContactDepth = ContactDepthDX12{};
 	m_ScreenSpace = ScreenSpaceViewStateDX12{};
 	m_bDepthPrepass = false;

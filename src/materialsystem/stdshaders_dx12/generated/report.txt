@@ -688,7 +688,7 @@ logical=eye_refract_shadowmap_ps51 stage=ps source=eye_refract_shadowmap_ps51.fx
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -698,7 +698,8 @@ logical=eye_refract_shadowmap_ps51 stage=ps source=eye_refract_shadowmap_ps51.fx
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -799,7 +800,7 @@ logical=eyes_shadowmap_ps51 stage=ps source=eyes_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -809,7 +810,8 @@ logical=eyes_shadowmap_ps51 stage=ps source=eyes_shadowmap_ps51.fxc legacy=- leg
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -882,7 +884,7 @@ logical=skin_shadowmap_ps51 stage=ps source=skin_shadowmap_ps51.fxc legacy=- leg
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -892,7 +894,8 @@ logical=skin_shadowmap_ps51 stage=ps source=skin_shadowmap_ps51.fxc legacy=- leg
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -987,7 +990,7 @@ logical=teeth_bump_shadowmap_ps51 stage=ps source=teeth_bump_shadowmap_ps51.fxc 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -997,7 +1000,8 @@ logical=teeth_bump_shadowmap_ps51 stage=ps source=teeth_bump_shadowmap_ps51.fxc 
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -1066,7 +1070,7 @@ logical=teeth_shadowmap_ps51 stage=ps source=teeth_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1076,7 +1080,8 @@ logical=teeth_shadowmap_ps51 stage=ps source=teeth_shadowmap_ps51.fxc legacy=- l
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -1574,7 +1579,7 @@ logical=lightmappedgeneric_decal_shadowmap_ps51 stage=ps source=lightmappedgener
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1584,7 +1589,8 @@ logical=lightmappedgeneric_decal_shadowmap_ps51 stage=ps source=lightmappedgener
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -1664,7 +1670,7 @@ logical=lightmappedgeneric_shadowmap_ps51 stage=ps source=lightmappedgeneric_sha
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1674,7 +1680,8 @@ logical=lightmappedgeneric_shadowmap_ps51 stage=ps source=lightmappedgeneric_sha
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -1756,7 +1763,7 @@ logical=lightmappedreflective_shadowmap_ps51 stage=ps source=lightmappedreflecti
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1766,7 +1773,8 @@ logical=lightmappedreflective_shadowmap_ps51 stage=ps source=lightmappedreflecti
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -1807,7 +1815,7 @@ logical=worldtwotextureblend_shadowmap_ps51 stage=ps source=worldtwotextureblend
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1817,7 +1825,8 @@ logical=worldtwotextureblend_shadowmap_ps51 stage=ps source=worldtwotextureblend
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -1895,7 +1904,7 @@ logical=lightmappedgeneric_decal_highres_ps51 stage=ps source=lightmappedgeneric
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1905,7 +1914,8 @@ logical=lightmappedgeneric_decal_highres_ps51 stage=ps source=lightmappedgeneric
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -1950,7 +1960,7 @@ logical=lightmappedgeneric_decal_highres_earlydepth_ps51 stage=ps source=lightma
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -1960,7 +1970,8 @@ logical=lightmappedgeneric_decal_highres_earlydepth_ps51 stage=ps source=lightma
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_decal_ps2x space=1 register=b1 size=80 layoutHash=0x84a336ffd3ae2172 material
     member=g_LightMap0Color type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_LightMap1Color type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -2044,7 +2055,7 @@ logical=lightmappedgeneric_highres_ps51 stage=ps source=lightmappedgeneric_highr
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2054,7 +2065,8 @@ logical=lightmappedgeneric_highres_ps51 stage=ps source=lightmappedgeneric_highr
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -2115,7 +2127,7 @@ logical=lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=lightmappedge
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2125,7 +2137,8 @@ logical=lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=lightmappedge
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedgeneric_ps2x_shadowmap space=1 register=b1 size=192 layoutHash=0x4665556fa3ee3d73 material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_EnvmapContrast type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c2
@@ -2211,7 +2224,7 @@ logical=lightmappedreflective_highres_ps51 stage=ps source=lightmappedreflective
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2221,7 +2234,8 @@ logical=lightmappedreflective_highres_ps51 stage=ps source=lightmappedreflective
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -2264,7 +2278,7 @@ logical=lightmappedreflective_highres_earlydepth_ps51 stage=ps source=lightmappe
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2274,7 +2288,8 @@ logical=lightmappedreflective_highres_earlydepth_ps51 stage=ps source=lightmappe
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=lightmappedreflective_ps2x space=1 register=b1 size=64 layoutHash=0x247261cc23f9d1a6 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=g_FresnelConstants type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c3
@@ -2319,7 +2334,7 @@ logical=worldtwotextureblend_highres_ps51 stage=ps source=worldtwotextureblend_h
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2329,7 +2344,8 @@ logical=worldtwotextureblend_highres_ps51 stage=ps source=worldtwotextureblend_h
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -2382,7 +2398,7 @@ logical=worldtwotextureblend_highres_earlydepth_ps51 stage=ps source=worldtwotex
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2392,7 +2408,8 @@ logical=worldtwotextureblend_highres_earlydepth_ps51 stage=ps source=worldtwotex
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=worldtwotextureblend_ps2x_shadowmap space=1 register=b1 size=176 layoutHash=0x0f10b495c9f44345 material
     member=g_SelfIllumTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c7
     member=g_EyePos type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c10
@@ -2472,7 +2489,7 @@ logical=l4d2_lightmappedgeneric_highres_ps51 stage=ps source=l4d2_lightmappedgen
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2482,7 +2499,8 @@ logical=l4d2_lightmappedgeneric_highres_ps51 stage=ps source=l4d2_lightmappedgen
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
 logical=l4d2_lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=l4d2_lightmappedgeneric_highres_earlydepth_ps51.fxc legacy=l4d2_lightmappedgeneric_ps20b.fxc legacyName=l4d2_lightmappedgeneric_ps20b profile=20b static=2 dynamic=1 present=2
   cbuffer=DX12ComboFoldPS space=1 register=b2 size=256 layoutHash=0x0059821a164b1e6f engine
     member=cComboFold type=19 class=1 offset=0 size=256 elements=16 arrayStride=16 legacy=none
@@ -2519,7 +2537,7 @@ logical=l4d2_lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=l4d2_lig
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2529,7 +2547,8 @@ logical=l4d2_lightmappedgeneric_highres_earlydepth_ps51 stage=ps source=l4d2_lig
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
 logical=worldvertextransition_editor_highres_vs51 stage=vs source=worldvertextransition_editor_highres_vs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=2 present=2
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -2589,7 +2608,7 @@ logical=worldvertextransition_editor_highres_ps51 stage=ps source=worldvertextra
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2599,7 +2618,8 @@ logical=worldvertextransition_editor_highres_ps51 stage=ps source=worldvertextra
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=WorldVertexTransitionEditorNormalization space=1 register=b1 size=16 layoutHash=0x5f6cfca27144e08d material
     member=cEditorOverbright type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
@@ -2636,7 +2656,7 @@ logical=worldvertextransition_editor_highres_earlydepth_ps51 stage=ps source=wor
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2646,7 +2666,8 @@ logical=worldvertextransition_editor_highres_earlydepth_ps51 stage=ps source=wor
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=WorldVertexTransitionEditorNormalization space=1 register=b1 size=16 layoutHash=0x5f6cfca27144e08d material
     member=cEditorOverbright type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     legacyEntry=0,16,1,0,0,0,0
@@ -2838,7 +2859,7 @@ logical=nekotoon_model_ps51 stage=ps source=nekotoon_model_ps51.fxc legacy=- leg
     member=cProbeBricks type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlas type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlasBricks type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2848,7 +2869,8 @@ logical=nekotoon_model_ps51 stage=ps source=nekotoon_model_ps51.fxc legacy=- leg
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -2967,7 +2989,7 @@ logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- 
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -2977,7 +2999,8 @@ logical=pbr_world_ps51 stage=ps source=pbr_world_ps51.fxc legacy=- legacyName=- 
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=688 layoutHash=0xf5572d9fdd68e0b9 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -3141,7 +3164,7 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -3151,7 +3174,8 @@ logical=pbr_world_highres_ps51 stage=ps source=pbr_world_highres_ps51.fxc legacy
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=688 layoutHash=0xf5572d9fdd68e0b9 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -3260,7 +3284,7 @@ logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earl
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -3270,7 +3294,8 @@ logical=pbr_world_highres_earlydepth_ps51 stage=ps source=pbr_world_highres_earl
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=PBRMaterialPS space=1 register=b1 size=688 layoutHash=0xf5572d9fdd68e0b9 material
     member=g_BaseTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_Surface type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c1
@@ -3463,7 +3488,7 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=cProbeBricks type=19 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlas type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
     member=cProbeAtlasBricks type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -3473,7 +3498,8 @@ logical=pbr_model_ps51 stage=ps source=pbr_model_ps51.fxc legacy=- legacyName=- 
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -4636,7 +4662,7 @@ logical=flashlight_bounce_cs51 stage=cs source=flashlight_bounce_cs51.fxc legacy
     member=settings type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=
 logical=flashlight_bounce_vs51 stage=vs source=flashlight_bounce_vs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
 logical=flashlight_bounce_ps51 stage=ps source=flashlight_bounce_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -4646,7 +4672,8 @@ logical=flashlight_bounce_ps51 stage=ps source=flashlight_bounce_ps51.fxc legacy
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
 logical=volumetric_vs51 stage=vs source=volumetric_vs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
 logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=2 present=4
   cbuffer=DX12LightingViewConstantsV1 space=2 register=b0 size=672 layoutHash=0x8c941ddd15caf851 engine
@@ -4667,7 +4694,7 @@ logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=
     member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
     member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
     member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -4677,7 +4704,8 @@ logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12Volumetric space=6 register=b1 size=80 layoutHash=0xc4185eacc972f8da engine
     member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -4685,7 +4713,7 @@ logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=
     member=cVolumeControl type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeOutputScale type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
 logical=volumetric_temporal_ps51 stage=ps source=volumetric_temporal_ps51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -4695,7 +4723,8 @@ logical=volumetric_temporal_ps51 stage=ps source=volumetric_temporal_ps51.fxc le
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12Volumetric space=6 register=b1 size=80 layoutHash=0xc4185eacc972f8da engine
     member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -4703,7 +4732,7 @@ logical=volumetric_temporal_ps51 stage=ps source=volumetric_temporal_ps51.fxc le
     member=cVolumeControl type=19 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeOutputScale type=3 class=1 offset=64 size=16 elements=0 arrayStride=0 legacy=
 logical=volumetric_upsample_ps51 stage=ps source=volumetric_upsample_ps51.fxc legacy=- legacyName=- profile=native static=2 dynamic=2 present=4
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -4713,7 +4742,8 @@ logical=volumetric_upsample_ps51 stage=ps source=volumetric_upsample_ps51.fxc le
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12Volumetric space=6 register=b1 size=80 layoutHash=0xc4185eacc972f8da engine
     member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
@@ -6155,7 +6185,7 @@ logical=treeleaf_shadowmap_ps51 stage=ps source=treeleaf_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6165,7 +6195,8 @@ logical=treeleaf_shadowmap_ps51 stage=ps source=treeleaf_shadowmap_ps51.fxc lega
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -6220,7 +6251,7 @@ logical=cable_shadowmap_ps51 stage=ps source=cable_shadowmap_ps51.fxc legacy=- l
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6230,7 +6261,8 @@ logical=cable_shadowmap_ps51 stage=ps source=cable_shadowmap_ps51.fxc legacy=- l
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -6303,7 +6335,7 @@ logical=vertexlit_and_unlit_generic_bump_shadowmap_ps51 stage=ps source=vertexli
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6313,7 +6345,8 @@ logical=vertexlit_and_unlit_generic_bump_shadowmap_ps51 stage=ps source=vertexli
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -6420,7 +6453,7 @@ logical=vertexlit_and_unlit_generic_shadowmap_ps51 stage=ps source=vertexlit_and
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6430,7 +6463,8 @@ logical=vertexlit_and_unlit_generic_shadowmap_ps51 stage=ps source=vertexlit_and
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=
@@ -6900,7 +6934,7 @@ logical=shatteredglass_highres_ps51 stage=ps source=shatteredglass_highres_ps51.
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6910,7 +6944,8 @@ logical=shatteredglass_highres_ps51 stage=ps source=shatteredglass_highres_ps51.
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=ShatteredGlass_ps2x space=1 register=b1 size=112 layoutHash=0x3934fe7066b5827b material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
@@ -6959,7 +6994,7 @@ logical=shatteredglass_highres_earlydepth_ps51 stage=ps source=shatteredglass_hi
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -6969,7 +7004,8 @@ logical=shatteredglass_highres_earlydepth_ps51 stage=ps source=shatteredglass_hi
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=ShatteredGlass_ps2x space=1 register=b1 size=112 layoutHash=0x3934fe7066b5827b material
     member=g_EnvmapTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c0
     member=g_DiffuseModulation type=3 class=1 offset=16 size=12 elements=0 arrayStride=0 legacy=ps:c1
@@ -7045,7 +7081,7 @@ logical=water_highres_ps51 stage=ps source=water_highres_ps51.fxc legacy=- legac
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -7055,7 +7091,8 @@ logical=water_highres_ps51 stage=ps source=water_highres_ps51.fxc legacy=- legac
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=water_ps2x space=1 register=b1 size=96 layoutHash=0x991ecf0654a35293 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=vReflectTint type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c4
@@ -7102,7 +7139,7 @@ logical=water_highres_earlydepth_ps51 stage=ps source=water_highres_earlydepth_p
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -7112,7 +7149,8 @@ logical=water_highres_earlydepth_ps51 stage=ps source=water_highres_earlydepth_p
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=water_ps2x space=1 register=b1 size=96 layoutHash=0x991ecf0654a35293 material
     member=vRefractTint type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=ps:c1
     member=vReflectTint type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=ps:c4
@@ -7184,7 +7222,7 @@ logical=l4d2_water_highres_ps51 stage=ps source=l4d2_water_highres_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -7194,7 +7232,8 @@ logical=l4d2_water_highres_ps51 stage=ps source=l4d2_water_highres_ps51.fxc lega
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
 logical=l4d2_water_highres_earlydepth_ps51 stage=ps source=l4d2_water_highres_earlydepth_ps51.fxc legacy=l4d2_water_ps20b.fxc legacyName=l4d2_water_ps20b profile=20b static=244 dynamic=4 present=328
   cbuffer=DX12GameRegistersPS space=1 register=b4 size=512 layoutHash=0xc62b02a05a15faf1 engine
     member=gameRegisters type=3 class=1 offset=0 size=512 elements=32 arrayStride=16 legacy=none
@@ -7229,7 +7268,7 @@ logical=l4d2_water_highres_earlydepth_ps51 stage=ps source=l4d2_water_highres_ea
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -7239,7 +7278,8 @@ logical=l4d2_water_highres_earlydepth_ps51 stage=ps source=l4d2_water_highres_ea
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
 logical=core_vs51 stage=vs source=core_vs51.fxc legacy=core_vs20.fxc legacyName=core_vs20 profile=20b static=2 dynamic=4 present=8
   cbuffer=DX12VSBones space=1 register=b1 size=2544 layoutHash=0x4b955c265c5cfd5f engine
     member=cModel type=3 class=3 offset=0 size=2544 elements=53 arrayStride=48 legacy=none
@@ -7611,7 +7651,7 @@ logical=vortwarp_shadowmap_ps51 stage=ps source=vortwarp_shadowmap_ps51.fxc lega
     member=cAlphaTest type=3 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogColor type=3 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=none
     member=cRasterFogParams type=3 class=1 offset=272 size=16 elements=0 arrayStride=0 legacy=none
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -7621,7 +7661,8 @@ logical=vortwarp_shadowmap_ps51 stage=ps source=vortwarp_shadowmap_ps51.fxc lega
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12StaticPropDrawConstants space=2 register=b1 size=96 layoutHash=0xe4cb86fa42e00766 engine
     member=cPropDraw type=19 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cPropModelToWorld type=3 class=1 offset=16 size=48 elements=3 arrayStride=16 legacy=

@@ -89,6 +89,9 @@ public:
 	void SetProjectedLightTextures( const ShaderAPITextureHandle_t *cookies, const ShaderAPITextureHandle_t *depths, int count ) override;
 	void BeginProjectedLights( const DX12ProjectedLightPacket &packet ) override;
 	bool GetSunContactDirection( float out[4] );
+	// Up to `limit` realtime-shadowed local lights of the current view for Bend contact masks, nearest relative to their
+	// radius first: world origin (w 1) and lightId. Returns the count.
+	int GetContactLights( const float eye[3], int limit, float origins[][4], uint32 *lightIds );
 	int ModelLocalLighting( int limit, float rows[7][4] ) override;
 	int CaptureModelRows( int limit, std::shared_ptr<DrawModelRowsDX12> &out );
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );

@@ -264,7 +264,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 	volume.outputScale[2] = pMotion ? 1.0f : 0.0f;
 	volume.outputScale[3] = static_cast<float>( footprint );
 	D3D12_GPU_VIRTUAL_ADDRESS cameraAddress = 0, volumeAddress = 0;
-	if ( !m_Pipeline.UploadTransient( &camera, sizeof( camera ), 256, 256, fence, cameraAddress ) ||
+	if ( !m_Pipeline.UploadTransient( &camera, sizeof( camera ), 512, 256, fence, cameraAddress ) ||
 	     !m_Pipeline.UploadTransient( &volume, sizeof( volume ), 256, 256, fence, volumeAddress ) )
 		return warn( "constant upload failed" );
 	// Temporal uses the same backend-owned camera ABI: current inverse/eye/ray,
@@ -278,7 +278,7 @@ bool CShaderAPIDX12::DrawVolumetricPass()
 		temporalCamera.eyeLength[3] += m_Volumetric.historyCamera.eyeLength[i] * m_Volumetric.historyCamera.forwardThickness[i];
 	temporalCamera.control[0] = bMSAA ? 1u : 0u;
 	D3D12_GPU_VIRTUAL_ADDRESS temporalCameraAddress = 0;
-	if ( !m_Pipeline.UploadTransient( &temporalCamera, sizeof( temporalCamera ), 256, 256, fence, temporalCameraAddress ) )
+	if ( !m_Pipeline.UploadTransient( &temporalCamera, sizeof( temporalCamera ), 512, 256, fence, temporalCameraAddress ) )
 		return warn( "temporal camera upload failed" );
 
 	// March bindings: space 2 (captured lighting view, no receiver/prop visibility) and space 5 (current projected-light

@@ -203,25 +203,25 @@ static bool ValidateProbeBinding( ID3D12ShaderReflection *reflection, const D3D1
 	return true;
 }
 
-// Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (256 B, 10 members), cbuffer DX12Volumetric b1
+// Space 6 (screen-space effects, pixel stage): cbuffer DX12ScreenSpaceView b0 (272 B, 11 members), cbuffer DX12Volumetric b1
 // (80 B, 5 members), cbuffer DX12ShadowSkyClip b2 (16 B, 1 member), g_ScreenContactShadow t0 / g_ScreenSceneDepth t2 /
-// g_ShadowSkyClip t4 / g_ScreenSSRDepth t6 / g_ScreenAO t7 (Texture2D<float>), g_ScreenSceneDepthMS t3 (Texture2DMS<float>)
-// and g_ScreenSSRScene t5 (Texture2D<float4>). Private contact depth is compute-only; t1 and unknown space-6 resources
-// are rejected. screenSeen collects one bit per name.
+// g_ShadowSkyClip t4 / g_ScreenSSRDepth t6 / g_ScreenAO t7 / g_ScreenLocalContact0..3 t8..t11 (Texture2D<float>),
+// g_ScreenSceneDepthMS t3 (Texture2DMS<float>) and g_ScreenSSRScene t5 (Texture2D<float4>). Private contact depth is
+// compute-only; t1 and unknown space-6 resources are rejected. screenSeen collects one bit per name.
 static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, const D3D12_SHADER_INPUT_BIND_DESC &binding, unsigned &screenSeen )
 {
 	struct Block
 	{
 		const char *name;
 		UINT reg, size, members;
-		const char *memberNames[10];
-		UINT memberSizes[10];
+		const char *memberNames[11];
+		UINT memberSizes[11];
 	};
 	static const Block blocks[] = {
-		{ "DX12ScreenSpaceView", DX12_SCREENSPACE_B_VIEW, 256, 10,
+		{ "DX12ScreenSpaceView", DX12_SCREENSPACE_B_VIEW, 272, 11,
 		  { "cScreenWorldToClip", "cScreenClipToWorld", "cScreenEyeLength", "cScreenForwardThickness", "cScreenViewport", "cScreenControl", "cScreenDepth",
-		    "cScreenContactParams", "cScreenContactDepth", "cScreenContactControl" },
-		  { 64, 64, 16, 16, 16, 16, 16, 16, 16, 16 } },
+		    "cScreenContactParams", "cScreenContactDepth", "cScreenContactLights", "cScreenContactControl" },
+		  { 64, 64, 16, 16, 16, 16, 16, 16, 16, 16, 16 } },
 		{ "DX12Volumetric", DX12_SCREENSPACE_B_VOLUMETRIC, 80, 5,
 		  { "cVolumeMedium", "cVolumeSunMedium", "cVolumeBeamMedium", "cVolumeControl", "cVolumeOutputScale" },
 		  { 16, 16, 16, 16, 16 } },
@@ -244,6 +244,10 @@ static bool ValidateScreenSpaceBinding( ID3D12ShaderReflection *reflection, cons
 		{ "g_ScreenSSRScene", DX12_SCREENSPACE_T_SSR_SCENE, D3D_SRV_DIMENSION_TEXTURE2D, D3D_SIF_TEXTURE_COMPONENTS },
 		{ "g_ScreenSSRDepth", DX12_SCREENSPACE_T_SSR_DEPTH, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
 		{ "g_ScreenAO", DX12_SCREENSPACE_T_AO, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenLocalContact0", DX12_SCREENSPACE_T_LOCAL_CONTACT + 0, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenLocalContact1", DX12_SCREENSPACE_T_LOCAL_CONTACT + 1, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenLocalContact2", DX12_SCREENSPACE_T_LOCAL_CONTACT + 2, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
+		{ "g_ScreenLocalContact3", DX12_SCREENSPACE_T_LOCAL_CONTACT + 3, D3D_SRV_DIMENSION_TEXTURE2D, 0 },
 	};
 	unsigned bit = 0;
 	bool valid = false;

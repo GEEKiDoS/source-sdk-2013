@@ -1,7 +1,7 @@
 // Backend-owned register space 6: the main-view screen-space camera, volumetric medium and final scene depth.
 // Byte-identical twins: DX12ScreenSpaceViewConstants / DX12VolumetricConstants in
 // public/shaderapi/ishaderapidx12screenspace.h. Bound on every graphics root; ordinary draws see neutral zero
-// constants. The sun-only contact mask has its own declaration in screenspace_contact.hlsli.
+// constants. The contact masks (sun t0, local lights t8..t11) are declared in screenspace_contact.hlsli.
 #ifndef SCREENSPACE_VIEW_HLSLI
 #define SCREENSPACE_VIEW_HLSLI
 
@@ -14,8 +14,9 @@ cbuffer DX12ScreenSpaceView : register( b0, space6 )
 	float4 cScreenViewport;                  // scene-pixel x, y, width, height
 	uint4 cScreenControl;                    // legacy enable, scene sample count or AO dimensions, steps or forward flags, SSR capture
 	float4 cScreenDepth;                     // depth clear, normal bias, first ray distance, edge fade pixels
-	float4 cScreenContactParams;             // Bend surface thickness fraction, edge threshold, contrast, reserved
+	float4 cScreenContactParams;             // Bend surface thickness fraction, edge threshold, contrast, sun mask valid
 	float4 cScreenContactDepth;              // receiver projection and valid raw depth range
+	uint4 cScreenContactLights;              // 1 + lightId of the local light whose mask is at t8 + i; 0 none
 	uint4 cScreenContactControl;             // mask scope 0 off 1 world 2 viewmodel, samples, trace pixels, debug
 };
 

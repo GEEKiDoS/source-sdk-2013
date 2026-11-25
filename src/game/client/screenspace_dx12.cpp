@@ -26,13 +26,15 @@ static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR tra
 static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
 static ConVar r_ssr_forward_steps( "r_ssr_forward_steps", "16", FCVAR_ARCHIVE, "SSR of translucents (car glass, windows) and viewmodels, traced in their own shaders: march steps, 0 off", true, 0, true, 32 );
-static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: Bend screen-space contact shadows for the shadowmapped sun", true, 0, true, 1 );
+static ConVar r_contactshadows( "r_contactshadows", "0", FCVAR_ARCHIVE, "DX12: Bend screen-space contact shadows for the shadowmapped sun and r_contactshadows_local local lights", true, 0, true, 1 );
+static ConVar r_contactshadows_local( "r_contactshadows_local", "4", FCVAR_ARCHIVE,
+	"Realtime-shadowed local lights also given Bend contact shadows with r_contactshadows, nearest relative to their radius first; one full-screen pass each", true, 0, true, 4 );
 static ConVar r_contactshadows_debug( "r_contactshadows_debug", "0", FCVAR_CHEAT,
-	"Show sun contact visibility on supported receivers: white is unoccluded. Does not enable contact shadows.", true, 0, true, 1 );
-static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Sun contact-shadow samples: 0 = 16, 1 = 32, 2 = 60", true, 0, true, 2 );
+	"Show contact visibility (sun and local lights) on supported receivers: white is unoccluded. Does not enable contact shadows.", true, 0, true, 1 );
+static ConVar r_contactshadows_quality( "r_contactshadows_quality", "1", FCVAR_ARCHIVE, "Contact-shadow samples: 0 = 16, 1 = 32, 2 = 60", true, 0, true, 2 );
 static ConVar r_contactshadows_surface_thickness( "r_contactshadows_surface_thickness", "0.005", FCVAR_ARCHIVE, "Assumed surface thickness as a fraction of the remaining device-depth range", true, 0.0001f, true, 0.1f );
 static ConVar r_contactshadows_edge_threshold( "r_contactshadows_edge_threshold", "0.02", FCVAR_ARCHIVE, "Relative device-depth threshold for rejecting interpolation across edges", true, 0.f, true, 1.f );
-static ConVar r_contactshadows_contrast( "r_contactshadows_contrast", "4", FCVAR_ARCHIVE, "Bend sun contact-shadow contrast", true, 1.f, true, 8.f );
+static ConVar r_contactshadows_contrast( "r_contactshadows_contrast", "4", FCVAR_ARCHIVE, "Bend contact-shadow contrast", true, 1.f, true, 8.f );
 static ConVar r_depth_prepass( "r_depth_prepass", "1", FCVAR_ARCHIVE, "DX12: replay normal main-view opaque geometry into depth before shading (same LOD and alpha coverage)", true, 0, true, 1 );
 
 static ConVar r_flashlight_bounce( "r_flashlight_bounce", "1", FCVAR_ARCHIVE, "Screen-space flashlight bounce lighting", true, 0, true, 1 );
@@ -156,6 +158,7 @@ IShaderAPIDX12ScreenSpace *ScreenSpaceDX12_BeginView( IMatRenderContext *pRender
 	view.constants.contactControl[3] = debugContacts ? 1u : 0u;
 	view.bounceScale = bounce ? r_flashlight_bounce_scale.GetFloat() : 0.f;
 	view.bounceDebug = bounce && r_flashlight_bounce_debug.GetBool();
+	view.contactLocalLights = contacts || debugContacts ? static_cast<uint32>( r_contactshadows_local.GetInt() ) : 0u;
 	view.ssr.quality = static_cast<uint32>( r_ssr_quality.GetInt() );
 	view.ssr.maxDistance = r_ssr_max_distance.GetFloat();
 	view.ssr.thickness = r_ssr_thickness.GetFloat();

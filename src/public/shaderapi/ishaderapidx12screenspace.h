@@ -24,10 +24,11 @@
 
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_011"
+// _012: DX12ScreenSpaceViewConstants 256 -> 272 bytes (contactLights), DX12ScreenSpaceViewDesc::contactLocalLights.
+#define SHADERAPIDX12_SCREENSPACE_INTERFACE_VERSION "ShaderAPIDX12ScreenSpace_012"
 
 // Byte-identical to HLSL cbuffer DX12ScreenSpaceView (b0 space6, native_src/screenspace_view.hlsli).
-struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
+struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 272 bytes
 {
 	float	worldToClip[16];		// row-major, clip = mul( worldToClip, float4( P, 1 ) ); backend-filled (native raster epilogue + jitter)
 	float	clipToWorld[16];		// inverse of worldToClip; forward viewmodel contacts reuse this lane for their projection
@@ -36,8 +37,9 @@ struct alignas( 16 ) DX12ScreenSpaceViewConstants	// 256 bytes
 	float	viewport[4];			// scene-pixel x, y, width, height
 	uint32	control[4];				// reserved; scene samples or forward AO size; forward flags; SSR capture
 	float	depth[4];				// depth-clear value (backend), normal bias 0.25, first ray distance 0.5, edge fade 8 pixels
-	float	contactParams[4];		// Bend surface thickness (relative depth), edge threshold, contrast, reserved
+	float	contactParams[4];		// Bend surface thickness (relative depth), edge threshold, contrast; w backend: 1 when t0 holds this scope's sun mask
 	float	contactDepth[4];		// depth projection and valid raw range for the current receiver layer
+	uint32	contactLights[4];		// backend: 1 + lightId (RuntimeShadowLightGpu) of the local light whose mask is at t8 + i; 0 none
 	uint32	contactControl[4];		// mask scope: 0 off, 1 world, 2 viewmodel; samples; trace pixels; debug
 };
 
@@ -56,6 +58,7 @@ struct DX12ScreenSpaceViewDesc
 	DX12SSRSettings ssr;
 	float bounceScale;
 	uint32 bounceDebug;
+	uint32 contactLocalLights;		// local lights given Bend contact masks, [0, 4]; only with contactControl[0]
 };
 
 // Snapshot of the volumetric controls for one main camera view. 64 bytes; the first 64 bytes of HLSL cbuffer
@@ -74,7 +77,7 @@ struct alignas( 16 ) DX12VolumetricConstants	// 80 bytes, HLSL cbuffer DX12Volum
 	float	outputScale[4];			// native LINEAR_LIGHT_SCALE (m_ToneScale.x), 0, 0, 0
 };
 
-static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 256, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
+static_assert( sizeof( DX12ScreenSpaceViewConstants ) == 272, "DX12ScreenSpaceViewConstants must match HLSL DX12ScreenSpaceView" );
 static_assert( sizeof( DX12SSRSettings ) == 20, "DX12SSRSettings layout" );
 static_assert( sizeof( DX12VolumetricSettings ) == 64, "DX12VolumetricSettings layout" );
 static_assert( sizeof( DX12VolumetricConstants ) == 80, "DX12VolumetricConstants must match HLSL DX12Volumetric" );

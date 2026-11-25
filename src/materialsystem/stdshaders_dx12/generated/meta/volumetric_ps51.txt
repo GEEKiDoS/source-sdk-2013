@@ -17,7 +17,7 @@ logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=
     member=cCascadeRects type=19 class=1 offset=576 size=64 elements=4 arrayStride=16 legacy=
     member=cStaticSunRect type=19 class=1 offset=640 size=16 elements=0 arrayStride=0 legacy=
     member=cSunIdentity type=19 class=1 offset=656 size=16 elements=0 arrayStride=0 legacy=
-  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=256 layoutHash=0x200aabc2ebbf4aca engine
+  cbuffer=DX12ScreenSpaceView space=6 register=b0 size=272 layoutHash=0x9cb0540d205cf95d engine
     member=cScreenWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
     member=cScreenEyeLength type=3 class=1 offset=128 size=16 elements=0 arrayStride=0 legacy=
@@ -27,7 +27,8 @@ logical=volumetric_ps51 stage=ps source=volumetric_ps51.fxc legacy=- legacyName=
     member=cScreenDepth type=3 class=1 offset=192 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactParams type=3 class=1 offset=208 size=16 elements=0 arrayStride=0 legacy=
     member=cScreenContactDepth type=3 class=1 offset=224 size=16 elements=0 arrayStride=0 legacy=
-    member=cScreenContactControl type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactLights type=19 class=1 offset=240 size=16 elements=0 arrayStride=0 legacy=
+    member=cScreenContactControl type=19 class=1 offset=256 size=16 elements=0 arrayStride=0 legacy=
   cbuffer=DX12Volumetric space=6 register=b1 size=80 layoutHash=0xc4185eacc972f8da engine
     member=cVolumeMedium type=3 class=1 offset=0 size=16 elements=0 arrayStride=0 legacy=
     member=cVolumeSunMedium type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=

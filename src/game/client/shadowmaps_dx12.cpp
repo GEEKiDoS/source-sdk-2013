@@ -65,7 +65,7 @@ ConVar r_csm_distance( "r_csm_distance", "4096", FCVAR_ARCHIVE, "Sun cascade rec
 ConVar r_csm_cascades( "r_csm_cascades", "2", FCVAR_ARCHIVE, "Dynamic sun cascades (1-4). Fewer cascades keep the nearest splits of r_csm_distance; receivers beyond them use the static sun map, which has no dynamic casters", true, 1, true, 4 );
 ConVar r_csm_split_log( "r_csm_split_log", "0.6", FCVAR_ARCHIVE, "Logarithmic share of the sun cascade split scheme (0 uniform, 1 logarithmic); higher packs the near cascades tighter around the camera (sharper near shadows) and shortens the reach of a given cascade count", true, 0, true, 1 );
 ConVar r_pbr_nms( "r_pbr_nms", "1", FCVAR_ARCHIVE,
-	"Normal Mapping Shadows for the directional sun on bumped PBR materials; 0 off, 1 on", true, 0, true, 1, OnPbrNmsChanged );
+	"Normal Mapping Shadows on bumped PBR materials for the sun and the local lights each pixel evaluates (realtime, unbaked and baked-specular terms); 0 off, 1 on", true, 0, true, 1, OnPbrNmsChanged );
 ConVar r_pbr_nms_length( "r_pbr_nms_length", "4", FCVAR_ARCHIVE,
 	"Normal Mapping Shadows world-space trace length", true, 0, true, 32 );
 ConVar r_pbr_nms_steps( "r_pbr_nms_steps", "8", FCVAR_ARCHIVE,

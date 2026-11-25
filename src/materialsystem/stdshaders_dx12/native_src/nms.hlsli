@@ -1,7 +1,7 @@
-// Normal Mapping Shadows: cheap self-shadowing from the bumped normal field for the sun only.
-// After Boris Vorontsov's slope trace: walking from the pixel toward the light, the tangent-space
-// normals give the surface slope, so integrating it rebuilds the height profile along the ray.
-// Wherever that profile rises above the ray toward the sun, the pixel is occluded. Everything is
+// Normal Mapping Shadows: cheap self-shadowing from the bumped normal field, for the sun and every local light the
+// pixel evaluates (pbr_lighting.hlsli). After Boris Vorontsov's slope trace: walking from the pixel toward the light,
+// the tangent-space normals give the surface slope, so integrating it rebuilds the height profile along the ray.
+// Wherever that profile rises above the ray toward the light, the pixel is occluded. Everything is
 // measured in world units: UV derivatives convert the world-space trace length into texture
 // coordinates, so the result does not depend on texture resolution or $basetexturetransform.
 #ifndef PBR_NMS_HLSLI
@@ -24,7 +24,7 @@ struct PBRNMSInput
 
 // Floor for the normal's z when converting it to a slope, so near-vertical texels can't explode.
 static const float kNMSMinimumNormalZ = 0.2;
-// Height (world units) above the sun ray at which a texel is fully shadowed.
+// Height (world units) above the light ray at which a texel is fully shadowed.
 static const float kNMSFullShadowDepth = 0.25;
 
 float PBR_NMSVisibility( Texture2D normalTexture, SamplerState normalSampler, PBRNMSInput input, float3 lightWS )
@@ -59,7 +59,7 @@ float PBR_NMSVisibility( Texture2D normalTexture, SamplerState normalSampler, PB
 	float shadowLength = max( g_PbrNMS.y, 0.0 );
 	float stepWorld = shadowLength / float( steps );
 	float2 uvStep = rayDirection * ( stepWorld / worldPerUV );
-	// The ray toward the sun rises this much per world unit travelled across the surface.
+	// The ray toward the light rises this much per world unit travelled across the surface.
 	float rayRise = dot( L, input.normal ) / lightXYLength;
 	// Each sample stands for one step of the ray, so it reads the normal prefiltered to that step's footprint
 	// (or the pixel's, if larger): point-sampling texel noise between steps turns the integral into speckle.

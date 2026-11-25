@@ -27,37 +27,6 @@ struct BounceOutput
 	float4 source : SV_Target0;
 	float4 multiplier : SV_Target1;
 };
-// Six deterministic taps over a perspective-correct segment. Only an observed front surface can
-// occlude; missing/off-screen samples and compressed hand depth are not world blockers.
-float BounceVisibility( float3 P, float3 N, float3 light, uint sampleId )
-{
-	float4 a = mul( cScreenWorldToClip, float4( P + 2 * N, 1 ) );
-	float4 b = mul( cScreenWorldToClip, float4( light, 1 ) );
-	if ( min( a.w, b.w ) < 1 || cScreenDepth.z == 0 )
-		return 1;
-	float4 start = float4( a.xy / a.w, a.z / a.w, rcp( a.w ) );
-	float4 end = float4( b.xy / b.w, b.z / b.w, rcp( b.w ) );
-	float visibility = 1;
-	[unroll] for ( int i = 1; i <= 6; ++i )
-	{
-		float4 tap = lerp( start, end, i / 7.0 );
-		if ( any( abs( tap.xy ) >= 1 ) )
-			break;
-		int2 p = int2( cScreenViewport.xy + ( tap.xy * float2( 0.5, -0.5 ) + 0.5 ) * cScreenViewport.zw );
-#if MSAA
-		float deviceZ = rawDepth.Load( p, sampleId );
-#else
-		float deviceZ = rawDepth.Load( int3( p, 0 ) );
-#endif
-		if ( deviceZ < DX12_VIEWMODEL_DEPTH_MAX || deviceZ >= tap.z )
-			continue;
-		float gap = rcp( tap.w ) - cScreenDepth.z / ( deviceZ - cScreenDepth.y );
-		// Finite depth thickness avoids painting distant background surfaces with foreground silhouettes.
-		visibility = min( visibility, 1 - smoothstep( 1, 4, gap ) * ( 1 - smoothstep( 24, 48, gap ) ) );
-	}
-	return visibility;
-}
-
 [earlydepthstencil] BounceOutput main( float4 sv : SV_Position, nointerpolation float4 light : TEXCOORD0, nointerpolation float4 color : TEXCOORD1, nointerpolation float3 hitCenter : TEXCOORD2, nointerpolation float3 hitNormal : TEXCOORD3
 #if MSAA
     ,
@@ -93,12 +62,7 @@ float BounceVisibility( float3 P, float3 N, float3 light, uint sampleId )
 	float plane = smoothstep( -8, -2, dot( hitNormal, P - hitCenter ) );
 	if ( plane * facing <= 0 )
 		discard;
-#if MSAA
-	uint traceSample = sampleIndex;
-#else
-	uint traceSample = 0;
-#endif
-	float3 rgb = color.rgb * ( plane * facing * atten * atten * BounceVisibility( P, n, light.xyz, traceSample ) );
+	float3 rgb = color.rgb * ( plane * facing * atten * atten );
 	if ( color.w && distance( P, hitCenter ) < 8 )
 		rgb = 4 * color.rgb;
 	float clipZ = z / world.w;
