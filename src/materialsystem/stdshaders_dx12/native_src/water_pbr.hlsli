@@ -66,6 +66,18 @@ ShadowMapShading WaterPBR_Shading( float3 N, float3 V, float alpha2 )
 	return ShadowMap_WithGGXSpecular( ShadowMap_ShadeBumped( N, N, N, 0.0 ), N, V, alpha2, WATER_F0 );
 }
 
+// The analytic glint of a low sun on rippled water is physically tens of times the irradiance of sunlit ground; the
+// post bloom turns that into screen-wide glare and lens ghosts. Soft-cap the surface's direct specular luminance at
+// this many sun irradiances (at least 1 scene unit, for local lights with no sun): the glitter still saturates
+// to white, but its energy, and so the bloom, stays bounded.
+static const float WATER_GLINT_LIMIT = 4.0;
+float3 WaterPBR_LimitGlint( float3 specular )
+{
+	const float3 luma = float3( 0.2126, 0.7152, 0.0722 );
+	float limit = WATER_GLINT_LIMIT * max( dot( cSunRadiance.rgb, luma ), 1.0 );
+	return specular / ( 1.0 + dot( specular, luma ) / limit );
+}
+
 #if REFLECT && !FLASHLIGHT
 // The planar reflection target holds the mirrored world as the main camera sees it, registered so that a flat
 // mirror reads the pixel's own screen position. A reflected ray R from the surface therefore reads the main
@@ -161,7 +173,7 @@ float4 WaterPBR_Main( DX12_PS_INPUT dx12In )
 	float reflectance = g_ReflectTint.a;	// $nofresnel: the authored $reflectblendfactor
 #endif
 	ShadowMapDirect direct = ShadowMap_GatherDirect( hls, WaterPBR_Shading( N, V, alpha2 ) );
-	result = lerp( fogColor, reflection, reflectance ) * LINEAR_LIGHT_SCALE + direct.specular;
+	result = lerp( fogColor, reflection, reflectance ) * LINEAR_LIGHT_SCALE + WaterPBR_LimitGlint( direct.specular );
 #else
 	float4 screenUV = i.reflectRefract / i.projected.w;
 	float2 distortion = float2( dot( g_WorldToViewWater0, normal.xyz ), dot( g_WorldToViewWater1, normal.xyz ) ) * normal.a;
@@ -230,10 +242,10 @@ float4 WaterPBR_Main( DX12_PS_INPUT dx12In )
 	// Unknown owners and neutral native fullbright pages receive no selected direct.
 	float3 lit = base.rgb * ( lighting * ( ( cHlightRoute.x && !hlr.nativeOnly ? 1 : LIGHT_MAP_SCALE ) / sum ) + direct.diffuse * hlr.valid );
 	float coverage = base.a;
-	result = lit * ( 1.0 - F * coverage ) + ( reflected * F + direct.specular * hlr.valid ) * coverage;
+	result = lit * ( 1.0 - F * coverage ) + ( reflected * F + WaterPBR_LimitGlint( direct.specular ) * hlr.valid ) * coverage;
 #else
 	ShadowMapDirect direct = ShadowMap_GatherDirect( hls, WaterPBR_Shading( N, V, alpha2 ) );
-	result = lerp( transmitted, reflected, F * edge ) + direct.specular * edge;
+	result = lerp( transmitted, reflected, F * edge ) + WaterPBR_LimitGlint( direct.specular ) * edge;
 #endif
 #if REFRACT && !ABOVEWATER
 	// Seen from below, everything on the surface is behind the water between it and the eye.
@@ -252,7 +264,7 @@ float4 WaterPBR_Main( DX12_PS_INPUT dx12In )
 	float lambert = saturate( dot( N, L ) + flFlashlightNoLambertValue );
 	float transmission = ( 1.0 - WaterPBR_Fresnel( saturate( dot( N, L ) ), eta ) ) * ( 1.0 - F );
 	float3 body = flashlight * lambert * transmission * tintRamp * g_WaterFogColor.rgb * g_FlashlightTint;
-	float3 glint = flashlight * ShadowMap_GGX( L, N, V, alpha2, WATER_F0 );
+	float3 glint = WaterPBR_LimitGlint( flashlight * ShadowMap_GGX( L, N, V, alpha2, WATER_F0 ) );
 	result = ( body + glint ) * LINEAR_LIGHT_SCALE;
 #endif
 #endif

@@ -251,8 +251,10 @@ regenerate with `genmat.py water_refract` after generator changes. The model:
   water. `$reflecttint` still scales the result.
 - **Direct light**: the reflection target carries neither the sun nor local lights, so the surface adds their GGX
   specular through the generic gather (`ShadowMap_WithGGXSpecular`), shadow-mapped: a low sun draws a glitter path
-  cut by pier and piling shadows. It is physically many times brighter than sunlit ground; bloom reacts accordingly
-  (`mat_postfx_bloom_intensity 0` shows the surface alone). Water receivers set `noScreenMasks`: screen-space contact
+  cut by pier and piling shadows. Physically that glint is tens of times the irradiance of sunlit ground (about 25x
+  at c5m1's 12-degree sun), which the post bloom turned into screen-wide glare and lens ghosts; `WaterPBR_LimitGlint`
+  soft-caps the direct specular luminance at 4 sun irradiances (at least 1 scene unit for sunless local lights), so
+  the glitter still saturates to white with bounded bloom. Water receivers set `noScreenMasks`: screen-space contact
   masks at a water pixel were traced for the underwater scene behind it and printed its outlines onto the surface.
 - **Volume**: Beer-Lambert. `$refracttint` is the transmittance of the first 1/3.5 of the fog range (retail's ramp end
   point), exponential in between; extinction toward `$fogcolor` is exponential with optical depth 3 renormalized to
