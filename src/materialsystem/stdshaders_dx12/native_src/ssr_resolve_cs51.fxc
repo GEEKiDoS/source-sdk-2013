@@ -77,8 +77,12 @@ void main( uint3 id : SV_DispatchThreadID )
 				radianceSum += fireflyWeight * trace.rgb;
 				radianceWeight += fireflyWeight;
 				confidenceSum += hitWeight;
-				// Soft [hitDistance < D]; a receiver without direct specular (D = 0, S = 0) is never occluded.
-				occlusionSum += hitWeight * ( hitDistance < r.D ? 1.0 - smoothstep( 0.9 * r.D, r.D, hitDistance ) : 0.0 );
+				// Soft [hitDistance < D - margin]; a receiver without direct specular (D = 0, S = 0) is never occluded.
+				// Hits within the fixture margin of the light (gSSRForward.w, twice its shadow camera's near) are its own
+				// housing, which the shadow map ignores: c8m1's fridge light sits inside the cabinet, and its shelves
+				// removed the highlight the map lets onto the floor, leaving black.
+				float occluderEnd = r.D - gSSRForward.w;
+				occlusionSum += hitWeight * ( hitDistance < occluderEnd ? 1.0 - smoothstep( 0.9 * occluderEnd, occluderEnd, hitDistance ) : 0.0 );
 				distanceSum += hitWeight * hitDistance;
 			}
 		}

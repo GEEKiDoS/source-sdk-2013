@@ -564,10 +564,12 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					light.attenuationRadius = lightRange.attenuationRadius;
 					light.fadeStart = lightRange.fade.x;
 					light.fadeEnd = lightRange.fade.y;
-					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.vertexNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					// Like the sun's, this light's contact mask (when it has one) scales the map result before the bake cap.
-					[branch] if ( realtimeVisibility > 0.0 )
+					// Not within twice the shadow camera's near distance: that is the light's own fixture, which the map
+					// ignores too; its trace toward an emitter inside the housing always reads occluded.
+					[branch] if ( realtimeVisibility > 0.0 && lightRange.distance > 2.0 * light.shadowNear )
 						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, lightId );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}

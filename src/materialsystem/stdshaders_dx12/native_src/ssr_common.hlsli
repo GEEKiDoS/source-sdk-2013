@@ -24,7 +24,7 @@ cbuffer DX12SSR : register( b0, space1 )
 	row_major float4x4 gSSRClipToWorld;     // its inverse
 	row_major float4x4 gSSRPrevWorldToClip; // the previous SSR frame's gSSRWorldToClip (valid when gSSRTemporal.x != 0)
 	float4 gSSREye;                         // xyz eye, w 0
-	float4 gSSRForward;                     // xyz unit camera forward, w 0
+	float4 gSSRForward;                     // xyz unit camera forward, w fixture margin: 2 * local shadow-camera near
 	float4 gSSRViewport;                    // scene offset x, y, local width, height
 	float4 gSSRSizes;                       // source (scene scratch) width, height, trace width, height
 	float4 gSSRTrace;                       // maxDistance, thickness, resolve radius (trace texels at roughness 1), startDistance

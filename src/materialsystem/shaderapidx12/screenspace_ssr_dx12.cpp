@@ -41,7 +41,7 @@ struct alignas( 16 ) DX12SSRConstants
 	float clipToWorld[16];     // gSSRClipToWorld      row_major float4x4
 	float prevWorldToClip[16]; // gSSRPrevWorldToClip  previous SSR frame's worldToClip
 	float eye[4];              // gSSREye              xyz eye, w 0
-	float forward[4];          // gSSRForward          xyz unit forward, w 0
+	float forward[4];          // gSSRForward          xyz unit forward, w fixture margin (twice the local shadow near)
 	float viewport[4];         // gSSRViewport         scene offset x, y, local width, height
 	float sizes[4];            // gSSRSizes            source width, height, trace width, height
 	float traceParams[4];      // gSSRTrace            maxDistance, thickness, resolveRadius, startDistance (0.5)
@@ -224,6 +224,8 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	constants.forward[0] = view.forwardThickness[0];
 	constants.forward[1] = view.forwardThickness[1];
 	constants.forward[2] = view.forwardThickness[2];
+	// Hits this close to a light are its fixture: the shadow map ignores them, so they do not occlude its specular.
+	constants.forward[3] = 2.f * m_pDevice->Lighting().GetLocalShadowNear();
 	constants.viewport[0] = static_cast<float>( sceneRect.x );
 	constants.viewport[1] = static_cast<float>( sceneRect.y );
 	constants.viewport[2] = static_cast<float>( nWidth );

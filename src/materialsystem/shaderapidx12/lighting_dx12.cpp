@@ -2199,6 +2199,17 @@ int CLightingDX12::GetContactLights( const float eye[3], int limit, float origin
 	}
 	return count;
 }
+float CLightingDX12::GetLocalShadowNear()
+{
+	Impl &s = *m_Impl;
+	if ( !s.views.Count() ) return 0.f;
+	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return 0.f;
+	float nearest = 0.f;
+	for ( const RuntimeShadowLightGpu &light : packet.lights )
+		if ( light.realtimeWeight > 0.f && light.shadowNear > nearest ) nearest = light.shadowNear;
+	return nearest;
+}
 
 // Query immutable structural BSP leaves, not live engine collision from the
 // material thread. Shrinking the segment slightly at both ends keeps a light

@@ -743,6 +743,11 @@ float3 ShadowMap_LocalTerminatorPosition( RuntimeShadowLightGpu light, float3 p,
 	}
 	return result;
 }
+// normal: the receiver plane for the half-texel offset and the PCF depth gradient. The direct-light gathers pass the
+// smooth vertex normal, not the per-triangle derivative plane: on a low-poly curved mesh the plane jumps at every edge
+// and nearly vanishes toward grazing facets (planeNumerator -> 0), so taps near an occluder's shadow edge landed in or
+// out of it triangle by triangle (c8m1 door lamp: lit triangles inside the shotgun's shadow on the hand). On flat world
+// faces both normals are the face normal.
 ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLightGpu light, float3 p, float3 normal )
 {
 	ShadowMapLocalChart c = (ShadowMapLocalChart)0;
@@ -1423,14 +1428,15 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 					( light.visibilityFlags & DX12_SHADOW_VISIBILITY_BAKED_AVAILABLE ) != 0 )
 					bakedVisibility = ShadowMap_BakedLocalVisibility( r, light.bakedLightIndex, bakedLookup );
 				float realtimeVisibility = bakedVisibility;
-				// Local lights with a Bend mask this frame (screenspace_contact.hlsli) take it like the sun; vertex-lit
+				// Local lights with a Bend mask this frame (screenspace_contact.hlsli) take it like the sun, except within
+				// twice the shadow camera's near distance (the light's own fixture, which the map ignores too); vertex-lit
 				// leaves and detail point receivers have no per-pixel surface and do not consume it.
 				[branch] if ( charted && bakedVisibility > 0.0 )
 				{
-					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.vertexNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 #if !defined( PBR_LEAF_VERTEX )
-					[branch] if ( realtimeVisibility > 0.0 && s.mode != 4 )
+					[branch] if ( realtimeVisibility > 0.0 && s.mode != 4 && lightRange.distance > 2.0 * light.shadowNear )
 						realtimeVisibility *= DX12_LocalContactVisibility( r.screenPos, light.lightId );
 #endif
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );

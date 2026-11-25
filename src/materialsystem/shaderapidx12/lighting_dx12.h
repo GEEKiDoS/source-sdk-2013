@@ -92,6 +92,9 @@ public:
 	// Up to `limit` realtime-shadowed local lights of the current view for Bend contact masks, nearest relative to their
 	// radius first: world origin (w 1) and lightId. Returns the count.
 	int GetContactLights( const float eye[3], int limit, float origins[][4], uint32 *lightIds );
+	// Largest shadow-camera near distance of the current view's realtime local lights (r_shadowmap_local_near unless
+	// capped for a tiny light); 0 without one.
+	float GetLocalShadowNear();
 	int ModelLocalLighting( int limit, float rows[7][4] ) override;
 	int CaptureModelRows( int limit, std::shared_ptr<DrawModelRowsDX12> &out );
 	bool ResolveSunReceiverDraw( const SunReceiverDrawDX12 &draw, SunReceiverCoordinatesDX12 &coordinates );

@@ -461,6 +461,11 @@ the sampled map out along the vertex normal projected perpendicular to the sun
 (`ShadowMap_SunResultCharted`), and every local-light lookup two texels at the
 receiver's distance perpendicular to the light (`ShadowMap_LocalTerminatorPosition`).
 No caster is removed; the private viewmodel cascade already used the sun offset.
+Local-light charts take the receiver's smooth vertex normal for the half-texel offset and the PCF receiver-plane
+depth gradient (`ShadowMap_MakeLocalChart`), not the per-triangle derivative plane: that plane jumps at every edge of
+a low-poly mesh and nearly vanishes toward grazing facets, so taps near an occluder's shadow edge fell in or out of it
+triangle by triangle (lit triangles inside the shotgun's shadow on the hand under c8m1's door lamp). World faces are
+unchanged: both normals are the face normal there.
 
 Alpha-cutout casters: the engine renders prop/model shadow depth (and the flashlight depth texture) with its
 `DepthWrite` override materials, whose cutout is the pixel shader's `clip` against `$alphatestreference`. The backend
@@ -1609,7 +1614,7 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
 | environment (SSR brackets only) | `R16G16B16A16_FLOAT` (`R11G11B10_FLOAT` at `r_color_precision 1`) | `E.rgb`, the cubemap term in final scene units; FP16 alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
 | response (SSR brackets only) | as environment | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`, zero unless a fresh eligible writer; FP16 alpha 1 for such a writer |
-| direct specular (SSR brackets only) | as environment | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `O * S`, `O` the confidence-weighted soft `[hitDistance < D]` |
+| direct specular (SSR brackets only) | as environment | `S.rgb`, the direct GGX specular (sun, shadowmap locals, projected spots, draw-local lights) in final scene units; `ssr_composite_cs51` subtracts `O * S`, `O` the confidence-weighted soft `[hitDistance < D - margin]`. `margin` (`gSSRForward.w`) is twice the view's largest local shadow-camera near (`CLightingDX12::GetLocalShadowNear`): hits that close to the light are its own fixture, which the shadow map ignores. c8m1's fridge spot sits inside the cabinet, and its shelves removed the highlight the map lets onto the floor, leaving black |
 | distance (SSR brackets at `r_color_precision 1` only) | `R16_FLOAT` | `D`, which the alpha-less environment target cannot hold; `ssr_resolve_cs51` reads `D` through `PBR_SSR_DISTANCE` (a red-to-alpha view here, the environment alpha at FP16) |
 
 - **A pixel holds PBR data only while stencil bit `0x80` is set.** The backend forces that bit on every depth-writing draw
@@ -1731,6 +1736,9 @@ The result is one R32F visibility mask per light: the sun's at t0, local lights'
 naming each slot's light (1 + lightId) and `cScreenContactParams.w` whether the sun's is valid. Material shaders read a
 light's mask once, before applying its baked visibility cap; a light without one is unoccluded. It does not affect
 ambient light, unshadowed or baked-only lights, projected lights or flashlights. Each mask is one full-screen pass.
+A local light's mask is not applied within twice its shadow camera's near distance: that is its own fixture, which
+the map ignores too, and a trace toward an emitter inside the housing always reads occluded (c8m1's door lamp
+darkened its own underside, and the baked delta went negative there).
 Screen-space shadows cannot see offscreen casters.
 
 World and viewmodels use their respective projection and depth layer. `r_contactshadows_quality` selects
