@@ -1730,12 +1730,14 @@ void CollectReceiverCasters( CShadowViewData &data, const ShadowCasterVolume_t &
 
 // Native depth ignores authored disableshadows on props (clientleafsystem.cpp IsEligibleShadowCaster). A prop authored
 // that way whose bounds enclose the emitter is the light's own fixture (lamp housing, bulb cage): retail and the bake
-// let that light through it, so it never occludes the light it houses. It still shadows every other light.
-const float kShadowFixtureMargin=8.0f;
+// let that light through it, so it never occludes the light it houses. It still shadows every other light. Props over
+// 64 units on an axis (facades, skybox geometry) are never fixtures; the bake uses the same limits (RESTIR_FIXTURE_*).
+const float kShadowFixtureMargin=8.0f, kShadowFixtureMaxExtent=64.0f;
 bool ShadowCasterHousesLight( const ShadowMapSceneCaster_t &caster, const Vector &origin )
 {
 	for ( int a=0;a<3;++a )
-		if ( origin[a]<caster.mins[a]-kShadowFixtureMargin || origin[a]>caster.maxs[a]+kShadowFixtureMargin ) return false;
+		if ( caster.maxs[a]-caster.mins[a]>kShadowFixtureMaxExtent ||
+			origin[a]<caster.mins[a]-kShadowFixtureMargin || origin[a]>caster.maxs[a]+kShadowFixtureMargin ) return false;
 	if ( caster.staticProp )
 	{
 		const int found=g_StaticPropReceivers.Find(caster.renderable);
@@ -4534,7 +4536,6 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	constants.cSunIdentity[0]=0xffffffffu;
 	if ( !data->shadowsEnabled ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_UNSHADOWED;
 	if ( r_shadowmap_local_filter.GetBool() ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_LOCAL_SMOOTH;
-	if ( kind==SHADOWMAP_VIEW_VIEWMODEL ) constants.cShadowView1[3]|=DX12_SHADOW_VIEW_VIEWMODEL;
 	Vector forward,right,up; AngleVectors(setup.angles,&forward,&right,&up);
 	CopyVector3(setup.origin,constants.cEyePosition); constants.cEyePosition[3]=setup.zNear;
 	CopyVector3(forward,constants.cViewForward);

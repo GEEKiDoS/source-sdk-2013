@@ -564,7 +564,7 @@ ShadowMapDirect PBR_GatherDirect( ShadowMapReceiver r, PBRSurface s, inout PBRSp
 					light.attenuationRadius = lightRange.attenuationRadius;
 					light.fadeStart = lightRange.fade.x;
 					light.fadeEnd = lightRange.fade.y;
-					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}

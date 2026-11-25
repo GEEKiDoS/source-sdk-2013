@@ -33,11 +33,6 @@ SamplerState g_CookieSampler : register(s0, space5);
 // Packet-only policy, deliberately independent of material/snapshot variants.
 static const uint DX12_SHADOW_VIEW_UNSHADOWED = 0x8;
 static const uint DX12_SHADOW_VIEW_LOCAL_SMOOTH = 0x20;
-// Viewmodel receivers move their local-light lookup this far toward the light (at most halfway), so the player's own
-// first-person shadow body (cl_fp_self_shadow: world-model arms and weapon, which never line up with the viewmodel)
-// cannot shadow the viewmodel. Occluders farther away than this still do.
-static const uint DX12_SHADOW_VIEW_VIEWMODEL = 0x40;
-static const float DX12_SHADOW_VIEWMODEL_SELF_RANGE = 32.0;
 
 static const float2 g_ShadowPCFOffsets[4] =
 {
@@ -733,16 +728,25 @@ struct ShadowMapLocalChart
 	uint4 homeRect;
 	bool valid;
 };
+// The sun's terminator offset (ShadowMap_SunResultCharted) for a local light: two texels at the receiver's distance,
+// along the vertex normal projected perpendicular to the light direction. Covers a faceted mesh shadowing its own
+// smooth-shaded surface and a coarser proxy of the same surface (the first-person body around the viewmodel).
+float3 ShadowMap_LocalTerminatorPosition( RuntimeShadowLightGpu light, float3 p, float3 vertexNormal )
+{
+	float3 toLight = light.origin - p;
+	float distanceToLight = length( toLight );
+	float3 result = p;
+	if ( distanceToLight > 0.0 && light.planeToTexel > 0.0 )
+	{
+		float3 L = toLight / distanceToLight;
+		result += ( vertexNormal - L * dot( vertexNormal, L ) ) * ( 2.0 * distanceToLight / light.planeToTexel );
+	}
+	return result;
+}
 ShadowMapLocalChart ShadowMap_MakeLocalChart( uint lightIndex, RuntimeShadowLightGpu light, float3 p, float3 normal )
 {
 	ShadowMapLocalChart c = (ShadowMapLocalChart)0;
 	c.lightIndex = lightIndex;
-	[branch] if ( ( cShadowView1.w & DX12_SHADOW_VIEW_VIEWMODEL ) != 0 )
-	{
-		float3 toLight = light.origin - p;
-		float distanceToLight = length( toLight );
-		p += toLight * ( min( DX12_SHADOW_VIEWMODEL_SELF_RANGE, 0.5 * distanceToLight ) / max( distanceToLight, 1e-4 ) );
-	}
 	float3 relative = p - light.origin;
 	float radial = length( relative );
 	c.center = p;
@@ -1050,16 +1054,12 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 	uint entryCount = 1;
 	float distance = dot( r.positionWS - cEyePosition.xyz, cViewForward.xyz );
 	float farDistance = cSunTravel.w;
-	// The private chart includes the receiver's own mesh. At the smooth terminator
-	// even the center PCF has lateral extent (the bilinear quad). Start that
-	// footprint outside the faceted surface, along the projected vertex normal.
-	// Moving perpendicular to travel leaves the independent axial bias unchanged.
-	float3 cascadePosition = r.positionWS;
-	if ( cShadowDepthRecords[0].w > 0.0 )
-	{
-		float3 lateral = r.vertexNormalWS - cSunTravel.xyz * dot( r.vertexNormalWS, cSunTravel.xyz );
-		cascadePosition += lateral * ( 2.0 * cShadowDepthRecords[0].z );
-	}
+	// Every chart includes the receiver's own mesh. At the smooth terminator of a faceted mesh (low-poly hulls, limbs)
+	// the shadow map holds the flat facets while shading follows the vertex normal, and even the center PCF has
+	// lateral extent (the bilinear quad): neighbouring facets shadow the receiver in triangles. Start that footprint
+	// outside the faceted surface, two texels of the sampled map along the projected vertex normal. Moving
+	// perpendicular to travel leaves the independent axial bias unchanged.
+	float3 lateral = r.vertexNormalWS - cSunTravel.xyz * dot( r.vertexNormalWS, cSunTravel.xyz );
 	if ( ( cShadowView1.w & DX12_SHADOW_VIEW_CSM_VALID ) != 0 && farDistance > cEyePosition.w && distance >= cEyePosition.w && distance < farDistance )
 	{
 		uint first = ShadowMap_Cascade( distance );
@@ -1076,8 +1076,8 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 				blend = saturate( ( distance - ( split - width ) ) / ( 2.0 * width ) );
 			}
 		}
-		bool firstValid = ShadowMap_SunMapValid( first, cascadePosition, r.planeNormalWS );
-		bool secondValid = second != first && ShadowMap_SunMapValid( second, cascadePosition, r.planeNormalWS );
+		bool firstValid = ShadowMap_SunMapValid( first, r.positionWS + lateral * ( 2.0 * cShadowDepthRecords[first].z ), r.planeNormalWS );
+		bool secondValid = second != first && ShadowMap_SunMapValid( second, r.positionWS + lateral * ( 2.0 * cShadowDepthRecords[second].z ), r.planeNormalWS );
 		if ( firstValid || secondValid )
 		{
 			float coverage = 1.0 - smoothstep( 0.9 * farDistance, farDistance, distance );
@@ -1114,7 +1114,7 @@ float3 ShadowMap_SunResultCharted( ShadowMapReceiver r, float invalidVisibility,
 		uint mapIndex = entry == 0 ? map0 : entry == 1 ? map1 : map2;
 		float3 mapResult = float3( invalidVisibility, 0.0, 0.0 );
 		// The chart's validity is ShadowMap_SunMapValid's: one evaluation of the projection test per entry.
-		ShadowMapSunChart c = ShadowMap_MakeSunChart( mapIndex, mapIndex < DX12_SHADOW_CSM_CASCADES ? cascadePosition : r.positionWS, r.planeNormalWS );
+		ShadowMapSunChart c = ShadowMap_MakeSunChart( mapIndex, r.positionWS + lateral * ( 2.0 * cShadowDepthRecords[mapIndex].z ), r.planeNormalWS );
 		if ( c.valid )
 		{
 			float2 diagnostics;
@@ -1426,7 +1426,7 @@ ShadowMapDirect ShadowMap_GatherDirect( ShadowMapReceiver r, ShadowMapShading s 
 				// Local lights use only their shadow-map visibility; Bend contact shadows are sun-only.
 				[branch] if ( charted && bakedVisibility > 0.0 )
 				{
-					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, r.positionWS, r.planeNormalWS );
+					ShadowMapLocalChart chart = ShadowMap_MakeLocalChart( index, light, ShadowMap_LocalTerminatorPosition( light, r.positionWS, r.vertexNormalWS ), r.planeNormalWS );
 					realtimeVisibility = ShadowMap_LocalPCFChart( light, chart );
 					realtimeVisibility = min( realtimeVisibility, bakedVisibility );
 				}

@@ -439,9 +439,19 @@ in `shadowmaps_dx12.cpp`). It still casts for every other light. c8m1's
 rooftop door lamp (`cs_office/Light_security.mdl`, `disableshadows`) houses the
 `light_spot` above the door; its opaque housing otherwise threw a ring-shaped
 shadow over the wall and door. The spot camera's 4-unit near plane cannot
-clip that housing, which extends about 15 units below the emitter.
+clip that housing, which extends about 15 units below the emitter. Props larger
+than 64 units on any axis (facades, skybox geometry) are never fixtures.
 This policy has no separate controls and does not alter entity effects, save
 data, or baked lighting.
+
+Shadow terminator: every shadow map holds the receiver's own mesh as flat facets
+while shading follows the interpolated vertex normal, so near the terminator of a
+low-poly smooth-shaded mesh neighbouring facets shadowed the receiver in triangles
+(c5m1's intro tug hull under the low sun). Every sun lookup starts two texels of
+the sampled map out along the vertex normal projected perpendicular to the sun
+(`ShadowMap_SunResultCharted`), and every local-light lookup two texels at the
+receiver's distance perpendicular to the light (`ShadowMap_LocalTerminatorPosition`).
+No caster is removed; the private viewmodel cascade already used the sun offset.
 
 Alpha-cutout casters: the engine renders prop/model shadow depth (and the flashlight depth texture) with its
 `DepthWrite` override materials, whose cutout is the pixel shader's `clip` against `$alphatestreference`. The backend
