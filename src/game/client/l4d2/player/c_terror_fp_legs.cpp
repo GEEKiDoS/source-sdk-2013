@@ -46,6 +46,10 @@ static ConVar cl_fp_legs_hide_bones( "cl_fp_legs_hide_bones", "ValveBiped.Bip01_
 	"(the chest stays); \"ValveBiped.Bip01_Spine1\": chest, arms and head.", BoneNameChanged );
 static ConVar cl_fp_legs_lean_bone( "cl_fp_legs_lean_bone", "ValveBiped.Bip01_Spine", 0,
 	"Bone the first-person legs' upper body leans back from (cl_fp_legs_lean).", BoneNameChanged );
+static ConVar cl_fp_self_shadow_viewmodel_hide_bones( "cl_fp_self_shadow_viewmodel_hide_bones",
+	"ValveBiped.Bip01_L_Clavicle ValveBiped.Bip01_R_Clavicle", 0,
+	"Space-separated bones collapsed with all of their descendants on the shadow copy drawn into the first-person "
+	"viewmodel's private shadow charts, where the viewmodel casts its own arms and weapon. Default: both arms.", BoneNameChanged );
 
 // Marks `root` and every descendant; studio bones are ordered parent before child.
 static void MarkSubtree( CStudioHdr *studio, int root, CBitVec< MAXSTUDIOBONES > &bones )
@@ -115,7 +119,7 @@ bool C_TerrorFirstPersonBody::ShouldDraw()
 bool C_TerrorFirstPersonBody::ShouldCastShadowWhileHidden()
 {
 	C_TerrorPlayer *player = m_hPlayer.Get();
-	return m_Role == ROLE_SHADOW && player && CastsSelfShadow( player );
+	return m_Role != ROLE_LEGS && player && CastsSelfShadow( player );
 }
 
 void C_TerrorFirstPersonBody::ClientThink()
@@ -126,9 +130,12 @@ void C_TerrorFirstPersonBody::ClientThink()
 
 int C_TerrorFirstPersonBody::DrawModel( int flags )
 {
-	// Legs: the local main view only. Shadow copy: native shadowmaps only, never the flashlight's projected depth
-	// (that view's lists skip it anyway: its local draw bit is clear).
-	if ( m_Role == ROLE_LEGS ? ( flags & STUDIO_SHADOWDEPTHTEXTURE ) != 0 : !( InFeatureShadowDraw( flags ) && ShouldCastShadowWhileHidden() ) )
+	// Legs: the local main view only. Shadow copies: native shadowmaps only, never the flashlight's projected depth
+	// (that view's lists skip it anyway: its local draw bit is clear). The arm-less copy draws only into the viewmodel's
+	// private charts, the full copy into every other chart.
+	if ( m_Role == ROLE_LEGS ? ( flags & STUDIO_SHADOWDEPTHTEXTURE ) != 0 :
+		!( InFeatureShadowDraw( flags ) && ShouldCastShadowWhileHidden() &&
+			( m_Role == ROLE_VIEWMODEL_SHADOW ) == ShadowMapsDX12_InViewModelDepthView() ) )
 		return 0;
 	SyncFromPlayer();
 	if ( m_Role != ROLE_LEGS )
@@ -172,7 +179,7 @@ void C_TerrorFirstPersonBody::SyncFromPlayer()
 	CStudioHdr *source = player->GetModelPtr();
 	if ( !studio || !source )
 		return;
-	if ( m_Role == ROLE_LEGS && m_nBoneNamesGeneration != s_nBoneNamesGeneration )
+	if ( m_Role != ROLE_SHADOW && m_nBoneNamesGeneration != s_nBoneNamesGeneration )
 	{
 		m_nBoneNamesGeneration = s_nBoneNamesGeneration;
 		FindHiddenBones();
@@ -239,11 +246,11 @@ void C_TerrorFirstPersonBody::FindHiddenBones()
 	for ( int i = 0; i < MAXSTUDIOBONES; ++i )
 		m_CollapseRoot[i] = -1;
 	CStudioHdr *studio = GetModelPtr();
-	if ( m_Role != ROLE_LEGS || !studio )
+	if ( m_Role == ROLE_SHADOW || !studio )
 		return;
 	const int bones = MIN( studio->numbones(), MAXSTUDIOBONES );
 	CUtlStringList names;
-	V_SplitString( cl_fp_legs_hide_bones.GetString(), " ", names );
+	V_SplitString( ( m_Role == ROLE_LEGS ? cl_fp_legs_hide_bones : cl_fp_self_shadow_viewmodel_hide_bones ).GetString(), " ", names );
 	for ( int n = 0; n < names.Count(); ++n )
 	{
 		const int root = Studio_BoneIndexByName( studio, names[n] );
@@ -258,6 +265,8 @@ void C_TerrorFirstPersonBody::FindHiddenBones()
 				m_CollapseRoot[i] = root;
 		}
 	}
+	if ( m_Role != ROLE_LEGS )
+		return;
 	m_nLeanBone = Studio_BoneIndexByName( studio, cl_fp_legs_lean_bone.GetString() );
 	MarkSubtree( studio, m_nLeanBone, m_LeanBones );
 }
@@ -353,7 +362,7 @@ bool C_TerrorFirstPersonShadowWeapon::ShouldCastShadowWhileHidden()
 
 int C_TerrorFirstPersonShadowWeapon::DrawModel( int flags )
 {
-	if ( !InFeatureShadowDraw( flags ) || !ShouldCastShadowWhileHidden() )
+	if ( !InFeatureShadowDraw( flags ) || ShadowMapsDX12_InViewModelDepthView() || !ShouldCastShadowWhileHidden() )
 		return 0;
 	return BaseClass::DrawModel( flags );
 }

@@ -2,8 +2,10 @@
 //
 // First-person body: client-only copies of the local survivor's third-person model. The legs copy draws in the
 // local main view with its upper body collapsed; the shadow copy (with a copy of the world weapon) draws only into
-// native sun/local-light shadowmaps. Both sit the same distance behind the camera, so the shadow starts at the
-// visible feet. The real player stays hidden and casts nothing in first person.
+// native sun/local-light shadowmaps; the viewmodel shadow copy, arms collapsed and without the weapon, replaces it in
+// the viewmodel's private shadow charts, where the viewmodel casts its own arms and weapon. All sit the same distance
+// behind the camera, so the shadow starts at the visible feet. The real player stays hidden and casts nothing in
+// first person.
 //
 //=============================================================================//
 #ifndef C_TERROR_FP_LEGS_H
@@ -22,13 +24,13 @@ class C_TerrorFirstPersonBody : public C_BaseAnimatingOverlay
 public:
 	DECLARE_CLASS( C_TerrorFirstPersonBody, C_BaseAnimatingOverlay );
 
-	enum Role { ROLE_LEGS, ROLE_SHADOW };
+	enum Role { ROLE_LEGS, ROLE_SHADOW, ROLE_VIEWMODEL_SHADOW };
 	static C_TerrorFirstPersonBody *Create( C_TerrorPlayer *player, Role role );
 
 	// The player's lower body matches the first-person camera (standing, crouching, walking): legs show, and both
 	// copies back off cl_fp_legs_offset. Otherwise (crawling, hanging, pinned, climbing) the shadow copy stays in place.
 	static bool LegsPose( C_TerrorPlayer *player );
-	// The shadow copy and its weapon cast (cl_fp_self_shadow, native shadowmaps running, first-person local body).
+	// The shadow copies and the weapon cast (cl_fp_self_shadow, native shadowmaps running, first-person local body).
 	static bool CastsSelfShadow( C_TerrorPlayer *player );
 
 	virtual bool ShouldDraw() OVERRIDE;
@@ -50,17 +52,17 @@ private:
 	CHandle< C_TerrorPlayer > m_hPlayer;
 	Role m_Role;
 	int m_nSyncFrame;
-	// Legs only: for each bone, the hidden subtree root (head, arms) it collapses to, or -1; and the subtree leaned
-	// back from the lean bone before the collapse.
+	// Legs and viewmodel shadow copy: for each bone, the hidden subtree root (legs: head, arms; viewmodel shadow: arms)
+	// it collapses to, or -1. Legs only: the subtree leaned back from the lean bone before the collapse.
 	short m_CollapseRoot[MAXSTUDIOBONES];
 	int m_nFirstHiddenBone, m_nLeanBone;
-	int m_nBoneNamesGeneration; // cl_fp_legs_hide_bones / cl_fp_legs_lean_bone changes rebuild the bone sets
+	int m_nBoneNamesGeneration; // cl_fp_legs_hide_bones / cl_fp_self_shadow_viewmodel_hide_bones / cl_fp_legs_lean_bone changes rebuild the bone sets
 	CBitVec< MAXSTUDIOBONES > m_LeanBones;
 	float m_flLean; // degrees, blended between cl_fp_legs_lean and cl_fp_legs_duck_lean each sync
 	Vector m_vecViewRight; // horizontal view right axis at the last sync; the lean and tilt pivot about it
 };
 
-// The active weapon's world model bone-merged onto the shadow copy; shadow passes only.
+// The active weapon's world model bone-merged onto the shadow copy; shadow passes other than the viewmodel's own charts.
 class C_TerrorFirstPersonShadowWeapon : public C_BaseAnimating
 {
 public:

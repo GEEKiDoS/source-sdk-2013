@@ -1706,6 +1706,8 @@ C_TerrorPlayer::~C_TerrorPlayer()
 		m_hFirstPersonShadowWeapon->Release();
 	if ( m_hFirstPersonShadow.Get() )
 		m_hFirstPersonShadow->Release();
+	if ( m_hFirstPersonViewModelShadow.Get() )
+		m_hFirstPersonViewModelShadow->Release();
 	if ( m_hFirstPersonLegs.Get() )
 		m_hFirstPersonLegs->Release();
 	StopSpeechVoiceParticle();
@@ -5331,6 +5333,8 @@ bool C_TerrorPlayer::Simulate()
 			m_hFirstPersonLegs = C_TerrorFirstPersonBody::Create( this, C_TerrorFirstPersonBody::ROLE_LEGS );
 		if ( !m_hFirstPersonShadow.Get() && cl_fp_self_shadow.GetBool() )
 			m_hFirstPersonShadow = C_TerrorFirstPersonBody::Create( this, C_TerrorFirstPersonBody::ROLE_SHADOW );
+		if ( !m_hFirstPersonViewModelShadow.Get() && cl_fp_self_shadow.GetBool() )
+			m_hFirstPersonViewModelShadow = C_TerrorFirstPersonBody::Create( this, C_TerrorFirstPersonBody::ROLE_VIEWMODEL_SHADOW );
 		C_TerrorFirstPersonShadowWeapon::Maintain( m_hFirstPersonShadowWeapon, this, m_hFirstPersonShadow.Get() );
 	}
 	BaseClass::Simulate();

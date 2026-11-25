@@ -690,7 +690,7 @@ private:
 	bool m_bGrenadePresentationSuppressed; // Native CLIENT7100, constructor-only.
 	float m_roundStartTime[2];
 	// Local player only. Handles: level shutdown releases client entities before the player is destroyed.
-	CHandle< C_TerrorFirstPersonBody > m_hFirstPersonLegs, m_hFirstPersonShadow;
+	CHandle< C_TerrorFirstPersonBody > m_hFirstPersonLegs, m_hFirstPersonShadow, m_hFirstPersonViewModelShadow;
 	CHandle< C_TerrorFirstPersonShadowWeapon > m_hFirstPersonShadowWeapon;
 	float m_flEyeHeightScale; // networked; the server measures its own model, so prediction always agrees
 };

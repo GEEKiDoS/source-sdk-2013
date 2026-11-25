@@ -234,6 +234,9 @@ bool ShadowMapsDX12_ShadowsEnabled();
 // share VIEW_SHADOW_DEPTH_TEXTURE and STUDIO_SHADOWDEPTHTEXTURE, so draws that differ between the two test this.
 bool ShadowMapsDX12_InFeatureDepthView();
 void ShadowMapsDX12_SetInFeatureDepthView( bool inView );
+// True while a native depth view draws one of the first-person viewmodel's private charts (sun or local light). The
+// first-person shadow body draws its arm-less copy there and its weapon copy not at all; the viewmodel stands in.
+bool ShadowMapsDX12_InViewModelDepthView();
 // Latched admission/runtime error (empty when none).
 const char *ShadowMapsDX12_LastError();
 // Client-system validation after shadow admission (CHLClient admits before LevelInitPreEntityAllSystems).

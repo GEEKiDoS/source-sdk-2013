@@ -624,10 +624,20 @@ does). `r_shadowmap_viewmodel_self` (archived, default 1) gives it sun self-shad
 viewmodel view renders its own targets with a single cascade over `[zNear, maxReceiverDepth / 0.9]`. That set and
 the `shadow_cascade_viewmodel_self` copy are one cascade square (`csm`), not the four-cascade atlas: 4 x 16 instead of
 4 x 64 MiB at High, 4 x 64 instead of 4 x 256 MiB at Ultra. A frame without viewmodel casters samples the main
-cascades. After that chart, `AddViewModelSelfShadow` copies the texels the viewmodel receivers can read (their
-bounds' footprint plus twice the chart guard, which holds the PCSS reach) into the private copy, draws the opaque
-studio viewmodels (weapon, arms) over it with the chart's committed light view, and points only the viewmodel
-packet at it. No cached chart ever holds viewmodel depth. Local lights and the flashlight keep their world-only maps.
+cascades. After that chart, `AddViewModelSelfShadow` builds a private copy of the texels the viewmodel receivers can
+read (their bounds' footprint plus twice the chart guard, which holds the PCSS reach) and points only the viewmodel
+packet at it. `AddViewModelSelfLocals` does the same for every realtime local-light chart face the viewmodel receivers
+project into: one `local` slot each in `shadow_local_viewmodel_self` (four slots wide, grown by whole rows), appended
+to the packet as one more local page, with the face record re-pointed at the slot. A private chart
+(`DrawViewModelChart`) starts from the chart's clean depth (world and static props), redraws the dynamic casters near
+the viewmodel (sun: the column through it along the sun; local: the box spanned by the emitter and the receivers,
+both widened by the filter reach) in the viewmodel depth view (`ShadowMapsDX12_InViewModelDepthView`), then draws the
+opaque studio viewmodels (weapon, arms) with the chart's committed light view. In that view the first-person shadow
+body is replaced by a copy with the arms collapsed and no world weapon (`C_TerrorFirstPersonBody::ROLE_VIEWMODEL_SHADOW`,
+bones in `cl_fp_self_shadow_viewmodel_hide_bones`): the shared charts' low-poly third-person arms and weapon, posed
+differently from the viewmodel, cut it into triangles under a wall lamp (c8m1). Head, torso, other players, props and
+the viewmodel itself still shadow it. No cached chart ever holds viewmodel depth, and the flashlight keeps its
+world-only map.
 
 Video memory. Every committed render, depth and UAV target is created with `D3D12_RESIDENCY_PRIORITY_HIGH`
 (`CreateCommittedResourceDX12`); textures and buffers keep the default NORMAL. Over the OS budget Windows moves this
