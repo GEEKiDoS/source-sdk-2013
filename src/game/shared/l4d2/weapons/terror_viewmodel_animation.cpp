@@ -99,10 +99,12 @@ void CBaseViewModel::ApplyTerrorLayerSequence( int nSequence, int nLayer, float 
 	pLayer->m_bSequenceFinished = false;
 	pLayer->m_bLooping = IsSequenceLooping( nSequence );
 #else
-	// This is intentionally index zero, even for a layer-three shove, in
-	// the original first-predicted path (0x022F50).
+	// Restart the event cursor of the layer this sequence starts on. Native 0x022F50 resets index zero even for a
+	// layer-three shove: a shove during a layer-zero fire then rewound the fire's cursor while the shove masked it
+	// (weight 0, events skipped), and when the shove faded out every event from cycle 0 replayed in one frame: muzzle
+	// flash, pump sound, shell eject. Events the shove masked play once, at the cycle the layer resumes from.
 	if ( prediction->IsFirstTimePredicted() )
-		m_flOverlayPrevEventCycle[0] = -0.01f;
+		m_flOverlayPrevEventCycle[nLayer] = -0.01f;
 #endif
 }
 

@@ -1025,7 +1025,7 @@ void C_BaseViewModel::UpdateReceivedLayer()
 		if ( restart )
 		{
 			layer->SetCycle( 0.0f );
-			m_flOverlayPrevEventCycle[0] = -0.01f; // Native index0, even layer3.
+			m_flOverlayPrevEventCycle[m_nLayer] = -0.01f; // The restarted layer (terror_viewmodel_animation.cpp).
 			layer->SetSequence( sequence );
 			layer->m_flPlaybackRate = static_cast< float >( GetEffectivePlaybackRate() );
 			layer->SetWeight( 1.0f );
