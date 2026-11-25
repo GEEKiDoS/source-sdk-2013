@@ -504,6 +504,8 @@ The client sets `cl_localnetworkbackdoor 0` on x64 because the engine crashes wi
 
 The full-width save/restore bridge is certified for the Windows x64 SDK Base 2013 Multiplayer `vphysics.dll` with PE timestamp `0x67b40ef3` and image size `0x15d000`. It uses game-side serialization and the provider's existing object helpers; it does not patch Steam files, executable code, or vtables. An uncertified 64-bit provider visibly refuses saving/loading rather than writing or restoring truncated pointers. Engine updates require recertifying the profile in `src/game/shared/physics_saverestore.cpp`.
 
+**Physics provider (L4D2 launcher):** `mod_l4d2_win64.exe` redirects `vphysics` to the EXE-local `bin\x64\vphysics_rubikon.dll` (Valve's Rubikon-backed vphysics, copied unmodified from Team Fortress 2's `bin\x64`); `-ivpphysics` skips the redirect and the engine loads the SDK Base IVP `vphysics.dll`. A missing `vphysics_rubikon.dll` stops the launch with a message naming `-ivpphysics`. Rubikon is not a certified save/restore provider, so `save`/`load` are refused under it; L4D2 chapter transitions do not use the physics save block and work (c1m1 to c1m2 checked). Rubikon prints one console warning at map load about a missing `sv_wallbugs` cvar: that name is a typo for TF2's `sv_wallbug`, whose value 1 selects the original SDK `ClipVelocity`, which is what this game code already uses.
+
 DX12 rebinding no longer calls the previous borrowed material during shutdown or level changes. It caches page identity from the live incoming material, advances the selected material on same-page binds, and clears both caches on device reset/shutdown.
 
 The DX12 renderer needs the native shader pack published into the mod once (and after shader changes):

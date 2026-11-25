@@ -488,7 +488,7 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 #if defined( _WIN64 )
 	// Native DX12 is the default renderer. -dx9 (or another explicit legacy backend) keeps the stock shaderapi.
 	bool bLegacyRendererRequested = false;
-	bool bBox3DPhysicsRequested = false;
+	bool bIVPPhysicsRequested = false;
 	int nArgs = 0;
 	LPWSTR *pArgs = CommandLineToArgvW( GetCommandLineW(), &nArgs );
 	if ( !pArgs )
@@ -502,8 +502,8 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 		if ( wcscmp( pArg, L"-dx9" ) == 0 || wcscmp( pArg, L"-gl" ) == 0 ||
 			wcscmp( pArg, L"-vulkan" ) == 0 || wcscmp( pArg, L"-noshaderapi" ) == 0 )
 			bLegacyRendererRequested = true;
-		else if ( wcscmp( pArg, L"-box3dphysics" ) == 0 )
-			bBox3DPhysicsRequested = true;
+		else if ( wcscmp( pArg, L"-ivpphysics" ) == 0 )
+			bIVPPhysicsRequested = true;
 	}
 	LocalFree( pArgs );
 	const bool bDx12Requested = !bLegacyRendererRequested;
@@ -582,15 +582,17 @@ int APIENTRY WinMain( HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdL
 				bRedirected = AddModuleRedirect( L"GameUI", sGameUIMod.c_str(), error, sizeof( error ) / sizeof( error[0] ) );
 			}
 		}
-		// The SDK's IVP physics is the default. -box3dphysics loads an EXE-local bin\x64\vphysics.dll (VPhysics-Box3D)
-		// instead; it exports the same VPhysics031 / VPhysicsCollision007 interfaces.
-		if ( bRedirected && bBox3DPhysicsRequested )
+		// Physics: Valve's Rubikon-backed vphysics (TF2's vphysics_rubikon.dll, EXE-local bin\x64) is the default;
+		// -ivpphysics skips the redirect so the engine loads the SDK's own IVP vphysics.dll. Both export VPhysics031 /
+		// VPhysicsCollision007.
+		if ( bRedirected && !bIVPPhysicsRequested )
 		{
+			const wchar_t *pPhysicsFile = L"vphysics_rubikon.dll";
 			const std::wstring sExePath = GetExePath();
-			const std::wstring sPhysics = sExePath.substr( 0, sExePath.find_last_of( L"\\/" ) + 1 ) + L"bin\\x64\\vphysics.dll";
+			const std::wstring sPhysics = sExePath.substr( 0, sExePath.find_last_of( L"\\/" ) + 1 ) + L"bin\\x64\\" + pPhysicsFile;
 			if ( !FileExists( sPhysics.c_str() ) )
 			{
-				wcsncpy_s( error, _countof( error ), L"-box3dphysics needs the EXE-local bin\\x64\\vphysics.dll.", _TRUNCATE );
+				_snwprintf_s( error, _countof( error ), _TRUNCATE, L"The EXE-local bin\\x64\\%s is missing.\n\nLaunch with -ivpphysics to use the SDK's IVP physics.", pPhysicsFile );
 				bRedirected = false;
 			}
 			else
