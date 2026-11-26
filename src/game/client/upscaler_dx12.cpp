@@ -15,6 +15,9 @@
 #include "tier1/interface.h"
 #include "renderparm.h"
 #include "view_shared.h"
+#ifdef L4D2
+#include "l4d2/effects/terror_depth_of_field.h"
+#endif
 
 #include <math.h>
 
@@ -27,6 +30,7 @@ static IShaderAPI *s_pShaderAPI = nullptr;
 static bool s_bResetPending = true;
 static bool s_bLastFrameEligible = false;
 static bool s_bFrameLatched = false;
+static bool s_bRayReconstructionView = false;
 static Vector s_vecLastOrigin( 0, 0, 0 );
 static bool s_bHaveLastOrigin = false;
 static int s_nLastWidth = 0, s_nLastHeight = 0, s_nLastStatus = 0, s_nLastNrStatus = 0;
@@ -55,8 +59,8 @@ static void OnUpscalerChanged( IConVar *pVar, const char *pOldValue, float flOld
 }
 
 ConVar r_upscaler( "r_upscaler", "1", FCVAR_ARCHIVE,
-	"DX12 temporal AA / upscaler: 0 off, 1 auto (DLSS / FSR / XeSS), 2 DLSS, 3 FSR (FSR 4 on AMD is untested), 4 XeSS, 5 SMAA T2x (native only, ignores r_upscaler_scale), 6 Lightweight TAAU; r_upscaler_scale sets provider render scale",
-	true, 0, true, 6, OnUpscalerChanged );
+	"DX12 temporal AA / upscaler: 0 off, 1 auto (DLSS / FSR / XeSS), 2 DLSS, 3 FSR (FSR 4 on AMD is untested), 4 XeSS, 5 SMAA T2x (native only), 6 Lightweight TAAU, 7 DLSS Ray Reconstruction (raw SSR; falls back to DLSS SR)",
+	true, 0, true, 7, OnUpscalerChanged );
 
 static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float flOldValue );
 
@@ -81,7 +85,7 @@ static void OnUpscalerScaleChanged( IConVar *pVar, const char *pOldValue, float 
 // Rendering below native resolution is the main lever on older GPUs: every pixel-bound pass (world shading, SSR,
 // GTAO, volumetrics, post) shrinks with the render area. The upscaler reconstructs the unscaled frame.
 ConVar r_upscaler_scale( "r_upscaler_scale", "1", FCVAR_ARCHIVE,
-	"DX12 temporal upscaler render scale per axis: 1 native-resolution AA, 0.77 ultra quality, 0.667 quality, 0.58 balanced, 0.5 performance (needs r_upscaler 1-4 or 6; ignored by SMAA T2x)",
+	"DX12 temporal upscaler render scale per axis: 1 native-resolution AA, 0.77 ultra quality, 0.667 quality, 0.58 balanced, 0.5 performance (ignored by SMAA T2x)",
 	true, 0.5f, true, 1.f, OnUpscalerScaleChanged );
 
 
@@ -179,6 +183,11 @@ bool UpscalerDX12_RequiresMotionVectors()
 	return s_bFrameLatched;
 }
 
+bool UpscalerDX12_RayReconstructionView()
+{
+	return s_bFrameLatched && s_bRayReconstructionView;
+}
+
 static float UpscalerDX12_ViewLodBias( const CViewSetup &view )
 {
 	if ( !r_upscaler_lod_bias_auto.GetBool() )
@@ -213,7 +222,22 @@ void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTempo
 	// sampler cache keys only when this value actually changes.
 	pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_LOD_BIAS,
 		bMainTemporalViewEligible ? UpscalerDX12_ViewLodBias( view ) : 0.f );
-	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_MODE, bMainTemporalViewEligible ? r_upscaler.GetInt() : 0 );
+	int mode = bMainTemporalViewEligible ? r_upscaler.GetInt() : 0;
+	// RR guides and the traced hit positions cover the render rectangle at (0, 0).
+	if ( mode == 7 && ( view.x != 0 || view.y != 0 ) ) mode = 2;
+#ifdef L4D2
+	// L4D2 DoF operates on render-resolution world depth before drawing the sharp viewmodel.
+	// Without a DoF guide, blurred input must not be passed to RR.
+	if ( mode == 7 && Terror_IsDepthOfFieldEnabled( &view ) ) mode = 2;
+#endif
+	s_bRayReconstructionView = mode == 7;
+	if ( s_bRayReconstructionView )
+	{
+		// Create (or reject) DLSS-D before choosing the SSR path, not after the noisy scene was drawn.
+		pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH, float( view.width ) );
+		pRenderContext->SetFloatRenderingParameter( FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT, float( view.height ) );
+	}
+	pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_UPSCALE_MODE, mode );
 }
 
 bool UpscalerDX12_Dispatch( IMatRenderContext *pRenderContext, const CViewSetup &view, bool bReset )
@@ -305,6 +329,7 @@ bool UpscalerDX12_IsTechniqueAvailable( int mode )
 		return true;
 	case 1:
 		return ( caps & ( DX12_UPSCALE_CAP_DLSS | DX12_UPSCALE_CAP_FSR | DX12_UPSCALE_CAP_XESS ) ) != 0;
+	case 7: // RR can fall back to DLSS SR at the same fixed scale.
 	case 2:
 		return ( caps & DX12_UPSCALE_CAP_DLSS ) != 0;
 	case 3:
@@ -336,7 +361,7 @@ static void UpscalerDX12_PrintStatus( const CCommand & )
 {
 	const int status = UpscalerDX12_Status();
 	const int kind = status > 0 ? ( status >> 8 ) & 0xff : 0;
-	const char *const names[] = { "none", "DLSS/DLAA", "FSR", "XeSS", "SMAA T2x", "Lightweight TAAU" };
+	const char *const names[] = { "none", "DLSS/DLAA", "FSR", "XeSS", "SMAA T2x", "Lightweight TAAU", "DLSS Ray Reconstruction" };
 	Msg( "r_upscaler: mode %d, render scale %.3f, status %d (%s%s)\n", r_upscaler.GetInt(), UpscalerDX12_RenderScale(), status,
 	    kind >= 0 && kind < ARRAYSIZE( names ) ? names[kind] : "unknown", status > 0 ? " active" : "" );
 }

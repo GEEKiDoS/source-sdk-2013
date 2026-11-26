@@ -29,10 +29,12 @@
 #include <upscalers/include/ffx_upscale.h>
 #include <api/include/dx12/ffx_api_dx12.h>
 #include <nvsdk_ngx.h>
+#include <nvsdk_ngx_defs_dlssd.h>
 
 namespace shaderapidx12
 {
 static_assert( kNrMaxLayersDX12 == DX12_NR_MAX_LAYERS, "renderparm.h and the provider agree on the DLSS-NR layer limit" );
+static_assert( DX12_UPSCALE_STATUS_RR == ( 1 | ( int( UpscalerKindDX12::RayReconstruction ) << 8 ) ), "client RR status must match the provider" );
 
 //-----------------------------------------------------------------------------
 // Purpose: Console/log name of a provider kind
@@ -43,6 +45,8 @@ const char *UpscalerKindNameDX12( UpscalerKindDX12 kind )
 	{
 	case UpscalerKindDX12::DLSS:
 		return "DLSS/DLAA";
+	case UpscalerKindDX12::RayReconstruction:
+		return "DLSS Ray Reconstruction";
 	case UpscalerKindDX12::FSR:
 		return "FSR";
 	case UpscalerKindDX12::XeSS:
@@ -284,6 +288,11 @@ UpscalerKindDX12 CUpscalerDX12::Resolve( int nMode ) const
 		if ( m_Xess.available )
 			return UpscalerKindDX12::XeSS;
 		return UpscalerKindDX12::None;
+	case 7:
+		if ( m_bRrAvailable )
+			return UpscalerKindDX12::RayReconstruction;
+		// An RR request can still use DLSS SR, with the ordinary SSR and AO denoisers.
+		[[fallthrough]];
 	case 2:
 		return m_Dlss.available ? UpscalerKindDX12::DLSS : UpscalerKindDX12::None;
 	case 3:
@@ -572,6 +581,26 @@ bool CUpscalerDX12::LoadNgx( const wchar_t *pszDir )
 	FileVersion( pszDir, L"nvngx_dlss.dll", szVersion, sizeof( szVersion ) );
 	m_Dlss.version.Format( "nvngx_dlss.dll %s, NGX core %s", szVersion, m_NgxCore.version.Get() );
 	m_Dlss.available = true;
+	if ( FileExists( pszDir, L"nvngx_dlssd.dll" ) )
+	{
+		unsigned int rr = 0;
+		const auto query = pApi->caps->Get( NVSDK_NGX_Parameter_SuperSamplingDenoising_Available, &rr );
+		m_bRrAvailable = NVSDK_NGX_SUCCEED( query ) && rr;
+		if ( m_bRrAvailable )
+		{
+			FileVersion( pszDir, L"nvngx_dlssd.dll", szVersion, sizeof( szVersion ) );
+			Msg( "ShaderAPIDX12 upscaler: DLSS Ray Reconstruction available (nvngx_dlssd.dll %s)\n", szVersion );
+		}
+		else
+		{
+			int initResult = 0;
+			const auto initQuery = pApi->caps->Get( NVSDK_NGX_Parameter_SuperSamplingDenoising_FeatureInitResult, &initResult );
+			Warning( "ShaderAPIDX12 upscaler: DLSS Ray Reconstruction unavailable, NGX Available=%u (query 0x%08x), FeatureInitResult=0x%08x (query 0x%08x); mode 7 uses DLSS SR\n",
+			    rr, unsigned( query ), unsigned( initResult ), unsigned( initQuery ) );
+		}
+	}
+	else
+		Msg( "ShaderAPIDX12 upscaler: nvngx_dlssd.dll not installed; mode 7 uses DLSS SR\n" );
 	return true;
 }
 
@@ -934,7 +963,7 @@ bool CUpscalerDX12::PrepareFeature( const UpscalerFeatureDescDX12 &desc, ID3D12C
 		bCreated = CreateXeSS( desc );
 	else if ( desc.kind == UpscalerKindDX12::FSR )
 		bCreated = CreateFfx( desc );
-	else if ( desc.kind == UpscalerKindDX12::DLSS )
+	else if ( desc.kind == UpscalerKindDX12::DLSS || desc.kind == UpscalerKindDX12::RayReconstruction )
 		bCreated = CreateDlss( desc, pQueue );
 	else if ( desc.kind == UpscalerKindDX12::SmaaT2x || desc.kind == UpscalerKindDX12::Taau )
 		bCreated = CreateSmaa( desc, pQueue );
@@ -943,7 +972,7 @@ bool CUpscalerDX12::PrepareFeature( const UpscalerFeatureDescDX12 &desc, ID3D12C
 	                                                                                                               m_Dlss;
 	if ( bCreated )
 		Msg( "ShaderAPIDX12 upscaler: %s ready, %ux%u -> %ux%u (%s)\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height,
-		    m_pSmaa ? "built-in HDR reconstruction" : provider.version.Get() );
+		    m_pSmaa ? "built-in HDR reconstruction" : desc.kind == UpscalerKindDX12::RayReconstruction ? "NGX DLSS-D, packed guides, HW depth" : provider.version.Get() );
 	else
 		Warning( "ShaderAPIDX12 upscaler: %s feature creation failed, %ux%u -> %ux%u\n", UpscalerKindNameDX12( desc.kind ), desc.renderWidth, desc.renderHeight, desc.width, desc.height );
 	return bCreated;
@@ -1135,8 +1164,16 @@ bool CUpscalerDX12::CreateFfx( const UpscalerFeatureDescDX12 &desc )
 //-----------------------------------------------------------------------------
 bool CUpscalerDX12::CreateDlss( const UpscalerFeatureDescDX12 &desc, ID3D12CommandQueue *pQueue )
 {
-	if ( !m_pNgxApi || !m_pNgxApi->dlssParams || !EnsureCompute() || !EnsureDepthClone( desc.width, desc.height ) )
+	const bool rr = desc.kind == UpscalerKindDX12::RayReconstruction;
+	if ( !m_pNgxApi || !m_pNgxApi->dlssParams || !EnsureCompute() ||
+	     !EnsureDepthClone( rr ? desc.renderWidth : desc.width, rr ? desc.renderHeight : desc.height ) )
 		return false;
+	if ( rr )
+	{
+		m_pRrMotion = CreateTexture( m_pDevice, desc.renderWidth, desc.renderHeight, DXGI_FORMAT_R16G16_FLOAT, kNpsr, "DLSS-RR motion" );
+		if ( !m_pRrMotion )
+			return false;
+	}
 	NVSDK_NGX_PerfQuality_Value quality = NVSDK_NGX_PerfQuality_Value_DLAA;
 	const char *pszPresetHint = NVSDK_NGX_Parameter_DLSS_Hint_Render_Preset_DLAA;
 	if ( desc.Scaled() )
@@ -1166,6 +1203,7 @@ bool CUpscalerDX12::CreateDlss( const UpscalerFeatureDescDX12 &desc, ID3D12Comma
 			Msg( "ShaderAPIDX12 upscaler: DLSS quality value %d for ratio %.3f\n", static_cast<int>( quality ), flRatio );
 	}
 	NVSDK_NGX_Parameter *p = m_pNgxApi->dlssParams;
+	if ( rr ) p->Reset();
 	p->Set( NVSDK_NGX_Parameter_CreationNodeMask, 1u );
 	p->Set( NVSDK_NGX_Parameter_VisibilityNodeMask, 1u );
 	p->Set( NVSDK_NGX_Parameter_Width, desc.renderWidth );
@@ -1173,22 +1211,31 @@ bool CUpscalerDX12::CreateDlss( const UpscalerFeatureDescDX12 &desc, ID3D12Comma
 	p->Set( NVSDK_NGX_Parameter_OutWidth, desc.width );
 	p->Set( NVSDK_NGX_Parameter_OutHeight, desc.height );
 	p->Set( NVSDK_NGX_Parameter_PerfQualityValue, static_cast<int>( quality ) );
-	p->Set( pszPresetHint, static_cast<unsigned int>( NVSDK_NGX_DLSS_Hint_Render_Preset_Default ) );
+	if ( rr )
+	{
+		// The SDK default preset is selected by leaving the RR preset hints unset.
+		p->Set( NVSDK_NGX_Parameter_DLSS_Denoise_Mode, int( NVSDK_NGX_DLSS_Denoise_Mode_DLUnified ) );
+		p->Set( NVSDK_NGX_Parameter_DLSS_Roughness_Mode, unsigned( NVSDK_NGX_DLSS_Roughness_Mode_Packed ) );
+		p->Set( NVSDK_NGX_Parameter_Use_HW_Depth, unsigned( NVSDK_NGX_DLSS_Depth_Type_HW ) );
+	}
+	else
+		p->Set( pszPresetHint, static_cast<unsigned int>( NVSDK_NGX_DLSS_Hint_Render_Preset_Default ) );
 	p->Set( NVSDK_NGX_Parameter_DLSS_Enable_Output_Subrects, 0 );
-	// Linear scRGB, jitter-free motion vectors at the render size (display size when native), automatic exposure.
-	const int nFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | NVSDK_NGX_DLSS_Feature_Flags_AutoExposure | ( desc.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0 ) |
-	    ( desc.Scaled() ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0 );
+	// RR does not support SR's automatic exposure. Both consume linear HDR and unjittered motion.
+	const int nFlags = NVSDK_NGX_DLSS_Feature_Flags_IsHDR | ( rr ? 0 : NVSDK_NGX_DLSS_Feature_Flags_AutoExposure ) |
+	    ( desc.depthInverted ? NVSDK_NGX_DLSS_Feature_Flags_DepthInverted : 0 ) | ( desc.Scaled() ? NVSDK_NGX_DLSS_Feature_Flags_MVLowRes : 0 );
 	p->Set( NVSDK_NGX_Parameter_DLSS_Feature_Create_Flags, nFlags );
 	ID3D12GraphicsCommandList *pList = BeginImmediate();
 	if ( !pList )
 		return false;
 	NVSDK_NGX_Handle *pHandle = nullptr;
-	const NVSDK_NGX_Result result = m_pNgxApi->create( pList, NVSDK_NGX_Feature_SuperSampling, p, &pHandle );
+	const NVSDK_NGX_Result result = m_pNgxApi->create( pList, rr ? NVSDK_NGX_Feature_RayReconstruction : NVSDK_NGX_Feature_SuperSampling, p, &pHandle );
 	// The creation list completes before any recorded frame can evaluate the feature.
 	const bool bExecuted = EndImmediate( pQueue );
 	if ( NVSDK_NGX_FAILED( result ) || !pHandle || !bExecuted )
 	{
-		Warning( "ShaderAPIDX12 upscaler: NVSDK_NGX_D3D12_CreateFeature(SuperSampling) failed (0x%08x)\n", static_cast<unsigned>( result ) );
+		Warning( "ShaderAPIDX12 upscaler: NVSDK_NGX_D3D12_CreateFeature(%s) failed (0x%08x), creation list completed=%d\n",
+		    rr ? "RayReconstruction" : "SuperSampling", unsigned( result ), bExecuted );
 		if ( pHandle )
 			m_pNgxApi->release( pHandle );
 		return false;
@@ -1210,7 +1257,7 @@ bool CUpscalerDX12::ProviderJitter( uint64_t nIndex, float &flX, float &flY ) co
 		flX = flY = ( nIndex & 1u ) ? -.25f : .25f;
 		return true;
 	}
-	if ( m_Feature.kind == UpscalerKindDX12::DLSS || m_Feature.kind == UpscalerKindDX12::Taau )
+	if ( m_Feature.kind == UpscalerKindDX12::DLSS || m_Feature.kind == UpscalerKindDX12::RayReconstruction || m_Feature.kind == UpscalerKindDX12::Taau )
 	{
 		// DLAA converges better on a longer sequence than the backend's default eight phases.
 		const uint32_t nPhase = static_cast<uint32_t>( nIndex % 32 ) + 1;
@@ -1394,7 +1441,16 @@ void CUpscalerDX12::WriteDescriptors( const UpscalerDispatchDX12 &d ) const
 		uav( index, 5, u1, DXGI_FORMAT_R32_FLOAT );
 	};
 	// Pass 0: scene depth -> typed R32F clone.
-	if ( NeedsDepthClone( d ) )
+	if ( d.rr )
+	{
+		srv( 0, 0, d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS );
+		srv( 0, 1, d.motion, DXGI_FORMAT_R16G16B16A16_FLOAT );
+		srv( 0, 2, nullptr, color );
+		srv( 0, 3, nullptr, color );
+		uav( 0, 4, m_pRrMotion.Get(), DXGI_FORMAT_R16G16_FLOAT );
+		uav( 0, 5, m_pDepthClone.Get(), DXGI_FORMAT_R32_FLOAT );
+	}
+	else if ( NeedsDepthClone( d ) )
 		pass( 0, d.depth, DXGI_FORMAT_R24_UNORM_X8_TYPELESS, nullptr, nullptr, nullptr, m_pDepthClone.Get() );
 	for ( uint32_t layer = 0; layer < d.nrLayers; ++layer )
 	{
@@ -1501,6 +1557,7 @@ void CUpscalerDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 	AddTransition( d.motion, d.motionBefore, kRead, barriers, nCount );
 	AddTransition( d.output, d.outputBefore, kUav, barriers, nCount );
 	AddTransition( bClone ? owner.m_pDepthClone.Get() : nullptr, kNpsr, kUav, barriers, nCount );
+	if ( d.rr ) AddTransition( owner.m_pRrMotion.Get(), kNpsr, kUav, barriers, nCount );
 	if ( nCount )
 		pList->ResourceBarrier( nCount, barriers );
 	if ( bClone )
@@ -1508,8 +1565,10 @@ void CUpscalerDX12::ReplayThunk( ID3D12GraphicsCommandList *pList, ID3D12Device 
 		NrConstantsDX12 constants{};
 		constants.width = d.renderWidth;
 		constants.height = d.renderHeight;
+		constants.mode = d.rr ? 3u : 0u;
 		owner.BindCompute( pList, d, owner.m_pDepthPso.Get(), 0, constants );
 		Transition( pList, owner.m_pDepthClone.Get(), kUav, kNpsr );
+		if ( d.rr ) Transition( pList, owner.m_pRrMotion.Get(), kUav, kNpsr );
 	}
 	const uint32_t nCode = d.forceFailure ? kReplayForced : owner.Execute( pList, d );
 	uint32_t nNrCode = 0;
@@ -1761,6 +1820,7 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		const ffxReturnCode_t result = m_pFfxApi->dispatch( &context, &dispatch.header );
 		return result == FFX_API_RETURN_OK ? 0u : 0x30000u | ( result & 0xffffu );
 	}
+	case UpscalerKindDX12::RayReconstruction:
 	case UpscalerKindDX12::DLSS:
 	{
 		// A DLSS handle implies CreateDlss found m_pNgxApi and its dlssParams block.
@@ -1770,7 +1830,7 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		p->Set( NVSDK_NGX_Parameter_Color, d.color );
 		p->Set( NVSDK_NGX_Parameter_Output, d.output );
 		p->Set( NVSDK_NGX_Parameter_Depth, m_pDepthClone.Get() );
-		p->Set( NVSDK_NGX_Parameter_MotionVectors, d.motion );
+		p->Set( NVSDK_NGX_Parameter_MotionVectors, d.rr ? m_pRrMotion.Get() : d.motion );
 		p->Set( NVSDK_NGX_Parameter_Jitter_Offset_X, d.jitter[0] );
 		p->Set( NVSDK_NGX_Parameter_Jitter_Offset_Y, d.jitter[1] );
 		p->Set( NVSDK_NGX_Parameter_MV_Scale_X, d.motionScale[0] );
@@ -1778,11 +1838,24 @@ uint32_t CUpscalerDX12::Execute( ID3D12GraphicsCommandList *pList, const Upscale
 		p->Set( NVSDK_NGX_Parameter_Reset, d.reset ? 1 : 0 );
 		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, d.renderWidth );
 		p->Set( NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Height, d.renderHeight );
-		p->Set( NVSDK_NGX_Parameter_Sharpness, 0.f );
-		p->Set( NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.f );
-		p->Set( NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.f );
+		if ( d.rr )
+		{
+			p->Set( NVSDK_NGX_Parameter_DiffuseAlbedo, d.rr->diffuse );
+			p->Set( NVSDK_NGX_Parameter_SpecularAlbedo, d.rr->specular );
+			p->Set( NVSDK_NGX_Parameter_GBuffer_Normals, d.rr->normalRoughness );
+			p->Set( NVSDK_NGX_Parameter_DLSSD_SpecularHitDistance, d.rr->hitDistance );
+			p->Set( NVSDK_NGX_Parameter_DLSS_WORLD_TO_VIEW_MATRIX, const_cast<float *>( d.rr->worldToView ) );
+			p->Set( NVSDK_NGX_Parameter_DLSS_VIEW_TO_CLIP_MATRIX, const_cast<float *>( d.rr->viewToClip ) );
+		}
+		else
+		{
+			p->Set( NVSDK_NGX_Parameter_Sharpness, 0.f );
+			p->Set( NVSDK_NGX_Parameter_DLSS_Pre_Exposure, 1.f );
+			p->Set( NVSDK_NGX_Parameter_DLSS_Exposure_Scale, 1.f );
+		}
 		p->Set( NVSDK_NGX_Parameter_FrameTimeDeltaInMsec, d.frameTimeMs );
 		const NVSDK_NGX_Result result = m_pNgxApi->evaluate( pList, static_cast<const NVSDK_NGX_Handle *>( m_pDlssHandle ), p, nullptr );
+		if ( d.rr ) return NVSDK_NGX_SUCCEED( result ) ? 0u : unsigned( result );
 		return NVSDK_NGX_SUCCEED( result ) ? 0u : 0x50000u | ( static_cast<uint32_t>( result ) & 0xffffu );
 	}
 	default:
@@ -1811,6 +1884,9 @@ void CUpscalerDX12::ReleaseFeature()
 	m_pXessContext = nullptr;
 	m_pFfxContext = nullptr;
 	m_pDlssHandle = nullptr;
+	if ( m_Feature.kind == UpscalerKindDX12::RayReconstruction && m_pNgxApi )
+		m_pNgxApi->dlssParams->Reset(); // no RR-only pointers or settings survive an SR fallback
+	m_pRrMotion.Reset();
 	m_FfxJitter.RemoveAll();
 	m_State = State::Disabled;
 	m_Feature = {};
@@ -1857,6 +1933,7 @@ void CUpscalerDX12::Shutdown()
 		*pProviders[i] = Provider{};
 	}
 	m_pDepthClone.Reset();
+	m_bRrAvailable = false;
 	m_pImmediateList.Reset();
 	m_pImmediateAllocator.Reset();
 	m_pImmediateFence.Reset();
@@ -1950,6 +2027,8 @@ void CShaderAPIDX12::ConsumeUpscalerReplays( bool bWait )
 		}
 		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 		m_RenderingInts[INT_RENDERPARM_DX12_UPSCALE_STATUS] = -6;
+		if ( m_UpscalerKind == UpscalerKindDX12::RayReconstruction )
+			m_bRrFailed = true; // next view uses SR and restores both engine denoisers
 		Warning( "ShaderAPIDX12 upscaler: %s replay failed for frame %llu (code 0x%x); history reset\n", UpscalerKindNameDX12( m_UpscalerKind ), static_cast<unsigned long long>( nFrame ), nCode );
 	}
 }
@@ -2000,6 +2079,7 @@ void CShaderAPIDX12::ReleaseUpscalerFeature()
 	m_Pipeline.InvalidateGraphicsBindings();
 	ConsumeUpscalerReplays( false );
 	m_Upscaler.ReleaseFeature();
+	ReleaseRayReconstructionGuides();
 	m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 }
 
@@ -2195,7 +2275,7 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	m_UpscalerJitter[0] = m_UpscalerJitter[1] = 0.f;
 	if ( !m_pDevice || !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() )
 		return;
-	if ( nMode < 0 || nMode > 6 )
+	if ( nMode < 0 || nMode > 7 )
 		nMode = 0;
 	// Jitter sampling needs the previous dispatch's result; mode 0 only disarms and never waits on the worker.
 	ConsumeUpscalerReplays( nMode != 0 );
@@ -2217,10 +2297,11 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	if ( nMode != m_nUpscalerSelectedMode )
 	{
 		m_nUpscalerSelectedMode = nMode;
+		m_bRrFailed = false;
 		m_bUpscalerHistoryGap = m_bUpscalerNrHistoryGap = true;
 	}
 	ProbeUpscalerCapabilities();
-	const UpscalerKindDX12 kind = m_Upscaler.Resolve( nMode );
+	const UpscalerKindDX12 kind = m_Upscaler.Resolve( nMode == 7 && m_bRrFailed ? 2 : nMode );
 	if ( kind != m_UpscalerKind )
 	{
 		if ( m_Upscaler.Feature().kind != UpscalerKindDX12::None )
@@ -2239,6 +2320,13 @@ void CShaderAPIDX12::SetUpscalerMode( int nMode )
 	{
 		m_RenderingInts[INT_RENDERPARM_DX12_UPSCALE_STATUS] = -1;
 		return;
+	}
+	if ( kind == UpscalerKindDX12::RayReconstruction && !PrepareRayReconstructionView() )
+	{
+		Warning( "ShaderAPIDX12 upscaler: DLSS Ray Reconstruction preparation failed; using DLSS SR and engine denoisers\n" );
+		ReleaseUpscalerFeature();
+		m_bRrFailed = true;
+		m_UpscalerKind = UpscalerKindDX12::DLSS;
 	}
 	// A frame of the eligible view without a dispatch breaks the history.
 	if ( m_nUpscalerLastDispatchFrame == ~0ull || m_nUpscalerLastDispatchFrame + 1 < m_nFrameCounter )
@@ -2285,6 +2373,8 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		return reject( -3, "MSAA is active" );
 	if ( !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() || m_RenderTargets[0] != SHADER_RENDERTARGET_BACKBUFFER || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
 		return reject( -4, "render target 0 is not the scene or the caller does not own recording" );
+	if ( RayReconstructionView() && m_nMotionMainFrame != m_nFrameCounter )
+		return reject( -5, "RR has no matching main-view camera" );
 	TextureRecord *pMotion = m_nMotionResolvedFrame == m_nFrameCounter ? FindTexture( m_hMotionResolvedHandle ) : nullptr;
 	if ( !pMotion || !( pMotion->flags & TEXTURE_CREATE_RENDERTARGET ) || pMotion->format != IMAGE_FORMAT_RGBA16161616F || pMotion->width != static_cast<int>( nWidth ) ||
 	    pMotion->height != static_cast<int>( nHeight ) || !EnsureTextureResident( *pMotion ) || !pMotion->resource )
@@ -2330,6 +2420,16 @@ void CShaderAPIDX12::DispatchUpscaler( int nFlags )
 		ConsumeUpscalerReplays( true );
 	const int nFaces = ( pMotion->flags & TEXTURE_CREATE_CUBEMAP ) ? 6 : 1, nSub = pMotion->currentCopy * nFaces * pMotion->mipLevels;
 	UpscalerDispatchDX12 d;
+	if ( RayReconstructionView() )
+	{
+		auto &guides = m_RrInputs[( m_nUpscalerPendingSerial + 1 ) % kUpscalerReplaySlots];
+		if ( !PackRayReconstructionGuides( guides ) )
+		{
+			m_bRrFailed = true;
+			return reject( -4, "RR guide packing failed; next view uses DLSS SR" );
+		}
+		d.rr = &guides;
+	}
 	d.color = m_pDevice->SceneColor();
 	d.colorBefore = m_pDevice->SceneColorState();
 	d.depth = m_pDevice->SceneDepth();
@@ -2478,6 +2578,8 @@ void CShaderAPIDX12::ReleaseUpscalerResources()
 		ConsumeUpscalerReplays( false );
 	}
 	m_Upscaler.Shutdown();
+	ReleaseRayReconstructionGuides();
+	m_bRrFailed = false;
 	m_pUpscalerOutput.Reset();
 	m_UpscalerOutputState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	m_bUpscalerInitialized = false;
@@ -2529,6 +2631,113 @@ void TransposeTo( const VMatrix &m, float ( &out )[16] )
 			out[row * 4 + col] = m[col][row];
 }
 } // namespace
+
+// The render size is latched before the first main-view draw. Only select raw SSR once the feature and
+// all four guide targets actually exist. A change of fixed render size starts a new feature/history.
+bool CShaderAPIDX12::PrepareRayReconstructionView()
+{
+	const uint32_t outputWidth = m_pDevice->SceneWidth(), outputHeight = m_pDevice->SceneHeight();
+	const uint32_t w = uint32_t( m_RenderingFloats[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_WIDTH] );
+	const uint32_t h = uint32_t( m_RenderingFloats[FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_HEIGHT] );
+	if ( !w || !h || w > outputWidth || h > outputHeight || m_pDevice->SceneSampleCount() != 1 )
+		return false;
+	const UpscalerFeatureDescDX12 desc{ UpscalerKindDX12::RayReconstruction, outputWidth, outputHeight, w, h, false };
+	if ( m_Upscaler.Feature() == desc && m_RrHitDistance.handle )
+		return true;
+	if ( m_Upscaler.Feature().kind != UpscalerKindDX12::None )
+		ReleaseUpscalerFeature();
+	return m_Upscaler.PrepareFeature( desc, m_pDevice->Queue() ) &&
+		EnsureSSRTexture( m_RrDiffuse, w, h, IMAGE_FORMAT_RGBA16161616F, false, "DLSS-RR linear diffuse albedo" ) &&
+		EnsureSSRTexture( m_RrSpecular, w, h, IMAGE_FORMAT_RGBA16161616F, false, "DLSS-RR specular albedo" ) &&
+		EnsureSSRTexture( m_RrNormalRoughness, w, h, IMAGE_FORMAT_RGBA16161616F, false, "DLSS-RR world normal and roughness" ) &&
+		EnsureSSRTexture( m_RrHitDistance, w, h, IMAGE_FORMAT_R32F, false, "DLSS-RR specular hit distance" );
+}
+
+void CShaderAPIDX12::ReleaseRayReconstructionGuides()
+{
+	SSRTextureDX12 *const targets[] = { &m_RrDiffuse, &m_RrSpecular, &m_RrNormalRoughness, &m_RrHitDistance };
+	for ( SSRTextureDX12 *target : targets )
+	{
+		if ( target->handle ) DeleteTexture( target->handle );
+		*target = {};
+	}
+}
+
+bool CShaderAPIDX12::PackRayReconstructionGuides( RayReconstructionInputsDX12 &inputs )
+{
+	if ( !m_pGBufferAlbedo )
+		return false;
+	const auto &desc = m_Upscaler.Feature();
+	struct
+	{
+		uint32_t width, height, hasTrace;
+		float clear, rayX[4], rayY[4], rayCenter[4];
+	} c{};
+	c.width = desc.renderWidth;
+	c.height = desc.renderHeight;
+	c.hasTrace = m_SSR.rawTraceFrame == m_nFrameCounter;
+	c.clear = 1.f;
+
+	VMatrix view, proj;
+	memcpy( view.Base(), m_MotionMainView, sizeof( m_MotionMainView ) );
+	memcpy( proj.Base(), m_MotionMainProj, sizeof( m_MotionMainProj ) );
+	const float dx = 1.f / c.width, dy = 1.f / c.height;
+	// Factor the native raster half-pixel into the unjittered projection. NGX gets the jitter separately.
+	for ( int col = 0; col < 4; ++col )
+	{
+		proj[0][col] += dx * proj[3][col];
+		proj[1][col] -= dy * proj[3][col];
+	}
+	TransposeTo( view, inputs.worldToView );
+	TransposeTo( proj, inputs.viewToClip );
+	// N.V for the material's EnvBRDF: evaluate the eye ray at the actual jittered sample.
+	const float x = ( 1.f - dx + 2.f * dx * m_UpscalerJitter[0] - proj[0][2] ) / proj[0][0];
+	const float y = ( dy - 1.f - 2.f * dy * m_UpscalerJitter[1] - proj[1][2] ) / proj[1][1];
+	for ( int i = 0; i < 3; ++i )
+	{
+		c.rayX[i] = -2.f * dx / proj[0][0] * view[0][i];
+		c.rayY[i] =  2.f * dy / proj[1][1] * view[1][i];
+		c.rayCenter[i] = x * view[0][i] + y * view[1][i] + view[2][i];
+	}
+
+	ShaderAPIDX12ComputeDispatch_t dispatch{};
+	dispatch.m_pShaderName = "rr_guides_cs51";
+	dispatch.m_pConstants = &c;
+	dispatch.m_nConstantBytes = sizeof( c );
+	dispatch.m_nGroupsX = ( c.width + 7 ) / 8;
+	dispatch.m_nGroupsY = ( c.height + 7 ) / 8;
+	dispatch.m_nGroupsZ = 1;
+	dispatch.m_Srv[0].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ALBEDO;
+	dispatch.m_Srv[1].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS;
+	dispatch.m_Srv[2].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR;
+	dispatch.m_Srv[3].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL;
+	dispatch.m_Srv[4].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_DEPTH;
+	if ( c.hasTrace )
+	{
+		dispatch.m_Srv[5].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE;
+		dispatch.m_Srv[5].m_hTexture = m_SSR.trace.handle;
+	}
+	const ShaderAPITextureHandle_t targets[] = { m_RrDiffuse.handle, m_RrSpecular.handle, m_RrNormalRoughness.handle, m_RrHitDistance.handle };
+	for ( int i = 0; i < ARRAYSIZE( targets ); ++i )
+	{
+		dispatch.m_Uav[i].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE;
+		dispatch.m_Uav[i].m_hTexture = targets[i];
+	}
+	if ( !Dispatch( dispatch ) )
+		return false;
+	if ( m_bUpscalerHistoryGap )
+		Msg( "ShaderAPIDX12 upscaler: RR guides %ux%u, linear diffuse/specular, packed world normal/roughness, raw SSR hit distance: %s\n",
+		    c.width, c.height, c.hasTrace ? "current trace" : "no SSR hits submitted" );
+	ID3D12Resource **const guides[] = { &inputs.diffuse, &inputs.specular, &inputs.normalRoughness, &inputs.hitDistance };
+	for ( int i = 0; i < ARRAYSIZE( guides ); ++i )
+	{
+		D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+		D3D12_SAMPLER_DESC sampler;
+		if ( !PrepareSampledTexture( targets[i], false, guides[i], srv, sampler ) )
+			return false;
+	}
+	return true;
+}
 
 //-----------------------------------------------------------------------------
 // IShaderAPIDX12: the client thread only stores requests; BeginFrame applies them on the recording thread

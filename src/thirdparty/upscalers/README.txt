@@ -16,6 +16,7 @@ into game/bin/x64. Copying the DLLs straight into game/bin/x64 works as well.
   FSR                     amd_fidelityfx_loader_dx12.dll                fidelityfx2/redist/
                           amd_fidelityfx_upscaler_dx12.dll              (both are required)
   DLSS (DLAA at native)   nvngx_dlss.dll                                ngx/redist/
+  DLSS Ray Reconstruction nvngx_dlssd.dll                               ngx/redist/ (beside nvngx_dlss.dll)
   DLSS-NR                 nvngx_dlssnr.dll                              dlssnr/redist/
 
 Where to get them
@@ -33,6 +34,9 @@ FSR
 DLSS / DLAA
   NVIDIA DLSS SDK: https://github.com/NVIDIA/DLSS/tree/main/lib/Windows_x86_64/rel, file nvngx_dlss.dll.
   Also needs an NVIDIA RTX GPU and driver; the driver provides the NGX core (_nvngx.dll).
+  For experimental r_upscaler 7, also install the DLSS SDK 310.9.1 release nvngx_dlssd.dll
+  (Windows_x86_64/rel). RR uses the same driver NGX core; it is not a DLSS-NR snippet or a second
+  pass after SR. With no RR runtime/support the requested mode uses regular DLSS/DLAA and engine denoisers.
 
 DLSS-NR
   Not publicly distributed. The build that runs on RTX 40 series is a modified third-party build that must not be

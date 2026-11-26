@@ -819,6 +819,10 @@ private:
 	void ConsumeUpscalerReplays( bool bWait );
 	bool EnsureUpscalerOutput( UINT nWidth, UINT nHeight );
 	void ReleaseUpscalerFeature();
+	bool PrepareRayReconstructionView();
+	bool PackRayReconstructionGuides( RayReconstructionInputsDX12 &inputs );
+	void ReleaseRayReconstructionGuides();
+	bool RayReconstructionView() const { return m_bUpscalerViewEligible && m_UpscalerKind == UpscalerKindDX12::RayReconstruction; }
 	// DLSS-NR chain after the temporal AA, configured by INT_RENDERPARM_DX12_NR_CONFIG and the NR float parameters.
 	// Returns the layer count this dispatch runs (0 when off, unavailable or failed; status says which).
 	uint32_t PrepareUpscalerNr( DlssNrComposeDX12 &compose );
@@ -1013,6 +1017,7 @@ private:
 		float prevWorldToClip[16]{};
 		Rect_t prevRect{};
 		uint64_t prevFrame = ~0ull;
+		uint64_t rawTraceFrame = ~0ull; // trace.a is world-space hit distance only for a successful raw main-view trace
 		// SetAmbientOcclusionTerm: the frame's AO term, used to occlude reflected hits when aoFrame is the current frame.
 		ShaderAPITextureHandle_t aoTerm = 0;
 		int aoWidth = 0, aoHeight = 0;
@@ -1494,6 +1499,9 @@ private:
 	uint64_t m_nUpscalerEnabledFrame = ~0ull;
 	UpscalerKindDX12 m_UpscalerKind = UpscalerKindDX12::None;
 	bool m_bUpscalerViewEligible = false, m_bUpscalerHistoryGap = true;
+	bool m_bRrFailed = false;
+	SSRTextureDX12 m_RrDiffuse, m_RrSpecular, m_RrNormalRoughness, m_RrHitDistance;
+	RayReconstructionInputsDX12 m_RrInputs[kUpscalerReplaySlots];
 	uint64_t m_nUpscalerFrameToken = ~0ull;
 	uint64_t m_nUpscalerQueuedFrame = ~0ull, m_nUpscalerLastDispatchFrame = ~0ull, m_nUpscalerLastSuccessFrame = ~0ull;
 	uint64_t m_nUpscalerPendingSerial = 0, m_nUpscalerConsumedSerial = 0, m_nUpscalerJitterIndex = 0;

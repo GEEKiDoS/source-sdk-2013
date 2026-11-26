@@ -36,7 +36,8 @@ enum class UpscalerKindDX12 : uint8_t
 	FSR = 2,
 	XeSS = 3,
 	SmaaT2x = 4,
-	Taau = 5
+	Taau = 5,
+	RayReconstruction = 6
 };
 const char *UpscalerKindNameDX12( UpscalerKindDX12 kind );
 
@@ -93,11 +94,19 @@ struct DlssNrComposeDX12
 	bool applyModel = true, compareSwap = false;
 };
 
+// One slot per pending replay, like UpscalerReplayResultDX12. Only RR fills or copies guides.
+struct RayReconstructionInputsDX12
+{
+	ID3D12Resource *diffuse, *specular, *normalRoughness, *hitDistance;
+	float worldToView[16], viewToClip[16]; // unjittered, row-vector convention required by NGX
+};
+
 // One dispatch. `*Before` are the tracked states at record time; the callback leaves colour/motion in
 // RENDER_TARGET, depth in DEPTH_WRITE and output in UNORDERED_ACCESS on every path.
 struct UpscalerDispatchDX12
 {
 	ID3D12Resource *color = nullptr, *depth = nullptr, *motion = nullptr, *output = nullptr;
+	const RayReconstructionInputsDX12 *rr = nullptr;
 	D3D12_RESOURCE_STATES colorBefore = D3D12_RESOURCE_STATE_RENDER_TARGET, depthBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	D3D12_RESOURCE_STATES motionBefore = D3D12_RESOURCE_STATE_RENDER_TARGET, outputBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	float jitter[2] = {}, motionScale[2] = {}; // motionScale: UV -> previous-minus-current render pixels
@@ -130,7 +139,7 @@ public:
 
 	bool Initialized() const { return m_pDevice != nullptr; }
 
-	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x, 6 lightweight TAAU (always available).
+	// Mode 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x, 6 lightweight TAAU, 7 DLSS-RR (falls back to 2).
 	UpscalerKindDX12 Resolve( int nMode ) const;
 	bool EnsureNativeAAPipelines( UpscalerKindDX12 kind );
 	// Creates the provider context for `desc` when it differs from the current one. DLSS records its creation on a
@@ -214,7 +223,8 @@ private:
 	// render region in every replay.
 	bool NeedsDepthClone( const UpscalerDispatchDX12 &d ) const
 	{
-		return m_Feature.kind == UpscalerKindDX12::DLSS || ( m_Feature.kind == UpscalerKindDX12::XeSS && m_Feature.Scaled() ) || ( d.nrLayers && !m_Feature.Scaled() );
+		return m_Feature.kind == UpscalerKindDX12::DLSS || m_Feature.kind == UpscalerKindDX12::RayReconstruction ||
+		    ( m_Feature.kind == UpscalerKindDX12::XeSS && m_Feature.Scaled() ) || ( d.nrLayers && !m_Feature.Scaled() );
 	}
 
 	bool EnsureDepthClone( uint32_t nWidth, uint32_t nHeight );
@@ -234,6 +244,7 @@ private:
 	unsigned m_nVendor = 0, m_nDeviceId = 0;
 	wchar_t m_szDir[MAX_PATH] = {}; // renderer directory with a trailing separator
 	Provider m_Dlss, m_Fsr, m_Xess, m_NgxCore, m_Nr;
+	bool m_bRrAvailable = false;
 	XeSSApi *m_pXessApi = nullptr;
 	FfxApi *m_pFfxApi = nullptr;
 	NgxApi *m_pNgxApi = nullptr;
@@ -246,6 +257,7 @@ private:
 	void *m_pDlssHandle = nullptr;
 	CUtlVector<float> m_FfxJitter;                        // FSR jitter offsets, x/y interleaved per phase
 	Microsoft::WRL::ComPtr<ID3D12Resource> m_pDepthClone; // R32_FLOAT, NON_PIXEL_SHADER_RESOURCE between replays
+	Microsoft::WRL::ComPtr<ID3D12Resource> m_pRrMotion; // typed RG16F, copied together with depth
 	Microsoft::WRL::ComPtr<ID3D12RootSignature> m_pComputeRoot;
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> m_pNrPso, m_pDepthPso;
 	SmaaState *m_pSmaa = nullptr;

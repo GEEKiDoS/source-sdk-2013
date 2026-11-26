@@ -19,6 +19,7 @@ struct PBRSurface
 	float3 T;            // rotated anisotropy tangent; valid only when anisotropy != 0
 	float3 B;
 	float3 diffuseColor; // baseColor after the workflow split and the (1 - max3(F0)) energy factor
+	float diffuseShare;  // nonmetal fraction (1 in the specular workflow)
 	float3 F0;
 	float roughness;     // clamped perceptual roughness
 	float a2;            // isotropic GGX alpha^2, alpha = roughness^2
@@ -113,7 +114,9 @@ PBRSurface PBR_MakeSurface( float3 N, float3 V, float3 T, float3 baseColor, floa
 		F0 = lerp( float3( 0.04, 0.04, 0.04 ), baseColor, metalness );
 #endif
 		diffuse = baseColor * ( 1.0 - metalness );
+		s.diffuseShare = 1.0 - metalness;
 	}
+	else s.diffuseShare = 1.0;
 	s.N = N;
 	s.V = V;
 	s.F0 = F0;
@@ -279,16 +282,7 @@ float3 PBR_Direct( PBRSurface s, float3 L, float3 radiance, float shadow, bool b
 	return PBR_DirectSplit( s, L, radiance, shadow, burley, specular );
 }
 
-// Karis EnvBRDFApprox (mobile): scale/bias of F0 for the split-sum environment term.
-float3 PBR_EnvBRDF( float3 F0, float roughness, float NdotV )
-{
-	const float4 c0 = float4( -1.0, -0.0275, -0.572, 0.022 );
-	const float4 c1 = float4( 1.0, 0.0425, 1.04, -0.04 );
-	float4 r = roughness * c0 + c1;
-	float a004 = min( r.x * r.x, exp2( -9.28 * NdotV ) ) * r.x + r.y;
-	float2 AB = float2( -1.04, 1.04 ) * a004 + r.zw;
-	return F0 * AB.x + AB.y;
-}
+#include "pbr_envbrdf.hlsli"
 
 // Split-sum response of the environment term for the effective envmap mask. Legacy L4D2 Phong materials use
 // $envmap as an explicitly authored reflection, not a dielectric IBL whose strength is limited by F0.
@@ -409,7 +403,8 @@ PBR_PSOut PBR_Output( float4 color, PBRSurface s, float3 baseColor, float3 envir
 	o.color = color;
 	o.normal = PBR_PackNormal( s.N );
 	o.spec = float4( s.F0, s.roughness );
-	o.albedo = float4( baseColor, 1 );
+	// Preserve bounce's base colour and nonzero validity, including for a pure metal.
+	o.albedo = float4( baseColor, ( 1.0 + 254.0 * s.diffuseShare ) / 255.0 );
 	o.environment = float4( environmentScene, specularDistance );
 	o.response = float4( reflectionResponse * reflectionValid, reflectionValid );
 	o.specular = float4( directSpecular, 0.0 );

@@ -114,9 +114,9 @@ enum RenderParamInt_t
 	INT_RENDERPARM_DX12_MOTION_STATUS,
 
 	// DX12 temporal upscaler (native AA or a reduced render size, see FLOAT_RENDERPARM_DX12_UPSCALE_RENDER_*); other backends store and ignore these values.
-	INT_RENDERPARM_DX12_UPSCALE_MODE,     // 0 off, 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x.
+	INT_RENDERPARM_DX12_UPSCALE_MODE,     // 0 off, 1 auto, 2 DLSS/DLAA, 3 FSR, 4 XeSS, 5 native SMAA T2x, 6 TAAU, 7 DLSS-RR.
 	INT_RENDERPARM_DX12_UPSCALE_DISPATCH, // bit 0 run, bit 1 reset.
-	INT_RENDERPARM_DX12_UPSCALE_STATUS,   // backend-owned: 0 off/unevaluated, 1|(kind<<8) active (DLSS 1, FSR 2, XeSS 3, SMAA T2x 4),
+	INT_RENDERPARM_DX12_UPSCALE_STATUS,   // backend-owned: 0 off/unevaluated, 1|(kind<<8) active (DLSS 1, FSR 2, XeSS 3, SMAA T2x 4, TAAU 5, RR 6),
 	                                      // -1 no provider, -2 feature creation failed, -3 MSAA, -4 wrong target/owner,
 	                                      // -5 no motion resolve this frame, -6 provider replay error.
 	// DLSS-NR layers chained after the temporal AA dispatch (layer N+1 is fed layer N's output).
@@ -158,6 +158,7 @@ enum DX12UpscalerCaps_t
 	DX12_UPSCALE_CAP_READY = 1 << 4,
 	DX12_UPSCALE_CAP_NR_CHECKED = 1 << 5
 };
+enum { DX12_UPSCALE_STATUS_RR = 1 | ( 6 << 8 ) };
 enum DX12ViewFlags_t
 {
 	DX12_VIEW_FLAG_REFLECTION = 1 << 0,

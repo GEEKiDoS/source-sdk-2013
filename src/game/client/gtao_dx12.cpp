@@ -220,6 +220,8 @@ ConVar r_gtao_denoise( "r_gtao_denoise", "1", FCVAR_ARCHIVE, "GTAO spatial denoi
 ConVar r_gtao_debug( "r_gtao_debug", "0", 0, "GTAO: 1 shows the AO term instead of applying it", true, 0, true, 1 );
 ConVar r_gtao_temporal( "r_gtao_temporal", "1", FCVAR_ARCHIVE, "DX12: accumulate GTAO across frames with motion/depth rejection", true, 0, true, 1 );
 ConVar r_gtao_temporal_weight( "r_gtao_temporal_weight", "0.93", FCVAR_ARCHIVE, "DX12 GTAO history weight after reprojection", true, 0.5f, true, 0.98f );
+static ConVar r_upscaler_rr_raw_gtao( "r_upscaler_rr_raw_gtao", "0", FCVAR_ARCHIVE,
+	"With DLSS Ray Reconstruction active, apply the full-resolution raw horizon term (no GTAO spatial or temporal denoiser)", true, 0, true, 1 );
 
 void GTAODX12_Init( IMaterialSystemHardwareConfig *pHardwareConfig )
 {
@@ -355,7 +357,11 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext, const CViewSetup *pVie
 			viewModelDepth[3] = 1.f;
 		}
 	}
-	const float scale = Clamp( r_gtao_resolution.GetFloat(), 0.25f, 1.f );
+	// A request which fell back to SR must keep the ordinary AO path. Under queued rendering the
+	// first RR frame can still use filtered AO until the backend publishes its active status.
+	const bool raw = r_upscaler_rr_raw_gtao.GetBool() && UpscalerDX12_RayReconstructionView() &&
+		UpscalerDX12_Status() == DX12_UPSCALE_STATUS_RR;
+	const float scale = raw ? 1.f : Clamp( r_gtao_resolution.GetFloat(), 0.25f, 1.f );
 	const int aoWidth = MAX( 1, static_cast<int>( ceilf( fullWidth * scale ) ) );
 	const int aoHeight = MAX( 1, static_cast<int>( ceilf( fullHeight * scale ) ) );
 	bool bLevelChange = false;
@@ -373,12 +379,13 @@ void GTAODX12_Compute( IMatRenderContext *pRenderContext, const CViewSetup *pVie
 		s_nTemporalFullWidth != fullWidth || s_nTemporalFullHeight != fullHeight;
 	const int slices = Clamp( r_gtao_slices.GetInt(), 1, 9 );
 	const int steps = Clamp( r_gtao_steps.GetInt(), 1, 8 );
-	const bool bTemporalAccumulation = r_gtao_temporal.GetBool();
+	const bool bTemporalAccumulation = !raw && r_gtao_temporal.GetBool();
 	// A temporal accumulator deliberately keeps the animated noise sequence alive; the
 	// reprojection turns it into stratified samples instead of visible frame noise.
 	const bool bTemporal = bTemporalAccumulation || ( UpscalerDX12_Enabled() && UpscalerDX12_Status() > 0 );
-	const int denoisePasses = Clamp( r_gtao_denoise.GetInt(), 0, 3 );
-	const int noiseIndex = bTemporal ? gpGlobals->framecount & 63 : 0;
+	const int denoisePasses = raw ? 0 : Clamp( r_gtao_denoise.GetInt(), 0, 3 );
+	// 0..63 is XeGTAO's tiled sequence; 64+ selects independent RR samples in gtao_main.
+	const int noiseIndex = raw ? 64 + ( gpGlobals->framecount & 0xfffff ) : bTemporal ? gpGlobals->framecount & 63 : 0;
 	const float radius = Clamp( r_gtao_radius.GetFloat(), 1.f, 1024.f );
 	const float power = Clamp( r_gtao_power.GetFloat(), 0.1f, 8.f );
 	if ( !bTemporalAccumulation || bLevelChange || bFrameGap || bCameraCut || bResize )

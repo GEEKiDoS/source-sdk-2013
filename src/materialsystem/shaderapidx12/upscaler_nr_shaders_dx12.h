@@ -218,6 +218,7 @@ void CSDepth(uint3 id : SV_DispatchThreadID)
         return;
     }
     gDepthOut[id.xy] = gSource.Load(int3(id.xy, 0)).r;
+    if (gMode == 3) gTarget[id.xy] = gModel.Load(int3(id.xy, 0)); // RR: xy into the typed RG16F guide
 }
 
 [numthreads(8, 8, 1)]

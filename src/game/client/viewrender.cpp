@@ -1748,17 +1748,18 @@ void CViewRender::DrawViewModels( const CViewSetup &viewRender, bool drawViewmod
 				}
 			}
 
-			if ( pViewModelBounce )
+			const bool captureViewModel = pViewModelBounce || UpscalerDX12_RayReconstructionView();
+			if ( captureViewModel )
 				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_VIEWMODEL );
 			{
 				PIXEVENT( pRenderContext, "Viewmodel opaque lighting" );
 				DrawRenderablesInList( opaqueViewModelList );
 			}
-			if ( pViewModelBounce )
+			if ( captureViewModel )
 			{
-				PIXEVENT( pRenderContext, "Viewmodel bounce" );
+				PIXEVENT( pRenderContext, "Viewmodel material guides" );
 				pRenderContext->SetIntRenderingParameter( INT_RENDERPARM_DX12_PBR_GBUFFER_PASS, DX12_GBUFFER_PASS_END );
-				pViewModelBounce->DrawViewModelBounce();
+				if ( pViewModelBounce ) pViewModelBounce->DrawViewModelBounce();
 			}
 			if ( MotionVectorsDX12_Enabled() && viewRender.m_eStereoEye == STEREO_EYE_MONO && !building_cubemaps.GetBool() )
 			{

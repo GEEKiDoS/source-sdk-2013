@@ -1,0 +1,8 @@
+logical=rr_guides_cs51 stage=cs source=rr_guides_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=RRGuides space=1 register=b0 size=64 layoutHash=0xce6f0f2d97334f57 material
+    member=gSize type=19 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gHasTrace type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthClear type=3 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=gRayX type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=gRayY type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=gRayCenter type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=

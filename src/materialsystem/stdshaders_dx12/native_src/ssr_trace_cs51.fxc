@@ -4,21 +4,30 @@
 // Outputs (trace size): u0 RGBA16F = hit radiance (HDR, no clamp; colour mip from the sample's filtered-importance
 // cone) and confidence, zero for a miss; u1 RGBA32F = the ray for the resolve's reuse: hit -> ( world hit, +pdf ),
 // miss -> ( unit direction, -pdf ), no ray (invalid receiver, direction below the surface) -> 0.
-// No static combos (index 0).
+// STATIC: "RAY_RECONSTRUCTION" "0..1"
 // Inputs: t0 view depth (ssr_depth), t1 scene color mips, t2 normal, t3 specular, t4 stencil, t5 response (K),
 // t6 native scene depth, t7 this frame's AO term (when gSSRAmbient.w); s1 linear clamp.
 // The scene copy precedes the GTAO apply, which later darkens every pixel by its AO; the hit radiance takes the AO
 // of the hit pixel so a reflection shows what the viewer sees there (the receiver's own AO arrives with the apply).
 #define SSR_RESPONSE_REGISTER t5
 #define SSR_SCENE_DEPTH_REGISTER t6
+#if RAY_RECONSTRUCTION
+#define SSR_HAS_ENVIRONMENT 1
+#define SSR_ENVIRONMENT_REGISTER t8
+#define SSR_SPECULAR_REGISTER t9
+#define SSR_DISTANCE_REGISTER t10
+#else
 #define SSR_HAS_ENVIRONMENT 0
+#endif
 #include "ssr_common.hlsli"
 Texture2D<float> gViewDepth : register( t0, space0 );
 Texture2D<float4> gSceneColor : register( t1, space0 );
 Texture2D<float> gAmbient : register( t7, space0 );
 SamplerState gLinearClamp : register( s1, space0 );
 RWTexture2D<float4> gTraceOut : register( u0, space0 );
+#if !RAY_RECONSTRUCTION
 RWTexture2D<float4> gRayOut : register( u1, space0 );
+#endif
 
 #include "ssr_ray.hlsli"
 
@@ -62,13 +71,24 @@ void main( uint3 id : SV_DispatchThreadID )
 {
 	if ( id.x >= uint( gSSRSizes.z ) || id.y >= uint( gSSRSizes.w ) ) return;
 	float4 result = 0.0;
+#if RAY_RECONSTRUCTION
+	// One independent GGX sample per render pixel. Misses leave the forward cubemap intact.
+	float distanceGuide = 65504.0;
+	SSRReceiver r = SSR_LoadReceiver( int2( id.xy ) );
+	uint seed = SSR_Hash( id.x + id.y * uint( gSSRSizes.x ) ^ SSR_Hash( gSSRControl.w ) );
+	float2 random = float2( seed & 0xffffu, seed >> 16 ) * ( 1.0 / 65536.0 );
+#else
 	float4 rayOut = 0.0;
 	SSRReceiver r = SSR_LoadReceiver( SSR_TracePixel( int2( id.xy ) ) );
+	float2 random = SSR_Random2( id.xy );
+#endif
 	float3 R;
 	float pdf;
-	[branch] if ( r.valid && SSR_SampleReflection( r.N, normalize( gSSREye.xyz - r.P ), r.roughness, SSR_Random2( id.xy ), R, pdf ) )
+	[branch] if ( r.valid && SSR_SampleReflection( r.N, normalize( gSSREye.xyz - r.P ), r.roughness, random, R, pdf ) )
 	{
+#if !RAY_RECONSTRUCTION
 		rayOut = float4( R, -pdf ); // a miss unless a hit is accepted below
+#endif
 		float3 origin = r.P + gSSRLimits.y * r.N;
 		float3 start = origin + gSSRTrace.w * R;
 		float3 end = origin + gSSRTrace.x * R;
@@ -149,8 +169,12 @@ void main( uint3 id : SV_DispatchThreadID )
 						float2 hitContinuous = lerp( ray.pixel0, ray.pixel1, hitU );
 						float2 receiverContinuous = float2( r.localPixel ) + 0.5;
 						float hitDistance = length( hitWorld - r.P );
+#if RAY_RECONSTRUCTION
+						float3 color = gSceneColor.Load( int3( hitPixel, 0 ) ).rgb;
+#else
 						float mip = SSR_SampleMip( hitWorld, hitContinuous, hitDistance, pdf );
 						float3 color = gSceneColor.SampleLevel( gLinearClamp, hitContinuous / gSSRSizes.xy, mip ).rgb;
+#endif
 						[branch] if ( gSSRAmbient.w != 0.0 )
 							color *= saturate( gAmbient.SampleLevel( gLinearClamp, hitContinuous * gSSRAmbient.xy, 0.0 ) * gSSRAmbient.z );
 						float confidence = SSR_EdgeFade( receiverContinuous ) * SSR_EdgeFade( hitContinuous ) *
@@ -158,14 +182,26 @@ void main( uint3 id : SV_DispatchThreadID )
 							( 1.0 - saturate( hitSeparation / gSSRTrace.y ) );
 						if ( confidence > 0.0 )
 						{
+#if RAY_RECONSTRUCTION
+							distanceGuide = hitDistance;
+							float end = r.D - gSSRForward.w;
+							float occlusion = hitDistance < end ? 1.0 - smoothstep( 0.9 * end, end, hitDistance ) : 0.0;
+							result = float4( confidence * ( color * r.K - r.E - occlusion * r.S ), confidence );
+#else
 							result = float4( color, confidence );
 							rayOut = float4( hitWorld, pdf );
+#endif
 						}
 					}
 				}
 			}
 		}
 	}
+#if RAY_RECONSTRUCTION
+	float3 rgb = gSSRLimits.w != 0.0 ? ( r.valid ? float3( 1.0 - result.a, result.a, 0 ) : 0 ) : result.rgb;
+	gTraceOut[id.xy] = float4( rgb, distanceGuide );
+#else
 	gTraceOut[id.xy] = result;
 	gRayOut[id.xy] = rayOut;
+#endif
 }

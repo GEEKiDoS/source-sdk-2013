@@ -11,6 +11,14 @@ float LoadDepth0( int2 p )
 	return gDepthMips.Load( int3( p, 0 ) );
 }
 
+// PCG RXS-M-XS. RR must not see the same 64x64 dithering pattern tiled across the image.
+uint GTAO_Pcg( uint v )
+{
+	uint state = v * 747796405u + 2891336453u;
+	uint word = ( ( state >> ( ( state >> 28u ) + 4u ) ) ^ state ) * 277803737u;
+	return ( word >> 22u ) ^ word;
+}
+
 [numthreads( 8, 8, 1 )]
 void main( uint3 dispatchID : SV_DispatchThreadID )
 {
@@ -48,7 +56,13 @@ void main( uint3 dispatchID : SV_DispatchThreadID )
 	const float resolutionScale = max( gDepthScale.x, gDepthScale.y );
 	// Measure the small-footprint fade on the same half-resolution grid at all qualities.
 	float visibility = saturate( ( 10.0 - 0.5 * resolutionScale * screenRadius ) / 100.0 ) * 0.5;
-	float2 noise = SpatioTemporalNoise( pix, gNoiseIndex );
+	float2 noise;
+	if ( gNoiseIndex >= 64 )
+	{
+		uint seed = GTAO_Pcg( ( pix.x + pix.y * uint( gViewportSize.x ) ) ^ GTAO_Pcg( uint( gNoiseIndex ) ) );
+		noise = float2( seed & 0xffffu, seed >> 16 ) * ( 1.0 / 65536.0 );
+	}
+	else noise = SpatioTemporalNoise( pix, gNoiseIndex );
 	// Preserve Medium's minimum of 1.3 AO texels, i.e. 2.6 scene pixels,
 	// without changing the projected world-space radius or the step distribution.
 	const float minS = 2.6 / max( resolutionScale * screenRadius, 1e-4 );

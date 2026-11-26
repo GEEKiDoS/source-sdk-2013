@@ -24,6 +24,8 @@ bool UpscalerDX12_Enabled();
 void UpscalerDX12_BeginFrame( IMatRenderContext *pRenderContext, bool bMainTemporalViewEligible, const CViewSetup &view );
 // The existing BeginFrame eligibility latch, before Dispatch consumes it (includes the chained NR layers).
 bool UpscalerDX12_RequiresMotionVectors();
+// The eligible view requested RR (backend capability/creation can still select SR).
+bool UpscalerDX12_RayReconstructionView();
 // Called right after the viewmodels of the latched main view: submits camera parameters, the render size and the
 // dispatch. Returns true when the view was rendered below its unscaled size and the dispatch was submitted: the backend
 // then leaves a full-size scene (provider output, or a bilinear stretch when it rejects the frame), so everything after

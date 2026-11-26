@@ -1,0 +1,47 @@
+// NGX reads formatted textures, not Source's sRGB base colour, octahedral normal or packed stencil.
+#include "pbr_oct.hlsli"
+#include "pbr_envbrdf.hlsli"
+#include "viewmodel_depth.hlsli"
+cbuffer RRGuides : register( b0, space1 )
+{
+	uint2 gSize;
+	uint gHasTrace;
+	float gDepthClear;
+	float4 gRayX, gRayY, gRayCenter; // world direction toward the eye: center + pixel.x * X + pixel.y * Y
+};
+Texture2D<float4> gAlbedo : register( t0 ); // sRGB SRV decodes RGB to linear; alpha encodes the diffuse workflow split
+Texture2D<float2> gNormal : register( t1 );
+Texture2D<float4> gSpec : register( t2 );
+Texture2D<uint2> gStencil : register( t3 );
+Texture2D<float> gDepth : register( t4 );
+Texture2D<float4> gRawTrace : register( t5 ); // signed scene correction in rgb, primary-to-hit distance in alpha
+RWTexture2D<float4> gDiffuseOut : register( u0 );
+RWTexture2D<float4> gSpecularOut : register( u1 );
+RWTexture2D<float4> gNormalRoughnessOut : register( u2 );
+RWTexture2D<float> gHitDistanceOut : register( u3 );
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( any( id.xy >= gSize ) ) return;
+	int3 p = int3( id.xy, 0 );
+	float depth = gDepth.Load( p );
+	float3 diffuse = 0.5, specular = 0.0;
+	float4 normalRoughness = 0.0;
+	float hitDistance = 65504.0; // sky, cubemap misses and surfaces without a reflected ray
+	float4 base = gAlbedo.Load( p );
+	if ( depth != gDepthClear && ( gStencil.Load( p ).y & 0x80u ) && base.a > 0.0 )
+	{
+		float4 spec = gSpec.Load( p );
+		float3 N = PBR_UnpackNormal( gNormal.Load( p ) );
+		float3 V = normalize( gRayCenter.xyz + id.x * gRayX.xyz + id.y * gRayY.xyz );
+		diffuse = base.rgb * ( ( base.a * 255.0 - 1.0 ) / 254.0 ) * ( 1.0 - max( max( spec.r, spec.g ), spec.b ) );
+		specular = saturate( PBR_EnvBRDF( spec.rgb, spec.a, saturate( dot( N, V ) ) ) );
+		normalRoughness = float4( N, spec.a );
+		if ( gHasTrace && depth >= DX12_VIEWMODEL_DEPTH_MAX ) hitDistance = gRawTrace.Load( p ).a;
+	}
+	gDiffuseOut[id.xy] = float4( diffuse, 1.0 );
+	gSpecularOut[id.xy] = float4( specular, 1.0 );
+	gNormalRoughnessOut[id.xy] = normalRoughness;
+	gHitDistanceOut[id.xy] = hitDistance;
+}

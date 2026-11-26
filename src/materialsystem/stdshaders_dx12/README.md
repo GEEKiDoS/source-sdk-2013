@@ -1644,7 +1644,7 @@ unchanged, and a zero cutoff disables the approximation.
 
 The opaque main view (`VIEW_MAIN`, mono, not cubemap capture; `INT_RENDERPARM_DX12_PBR_GBUFFER_PASS` BEGIN/END around
 `DrawWorld` + `DrawOpaqueRenderables`) keeps two scene-sized, scene-multisampled targets next to scene color.
-When bounce is enabled the opaque viewmodel colour pass reuses the base targets and albedo. The 3D sky,
+When bounce or DLSS Ray Reconstruction is enabled the opaque viewmodel colour pass reuses the base targets and albedo. The 3D sky,
 water, monitors and cubemap captures do not participate. PBR pixel shaders (`PBR_Output`) write the targets. Consumers
 read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, and validity through
 `DX12MaterialSceneStencil()`:
@@ -1653,7 +1653,7 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
 |---|---|---|
 | normals | `R16G16_UNORM` | world-space shading normal, `PBR_PackNormal( N )` (octahedral coordinates in [0,1], `pbr_oct.hlsli`) |
 | specular | `R8G8B8A8_UNORM` | `F0.rgb`, roughness in alpha |
-| albedo (bounce brackets only) | `R8G8B8A8_UNORM_SRGB` | tinted base RGB, alpha 1 for a fresh material writer; RT7 is independent of the SSR payload |
+| albedo (bounce / RR brackets only) | `R8G8B8A8_UNORM_SRGB` | tinted base RGB; zero alpha is invalid, 1..255 encodes the nonmetal diffuse share (255 for specular workflow). Bounce uses only RGB and the nonzero validity test. |
 | stencil | scene `D24S8`, bit `0x80` | set on a PBR depth write, cleared by any other depth-writing draw in the pass |
 | environment (SSR brackets only) | `R16G16B16A16_FLOAT` (`R11G11B10_FLOAT` at `r_color_precision 1`) | `E.rgb`, the cubemap term in final scene units; FP16 alpha `D`, the specular-luminance-weighted light distance of the direct specular (sun 60000, 0 when it is zero) |
 | response (SSR brackets only) | as environment | `K.rgb`, what a sampled scene radiance is multiplied by to replace `E`, zero unless a fresh eligible writer; FP16 alpha 1 for such a writer |
@@ -1667,6 +1667,39 @@ read sample 0 through `DX12MaterialPbrNormals()` / `DX12MaterialPbrSpecular()`, 
   it. `pbr_gbuffer_debug_cs51` is the reference consumer.
 - The pass does not clear the colour targets, and `specular.a == 0` is not a validity test.
 - Translucent draws are outside the pass. Outside the main view the targets are not attached.
+
+### DLSS Ray Reconstruction prototype
+
+`r_upscaler 7` replaces DLSS SR with NGX Ray Reconstruction (DLAA at `r_upscaler_scale 1`).
+Compare with `r_upscaler 2` at the **same** render scale. Enable `r_ssr 1`. This is one reconstruction of
+the entire noisy HDR frame, not a denoiser applied to an isolated SSR texture. No new ray-tracing backend is involved.
+
+| DLSS-RR input (Integration Guide §§3.4–3.8) | DX12 source |
+|---|---|
+| Noisy HDR colour / reconstructed output | Scene FP16 before velocity blur, tone mapping, bloom, grades and HUD → full-output-size FP16 UAV. |
+| Linear diffuse / specular reflectance | `rr_guides_cs51` reads RT7 through its sRGB SRV, applies its diffuse share and `(1 − max(F0))`; the specular guide is the material's split-sum `PBR_EnvBRDF(F0, roughness, N·V)`, not lit radiance. Both NGX inputs are linear RGBA16F. |
+| Shading normal / roughness | RT1 octahedral world normal decoded to signed unit XYZ; RT2 material roughness in W of the same RGBA16F. Packed-roughness creation mode. Sky and missing opaque material data get diffuse 0.5 and zero specular, normal and roughness; stencil and RT7 validity reject stale writers. |
+| Depth / dense motion / jitter | Hardware D24 → typed R32F, and resolved camera/object motion XY → RG16F, at render size. NGX receives previous-minus-current in render pixels and the existing 32-phase DLSS pixel jitter/reset. |
+| Secondary motion | Rather than fabricated reflection motion vectors, use `length(worldHit − primarySurface)` from the raw SSR trace, in Source units, plus unjittered row-vector world-to-view and view-to-clip matrices. Miss/sky is 65504. The G-buffer **light** distance D is not this guide. |
+
+The raw SSR trace uses one independently hashed GGX ray per **render pixel**, mip-zero hit radiance, the
+ordinary confidence/cubemap fallback and direct-specular occlusion. It writes the signed RGB correction and
+hit distance directly. Neither the spatial reuse/upsample nor SSR history runs. `r_ssr_quality` still sets
+march/refinement counts; reduced trace grids are ignored. For a matched ray budget use `r_ssr_quality 2;
+r_ssr_resolution 1` in both modes. The forward translucent/viewmodel reflection path is not the opaque stochastic trace.
+
+`r_upscaler_rr_raw_gtao 1` additionally applies the full-render-size raw GTAO horizon term, independently sampled
+per pixel/frame, with no spatial filter, upsample or temporal accumulation. Default `0` keeps ordinary GTAO.
+Use `r_upscaler_status` to distinguish an active RR feature from SR fallback. For noise comparisons set
+`mat_grain_scale_override 0` (L4D2's post grain is **after** reconstruction) and turn off camera sensor noise.
+
+This is a screen-space approximation: missing off-screen/occluded reflected geometry falls back to the
+cubemap. Legacy and blended materials have no complete material guides; the first-person model uses its
+own projection/depth range. No reflection object velocities, transparency overlay/pre-transparency colour,
+SSS, DoF, responsivity mask or separate alpha guide is supplied. L4D2 views with pre-viewmodel DoF and
+non-origin viewports select SR rather than passing unsupported input to RR. No dynamic-resolution history,
+sharpness or auto-exposure feature is requested; a fixed-size change recreates the feature. Missing RR
+support or creation failure selects SR **before** switching off engine SSR denoising.
 
 ### GTAO temporal accumulation
 

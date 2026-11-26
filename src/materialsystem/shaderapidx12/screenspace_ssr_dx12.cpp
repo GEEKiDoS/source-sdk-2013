@@ -14,6 +14,8 @@
 //               validated by DX12_SSRDepth[current ^ 1]; motion vectors when resolved this frame) and writes the
 //               next history plus the signed correction into DX12_SSRScene mip 0.
 //            6. BlitTexture adds that delta RGB onto the live scene (alpha preserved).
+//          DLSS-RR instead traces one independent ray per render pixel; the trace writes the signed correction
+//          immediately and its world-space hit distance into alpha. There is no ray reuse or temporal composite.
 //          Any failure stops before step 6, so the forward scene keeps its cubemap reflections, and drops the
 //          history. Scratch targets are ordinary backend texture records promoted for UAV/mips at (re)creation and
 //          fence-retained by DeleteTexture.
@@ -167,29 +169,31 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	const DX12ScreenSpaceViewConstants &view = m_ScreenSpace.constants;
 	const SSRProfileDX12 &profile = kSSRProfiles[MIN( m_ScreenSpace.ssr.quality, 2u )];
 	const int nWidth = sceneRect.width, nHeight = sceneRect.height;
+	const bool raw = RayReconstructionView() && sceneRect.x == 0 && sceneRect.y == 0 &&
+		m_Upscaler.Feature().renderWidth == uint32( nWidth ) && m_Upscaler.Feature().renderHeight == uint32( nHeight );
 	const int nProfileWidth = profile.halfResolution ? ( nWidth + 1 ) / 2 : nWidth;
 	const int nProfileHeight = profile.halfResolution ? ( nHeight + 1 ) / 2 : nHeight;
 	const float flResolutionScale = clamp( m_ScreenSpace.ssr.resolutionScale, 0.25f, 1.f );
-	const int nTraceWidth = MAX( 1, static_cast<int>( ceilf( nProfileWidth * flResolutionScale ) ) );
-	const int nTraceHeight = MAX( 1, static_cast<int>( ceilf( nProfileHeight * flResolutionScale ) ) );
+	const int nTraceWidth = raw ? nWidth : MAX( 1, static_cast<int>( ceilf( nProfileWidth * flResolutionScale ) ) );
+	const int nTraceHeight = raw ? nHeight : MAX( 1, static_cast<int>( ceilf( nProfileHeight * flResolutionScale ) ) );
 	const int nResolveWidth = MAX( 1, static_cast<int>( ceilf( nWidth * flResolutionScale ) ) );
 	const int nResolveHeight = MAX( 1, static_cast<int>( ceilf( nHeight * flResolutionScale ) ) );
-	const int nCurrent = m_SSR.current, nPrevious = m_SSR.current ^ 1;
+	const int nCurrent = raw ? 0 : m_SSR.current, nPrevious = nCurrent ^ 1;
 	// A recreated previous depth/history/resolve target carries no history.
 	const ShaderAPITextureHandle_t hPrevDepth = m_SSR.depth[nPrevious].handle, hPrevHistory = m_SSR.history[nPrevious].handle,
 		hPrevAux = m_SSR.historyAux[nPrevious].handle;
 	const ShaderAPITextureHandle_t hPrevTrace = m_SSR.trace.handle, hPrevResolve = m_SSR.resolve.handle;
 	if ( !EnsureSSRTexture( m_SSR.scene, nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, true, "DX12_SSRScene" ) ||
 	     !EnsureSSRTexture( m_SSR.depth[0], nWidth, nHeight, IMAGE_FORMAT_R32F, false, "DX12_SSRDepth0" ) ||
-	     !EnsureSSRTexture( m_SSR.depth[1], nWidth, nHeight, IMAGE_FORMAT_R32F, false, "DX12_SSRDepth1" ) ||
+	     ( !raw && !EnsureSSRTexture( m_SSR.depth[1], nWidth, nHeight, IMAGE_FORMAT_R32F, false, "DX12_SSRDepth1" ) ) ||
 	     !EnsureSSRTexture( m_SSR.trace, nTraceWidth, nTraceHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRTrace" ) ||
-	     !EnsureSSRTexture( m_SSR.ray, nTraceWidth, nTraceHeight, IMAGE_FORMAT_RGBA32323232F, false, "DX12_SSRRay" ) ||
+	     ( !raw && ( !EnsureSSRTexture( m_SSR.ray, nTraceWidth, nTraceHeight, IMAGE_FORMAT_RGBA32323232F, false, "DX12_SSRRay" ) ||
 	     !EnsureSSRTexture( m_SSR.resolve, nResolveWidth, nResolveHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolve" ) ||
 	     !EnsureSSRTexture( m_SSR.resolveAux, nResolveWidth, nResolveHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRResolveAux" ) ||
 	     !EnsureSSRTexture( m_SSR.history[0], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistory0" ) ||
 	     !EnsureSSRTexture( m_SSR.history[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistory1" ) ||
 	     !EnsureSSRTexture( m_SSR.historyAux[0], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux0" ) ||
-	     !EnsureSSRTexture( m_SSR.historyAux[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux1" ) )
+	     !EnsureSSRTexture( m_SSR.historyAux[1], nWidth, nHeight, IMAGE_FORMAT_RGBA16161616F, false, "DX12_SSRHistoryAux1" ) ) ) )
 	{
 		if ( !m_SSR.warned )
 		{
@@ -198,10 +202,10 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 		}
 		return false;
 	}
-	TextureRecord *pScene = FindTexture( m_SSR.scene.handle ), *pDelta = pScene;
+	TextureRecord *pScene = FindTexture( m_SSR.scene.handle );
 	if ( !pScene || !EnsureTextureResident( *pScene ) )
 		return false;
-	const bool bHistory = m_SSR.prevFrame != ~0ull && m_SSR.prevFrame + 1 == m_nFrameCounter &&
+	const bool bHistory = !raw && m_SSR.prevFrame != ~0ull && m_SSR.prevFrame + 1 == m_nFrameCounter &&
 		m_SSR.prevRect.x == sceneRect.x && m_SSR.prevRect.y == sceneRect.y && m_SSR.prevRect.width == nWidth && m_SSR.prevRect.height == nHeight &&
 		hPrevDepth == m_SSR.depth[nPrevious].handle && hPrevHistory == m_SSR.history[nPrevious].handle &&
 		hPrevAux == m_SSR.historyAux[nPrevious].handle && hPrevTrace == m_SSR.trace.handle && hPrevResolve == m_SSR.resolve.handle;
@@ -285,6 +289,7 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	}
 
 	// 2. Mean-colour chain: each level reads exactly one mip and writes the next (max( 1, base >> level )).
+	if ( !raw || m_ScreenSpace.ssr.forwardSteps )
 	{
 		SSRGpuEventDX12 event( m_pDevice, "SSR color mips" );
 		for ( int nLevel = 1; nLevel < m_SSR.scene.mipLevels; ++nLevel )
@@ -306,10 +311,11 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 
 	// 3. Stochastic trace at the profile size.
 	{
-		SSRGpuEventDX12 event( m_pDevice, "SSR trace" );
+		SSRGpuEventDX12 event( m_pDevice, raw ? "SSR raw for DLSS-RR" : "SSR trace" );
 		ShaderAPIDX12ComputeDispatch_t trace = SSRDispatch( "ssr_trace_cs51", constants, nTraceWidth, nTraceHeight );
+		trace.m_nStaticIndex = raw ? 1 : 0;
 		trace.m_Srv[0] = SSRTexture( m_SSR.depth[nCurrent].handle, 0, 1 );
-		trace.m_Srv[1] = SSRTexture( m_SSR.scene.handle, 0, m_SSR.scene.mipLevels );
+		trace.m_Srv[1] = SSRTexture( m_SSR.scene.handle, 0, raw ? 1 : m_SSR.scene.mipLevels );
 		trace.m_Srv[2] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_NORMALS );
 		trace.m_Srv[3] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SPECULAR );
 		trace.m_Srv[4] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_SCENE_STENCIL );
@@ -318,12 +324,20 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 		// Without an AO term the shader never reads t7; any SRV keeps the table complete.
 		trace.m_Srv[7] = SSRTexture( bAmbient ? m_SSR.aoTerm : m_SSR.depth[nCurrent].handle, 0, 1 );
 		trace.m_Uav[0] = SSRTexture( m_SSR.trace.handle, 0, 1 );
-		trace.m_Uav[1] = SSRTexture( m_SSR.ray.handle, 0, 1 );
+		if ( raw )
+		{
+			trace.m_Srv[8] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_ENVIRONMENT );
+			trace.m_Srv[9] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_SPECULAR );
+			trace.m_Srv[10] = SSRSpecial( SHADERAPIDX12_COMPUTE_RESOURCE_PBR_SSR_DISTANCE );
+		}
+		else
+			trace.m_Uav[1] = SSRTexture( m_SSR.ray.handle, 0, 1 );
 		if ( !Dispatch( trace ) )
 			return false;
 	}
 
 	// Reduced-resolution ray reuse at r_ssr_resolution < 1; composite reconstructs each full-resolution receiver.
+	if ( !raw )
 	{
 		SSRGpuEventDX12 event( m_pDevice, "SSR resolve" );
 		ShaderAPIDX12ComputeDispatch_t resolve = SSRDispatch( "ssr_resolve_cs51", constants, nResolveWidth, nResolveHeight );
@@ -344,6 +358,7 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 	}
 
 	// 5. Temporal accumulation into the signed delta and the next history, 6. additive blit onto the live scene.
+	if ( !raw )
 	{
 		SSRGpuEventDX12 event( m_pDevice, "SSR composite" );
 		ShaderAPIDX12ComputeDispatch_t composite = SSRDispatch( "ssr_composite_cs51", constants, nWidth, nHeight );
@@ -368,13 +383,21 @@ bool CShaderAPIDX12::RunSSRPasses( const Rect_t &sceneRect )
 		composite.m_Uav[2] = SSRTexture( m_SSR.historyAux[nCurrent].handle, 0, 1 );
 		if ( !Dispatch( composite ) )
 			return false;
+	}
 
-		D3D12_RESOURCE_STATES sceneState = m_pDevice->SceneColorState();
-		const Rect_t localRect{ 0, 0, nWidth, nHeight };
-		if ( !BlitTexture( pDelta->resource.Get(), pDelta->subresourceStates[0], false, pDelta->format, m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, localRect, sceneRect, false, false, nullptr, BlitEncodeDX12::None, constants.limits[3] == 0.f ) )
-			return false;
-		pDelta->sampledStateValid = false;
-		++m_nTextureStateEpoch;
+	TextureRecord *pDelta = raw ? FindTexture( m_SSR.trace.handle ) : pScene;
+	D3D12_RESOURCE_STATES sceneState = m_pDevice->SceneColorState();
+	const Rect_t localRect{ 0, 0, nWidth, nHeight };
+	if ( !BlitTexture( pDelta->resource.Get(), pDelta->subresourceStates[0], false, pDelta->format, m_pDevice->SceneColor(), sceneState, true, CShaderDeviceDX12::kSceneImageFormat, localRect, sceneRect, false, false, nullptr, BlitEncodeDX12::None, constants.limits[3] == 0.f ) )
+		return false;
+	pDelta->sampledStateValid = false;
+	++m_nTextureStateEpoch;
+	if ( raw )
+	{
+		m_SSR.rawTraceFrame = m_nFrameCounter;
+		m_SSR.prevFrame = ~0ull; // returning to engine SSR must not sample pre-RR histories
+		m_SSR.current = nPrevious;
+		return true;
 	}
 
 	memcpy( m_SSR.prevWorldToClip, view.worldToClip, sizeof( m_SSR.prevWorldToClip ) );
@@ -406,6 +429,7 @@ void CShaderAPIDX12::SetAmbientOcclusionTerm( ShaderAPITextureHandle_t hTerm, in
 //-----------------------------------------------------------------------------
 void CShaderAPIDX12::ReplayDispatchSSR()
 {
+	m_SSR.rawTraceFrame = ~0ull;
 	if ( !m_pDevice || !m_pDevice->IsRecordingOwner() || !m_pDevice->CommandList() || !m_ScreenSpace.active || !m_ScreenSpace.ssrCapture ||
 	     !m_pGBufferEnvironment || !m_pDevice->SceneColor() || !m_pDevice->SceneDepth() )
 		return;
@@ -468,6 +492,7 @@ void CShaderAPIDX12::ReleaseSSRResources()
 	}
 	m_SSR.current = 0;
 	m_SSR.prevFrame = ~0ull;
+	m_SSR.rawTraceFrame = ~0ull;
 	m_SSR.aoTerm = 0;
 	m_SSR.aoFrame = ~0ull;
 	m_SSR.warned = m_SSR.msaaWarned = false;

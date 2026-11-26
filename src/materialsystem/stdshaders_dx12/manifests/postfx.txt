@@ -103,6 +103,8 @@ ssr_resolve_cs51.fxc cs ssr_resolve_cs51 native -
 # noparity ssr_resolve_cs51 - native-only
 ssr_composite_cs51.fxc cs ssr_composite_cs51 native -
 # noparity ssr_composite_cs51 - native-only
+rr_guides_cs51.fxc cs rr_guides_cs51 native -
+# noparity rr_guides_cs51 - native-only
 flashlight_bounce_cs51.fxc cs flashlight_bounce_cs51 native -
 # noparity flashlight_bounce_cs51 - native-only
 flashlight_bounce_vs51.fxc vs flashlight_bounce_vs51 native -

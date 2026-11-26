@@ -268,16 +268,18 @@ void CShaderAPIDX12::SetGBufferPass( int nMode )
 	}
 	FlushBufferedPrimitives();
 	const bool viewModel = nMode == DX12_GBUFFER_PASS_VIEWMODEL;
-	if ( viewModel && ( !m_pGBufferAlbedo || m_nBounceFrame != m_nFrameCounter ) )
+	const bool rr = RayReconstructionView();
+	if ( viewModel && ( !m_pGBufferAlbedo || ( !rr && m_nBounceFrame != m_nFrameCounter ) ) )
 		return;
 	if ( !EnsureGBufferResources() )
 		return;
 	// A failed payload allocation keeps the pass at three targets; DrawBuffers checks the resource, and the SSR
 	// dispatch skips a bracket whose payload never existed.
-	SetGBufferAlbedoEnabled( nMode != DX12_GBUFFER_PASS_BEGIN );
+	SetGBufferAlbedoEnabled( rr || nMode != DX12_GBUFFER_PASS_BEGIN );
 	const bool bSsrPayload = m_ScreenSpace.ssrCapture && EnsureGBufferSsrResources();
 	TransitionGBuffer( D3D12_RESOURCE_STATE_RENDER_TARGET );
-	if ( m_pGBufferAlbedo )
+	// Preserve the opaque albedo behind the viewmodel for the final full-frame RR guide.
+	if ( m_pGBufferAlbedo && !( rr && viewModel ) )
 	{
 		static constexpr float clear[4] = {};
 		m_pDevice->CommandList()->ClearRenderTargetView( m_GBufferRtv[kGBufferAlbedoTarget], clear, 0, nullptr );

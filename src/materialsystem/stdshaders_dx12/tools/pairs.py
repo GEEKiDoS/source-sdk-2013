@@ -162,6 +162,7 @@ NATIVE_ONLY = [
     native_only('postfx', 'ssr_trace_cs51.fxc', 'cs', 'ssr_trace_cs51'),
     native_only('postfx', 'ssr_resolve_cs51.fxc', 'cs', 'ssr_resolve_cs51'),
     native_only('postfx', 'ssr_composite_cs51.fxc', 'cs', 'ssr_composite_cs51'),
+    native_only('postfx', 'rr_guides_cs51.fxc', 'cs', 'rr_guides_cs51'),
     native_only('postfx', 'flashlight_bounce_cs51.fxc', 'cs', 'flashlight_bounce_cs51'),
     native_only('postfx', 'flashlight_bounce_vs51.fxc', 'vs', 'flashlight_bounce_vs51'),
     native_only('postfx', 'flashlight_bounce_ps51.fxc', 'ps', 'flashlight_bounce_ps51'),

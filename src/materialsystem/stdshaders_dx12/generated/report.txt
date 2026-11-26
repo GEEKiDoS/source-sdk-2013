@@ -4601,7 +4601,7 @@ logical=ssr_reduce_color_cs51 stage=cs source=ssr_reduce_color_cs51.fxc legacy=-
     member=gSSRTemporal type=3 class=1 offset=320 size=16 elements=0 arrayStride=0 legacy=
     member=gSSRResolve type=19 class=1 offset=336 size=16 elements=0 arrayStride=0 legacy=
     member=gSSRAmbient type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=
-logical=ssr_trace_cs51 stage=cs source=ssr_trace_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+logical=ssr_trace_cs51 stage=cs source=ssr_trace_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
   cbuffer=DX12SSR space=1 register=b0 size=368 layoutHash=0xcd43a658cf1e3143 material
     member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=
@@ -4649,6 +4649,14 @@ logical=ssr_composite_cs51 stage=cs source=ssr_composite_cs51.fxc legacy=- legac
     member=gSSRTemporal type=3 class=1 offset=320 size=16 elements=0 arrayStride=0 legacy=
     member=gSSRResolve type=19 class=1 offset=336 size=16 elements=0 arrayStride=0 legacy=
     member=gSSRAmbient type=3 class=1 offset=352 size=16 elements=0 arrayStride=0 legacy=
+logical=rr_guides_cs51 stage=cs source=rr_guides_cs51.fxc legacy=- legacyName=- profile=native static=1 dynamic=1 present=1
+  cbuffer=RRGuides space=1 register=b0 size=64 layoutHash=0xce6f0f2d97334f57 material
+    member=gSize type=19 class=1 offset=0 size=8 elements=0 arrayStride=0 legacy=
+    member=gHasTrace type=19 class=0 offset=8 size=4 elements=0 arrayStride=0 legacy=
+    member=gDepthClear type=3 class=0 offset=12 size=4 elements=0 arrayStride=0 legacy=
+    member=gRayX type=3 class=1 offset=16 size=16 elements=0 arrayStride=0 legacy=
+    member=gRayY type=3 class=1 offset=32 size=16 elements=0 arrayStride=0 legacy=
+    member=gRayCenter type=3 class=1 offset=48 size=16 elements=0 arrayStride=0 legacy=
 logical=flashlight_bounce_cs51 stage=cs source=flashlight_bounce_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
   cbuffer=BounceMeasure space=1 register=b0 size=288 layoutHash=0x6255d147e12ebe19 material
     member=clipToWorld type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
