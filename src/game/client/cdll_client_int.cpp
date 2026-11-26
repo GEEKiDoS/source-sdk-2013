@@ -1782,6 +1782,65 @@ void CHLClient::View_Fade( ScreenFade_t *pSF )
 		vieweffects->Fade( *pSF );
 }
 
+//-----------------------------------------------------------------------------
+// cfg/<map>.cfg is scoped to its map: every ConVar the file sets is recorded before it runs and restored when the level
+// shuts down (another map loads or the client disconnects), so its settings neither carry over to other maps nor get
+// saved to config.cfg. Only the file's own lines count (not files it execs); a change the player makes to one of those
+// ConVars during the map is reverted with it.
+//-----------------------------------------------------------------------------
+struct MapCfgVar_t
+{
+	CUtlString name, value;
+};
+static CUtlVector< MapCfgVar_t > s_MapCfgVars;
+
+static void RestoreMapCfgVars()
+{
+	FOR_EACH_VEC( s_MapCfgVars, i )
+	{
+		if ( ConVar *var = g_pCVar->FindVar( s_MapCfgVars[i].name.Get() ) )
+			var->SetValue( s_MapCfgVars[i].value.Get() );
+	}
+	s_MapCfgVars.Purge();
+}
+
+static void RecordMapCfgVars( const char *path )
+{
+	CUtlBuffer file( 0, 0, CUtlBuffer::TEXT_BUFFER );
+	if ( !g_pFullFileSystem->ReadFile( path, "MOD", file ) )
+		return;
+	file.PutChar( 0 );
+	char line[1024];
+	for ( const char *p = static_cast< const char * >( file.Base() ); *p; )
+	{
+		// One command per line or ';' segment, ignoring // comments and quotes around the name.
+		int n = 0;
+		bool quoted = false;
+		while ( *p && *p != '\n' && ( *p != ';' || quoted ) )
+		{
+			if ( *p == '"' ) quoted = !quoted;
+			if ( !quoted && p[0] == '/' && p[1] == '/' ) { while ( *p && *p != '\n' ) ++p; break; }
+			if ( n < (int)sizeof( line ) - 1 ) line[n++] = *p;
+			++p;
+		}
+		line[n] = 0;
+		if ( *p ) ++p;
+		CCommand command;
+		if ( !command.Tokenize( line ) || command.ArgC() < 1 )
+			continue;
+		ConVar *var = g_pCVar->FindVar( command.Arg( 0 ) );
+		if ( !var )
+			continue;
+		bool recorded = false;
+		FOR_EACH_VEC( s_MapCfgVars, i )
+			recorded = recorded || !V_stricmp( s_MapCfgVars[i].name.Get(), var->GetName() );
+		if ( recorded )
+			continue;
+		MapCfgVar_t &entry = s_MapCfgVars[s_MapCfgVars.AddToTail()];
+		entry.name = var->GetName();
+		entry.value = var->GetString();
+	}
+}
 
 //-----------------------------------------------------------------------------
 // Purpose: Per level init
@@ -1868,9 +1927,13 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 
 	gHUD.LevelInit();
 
-	// Per-map client settings: cfg/<map name>.cfg, when the mod provides one.
+	// Per-map client settings: cfg/<map name>.cfg, when the mod provides one, scoped to this map (RecordMapCfgVars).
+	RestoreMapCfgVars();
 	if ( pMapName && *pMapName && g_pFullFileSystem->FileExists( CFmtStr( "cfg/%s.cfg", pMapName ), "MOD" ) )
+	{
+		RecordMapCfgVars( CFmtStr( "cfg/%s.cfg", pMapName ) );
 		engine->ClientCmd_Unrestricted( CFmtStr( "exec %s.cfg\n", pMapName ) );
+	}
 
 #if defined( REPLAY_ENABLED )
 	// Initialize replay ragdoll recorder
@@ -1953,6 +2016,8 @@ void CHLClient::LevelShutdown( void )
 		return;
 
 	g_bLevelInitialized = false;
+	// The map's cfg/<map>.cfg settings end with the map (next map or disconnect).
+	RestoreMapCfgVars();
 #ifdef _WIN32
 	FinishDemoFrameTrace();
 #endif

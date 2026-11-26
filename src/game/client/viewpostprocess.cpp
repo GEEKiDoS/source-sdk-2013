@@ -113,20 +113,11 @@ static ConVar mat_postfx_meter_stride( "mat_postfx_meter_stride", "4", FCVAR_ARC
 	"DX12 exposure sampling interval in output pixels (1 = full resolution; PostFX Quality Normal uses 4, Extra 1)", true, 1.f, true, 4.f );
 ConVar mat_debug_autoexposure("mat_debug_autoexposure","0", FCVAR_CHEAT);
 #if defined( L4D2 )
-static ConVar mat_autoexposure_max( "mat_autoexposure_max", "8", 
-#if defined( L4D2 )
-	0x0000000A
-#else
-	FCVAR_DEVELOPMENTONLY
-#endif
- );
-static ConVar mat_autoexposure_min( "mat_autoexposure_min", "0.1", 
-#if defined( L4D2 )
-	0x0000000A
-#else
-	FCVAR_DEVELOPMENTONLY
-#endif
- );
+// Retail L4D2 hides these (development only). They are ordinary client settings here so a map's cfg/<map>.cfg can
+// set its auto-exposure range (restored when the map ends, see cdll_client_int.cpp); an env_tonemap_controller's
+// custom range still takes precedence.
+static ConVar mat_autoexposure_max( "mat_autoexposure_max", "8", FCVAR_NONE, "Highest auto-exposure scale (brightest the view can get in dark scenes)" );
+static ConVar mat_autoexposure_min( "mat_autoexposure_min", "0.1", FCVAR_NONE, "Lowest auto-exposure scale (darkest the view can get in bright scenes)" );
 static ConVar mat_show_histogram( "mat_show_histogram", "0", 
 #if defined( L4D2 )
 	0x0000000A
