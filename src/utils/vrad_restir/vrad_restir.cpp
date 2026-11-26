@@ -30,6 +30,12 @@
 #include <stdio.h>
 #include <windows.h>
 
+// bsplib's per-mode arrays, which bsplib.h exposes only through the selected-mode pointers.
+extern int numworldlightsLDR, numworldlightsHDR;
+extern dworldlight_t dworldlightsLDR[MAX_MAP_WORLDLIGHTS], dworldlightsHDR[MAX_MAP_WORLDLIGHTS];
+extern CUtlVector<dleafambientindex_t> g_LeafAmbientIndexLDR, g_LeafAmbientIndexHDR;
+extern CUtlVector<dleafambientlighting_t> g_LeafAmbientLightingLDR, g_LeafAmbientLightingHDR;
+
 ReSTIROptions g_ReSTIROptions;
 static CUtlString s_ShadowMapDiagnosticsPath;
 dface_t *g_pFaces = NULL;
@@ -840,10 +846,22 @@ bool CVRadRestirDLL::LoadSelectedBSP( const ReSTIROptions &options )
 	ParseEntities();
 	phase.done = phase.total = 1;
 	ReSTIRPhaseEnd( phase );
-	// The .light binds to the BSP's own HDR faces and lighting, which the engine must load as they are.
+	// The .light binds to the BSP's own HDR faces and lighting, which the engine must load as they are. A map compiled
+	// without HDR lighting binds to its LDR lumps instead, which the game then loads as the HDR ones (kShadowMapLdrStandIns).
+	if ( options.shadowMaps && ShadowMap_NeedsLdrStandIns( numfaces_hdr, dlightdataHDR.Count(), dlightdataLDR.Count() ) )
+	{
+		numfaces_hdr = numfaces;
+		memcpy( dfaces_hdr, dfaces, numfaces * sizeof( dfaces[0] ) );
+		dlightdataHDR = dlightdataLDR;
+		numworldlightsHDR = numworldlightsLDR;
+		memcpy( dworldlightsHDR, dworldlightsLDR, numworldlightsLDR * sizeof( dworldlightsLDR[0] ) );
+		g_LeafAmbientIndexHDR = g_LeafAmbientIndexLDR;
+		g_LeafAmbientLightingHDR = g_LeafAmbientLightingLDR;
+		Msg( "Shadowmaps: the map has no HDR lighting; its LDR faces, lighting and worldlights stand in for the HDR ones\n" );
+	}
 	if ( options.shadowMaps && ( !numfaces_hdr || !dlightdataHDR.Count() ) )
 	{
-		Warning( "Error: -restir_shadowmaps needs a BSP with HDR faces and HDR lighting; bake it without -restir_shadowmaps first\n" );
+		Warning( "Error: -restir_shadowmaps needs a map compiled with lighting: HDR faces and HDR lighting, or LDR lighting alone\n" );
 		UnloadBSPFile();
 		FreeEntities();
 		return false;

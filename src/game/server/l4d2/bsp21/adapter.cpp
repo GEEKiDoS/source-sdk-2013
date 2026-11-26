@@ -221,6 +221,30 @@ static void LoadLumpFiles()
 		lump.header = header;
 	}
 }
+// kShadowMapLdrStandIns: a map without HDR lighting whose .light was baked against its LDR lumps loads those in the HDR
+// lumps' place. Only the private directory changes; the file, its CRC/MD5 and the public reads keep the original bytes.
+template < class Lump, class Length >
+static void StandInLdrLighting( Lump *lumps, Length length, const char *name )
+{
+	if ( !ShadowMap_NeedsLdrStandIns( length( lumps[LUMP_FACES_HDR] ), length( lumps[LUMP_LIGHTING_HDR] ), length( lumps[LUMP_LIGHTING] ) ) )
+		return;
+	char light[MAX_PATH];
+	if ( !hlight::SidecarPath( name, light, sizeof( light ) ) || !FileSystem()->FileExists( light, "GAME" ) )
+		return;
+	for ( const ShadowMapLdrStandIn &standIn : kShadowMapLdrStandIns )
+		lumps[standIn.hdr] = lumps[standIn.ldr];
+	BspLog( "%s has no HDR lighting; its LDR lumps load as the HDR ones for %s", name, light );
+}
+static void StandInNativeLdrLighting( const char *name )
+{
+	dheader_t &header = Engine<dheader_t>( 0x69EDF0 );
+	if ( header.ident == IDBSPHEADER && ( header.version == 19 || header.version == 20 ) )
+		StandInLdrLighting( header.lumps, []( const lump_t &lump ) { return uint64( uint32( lump.filelen ) ); }, name );
+}
+static void StandInSourceLdrLighting( const char *name )
+{
+	StandInLdrLighting( g_Source.header.lumps, []( const Bsp21Lump &lump ) { return uint64( lump.length ); }, name );
+}
 typedef uintptr_t (*InitFn)(void *,const char *);
 static InitFn g_Init;
 static uintptr_t DiskInit( void *model, const char *loadName )
@@ -235,7 +259,9 @@ static uintptr_t DiskInit( void *model, const char *loadName )
 	{
 		if ( file ) Close( file );
 		g_SourceMap = false;
-		return g_Init( model, loadName );
+		const uintptr_t result = g_Init( model, loadName );
+		if ( result ) StandInNativeLdrLighting( name );
+		return result;
 	}
 	if ( !ReadBsp21Layout( MountedReader( file ), g_Source, name ) )
 	{
@@ -243,6 +269,7 @@ static uintptr_t DiskInit( void *model, const char *loadName )
 		Function<void (*)( const char *, ... )>( 0x1A13C0 )( "Invalid BSP21 map %s; see lump diagnostic above\n", name );
 		return 0;
 	}
+	StandInSourceLdrLighting( name );
 	CopyString( g_SourceName, name );
 	++Engine<int>( 0x69FDA8 );
 	Engine<void *>( 0x69FDA0 ) = NULL;
@@ -282,8 +309,10 @@ static void MemoryInit( void *model, void *context, void *data, int size, int er
 	HookCall call;
 	if ( error || size < static_cast< int >( kSourceHeaderSize ) || !IsBsp21( data ) || Engine<int>( 0x69FDA8 ) )
 	{
-		if ( !Engine<int>( 0x69FDA8 ) ) g_SourceMap = false;
+		const bool owner = !Engine<int>( 0x69FDA8 );
+		if ( owner ) g_SourceMap = false;
 		g_Memory( model, context, data, size, error );
+		if ( owner && !error ) StandInNativeLdrLighting( Function<const char *(*)(void *)>( 0x28D9C0 )( static_cast< unsigned char * >( model ) + 8 ) );
 		return;
 	}
 	const char *name = Function<const char *(*)(void *)>( 0x28D9C0 )( static_cast< unsigned char * >( model ) + 8 );
@@ -299,6 +328,7 @@ static void MemoryInit( void *model, void *context, void *data, int size, int er
 		Function<void (*)( const char *, ... )>( 0x1A13C0 )( "Invalid BSP21 queued map %s or truncated lump prefix\n", name );
 		return;
 	}
+	StandInSourceLdrLighting( name );
 	CopyString( g_SourceName, name );
 	++Engine<int>( 0x69FDA8 );
 	Engine<void *>( 0x69FDA0 ) = NULL;

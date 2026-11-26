@@ -440,7 +440,8 @@ bool CapturePropVisibility(ModeStorage &m)
     return true;
 }
 // One lump of a v19-v21 BSP file exactly as the engine's lump loader hands it to its consumers: the stored bytes,
-// LZMA-decoded when the lump is compressed. Version-21 worldlights stay 100-byte records here.
+// LZMA-decoded when the lump is compressed, from the LDR stand-in on a map without HDR lighting (kShadowMapLdrStandIns).
+// Version-21 worldlights stay 100-byte records here.
 bool ReadEngineLump(const char *path, int lump, CUtlVector<byte> &out)
 {
     out.RemoveAll();
@@ -450,11 +451,17 @@ bool ReadEngineLump(const char *path, int lump, CUtlVector<byte> &out)
     uint32 offset = 0, stored = 0, length = 0;
     if (read && header.ident == BSP21_IDENT && header.version == BSP21_VERSION)
     {
-        offset = header.lumps[lump].offset; stored = header.lumps[lump].length; length = header.lumps[lump].uncompressedLength;
+        const Bsp21Lump *lumps = header.lumps;
+        if (ShadowMap_NeedsLdrStandIns(lumps[LUMP_FACES_HDR].length,lumps[LUMP_LIGHTING_HDR].length,lumps[LUMP_LIGHTING].length))
+            lump = int(ShadowMap_LdrStandInSource(uint32(lump)));
+        offset = lumps[lump].offset; stored = lumps[lump].length; length = lumps[lump].uncompressedLength;
     }
     else if (read && header.ident == BSP21_IDENT && header.version >= 19 && header.version <= 20)
     {
-        const lump_t &l = reinterpret_cast<const dheader_t &>(header).lumps[lump];
+        const lump_t *lumps = reinterpret_cast<const dheader_t &>(header).lumps;
+        if (ShadowMap_NeedsLdrStandIns(uint32(lumps[LUMP_FACES_HDR].filelen),uint32(lumps[LUMP_LIGHTING_HDR].filelen),uint32(lumps[LUMP_LIGHTING].filelen)))
+            lump = int(ShadowMap_LdrStandInSource(uint32(lump)));
+        const lump_t &l = lumps[lump];
         offset = uint32(l.fileofs); stored = uint32(l.filelen); length = uint32(l.uncompressedSize);
     }
     else read = false;

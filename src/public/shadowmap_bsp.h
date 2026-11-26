@@ -116,6 +116,27 @@ struct ShadowMapBspLumpInfo
 	uint32 fileofs, filelen, version, uncompressedSize;
 };
 
+// A map compiled without HDR lighting (no HDR faces, no HDR lighting, but LDR lighting) still takes a .light: its LDR
+// lumps stand in for the HDR ones. The baker binds the .light to them, the game loads them in the HDR lumps' place for
+// such a map with a .light (BSP21 adapter), and the lump directory read for .light validation reports them there too,
+// so the engine, the .light identities, the server's checks and the lump hooks all see the same bytes.
+struct ShadowMapLdrStandIn { uint32 hdr, ldr; };
+static const ShadowMapLdrStandIn kShadowMapLdrStandIns[] = {
+	{ LUMP_FACES_HDR, LUMP_FACES }, { LUMP_LIGHTING_HDR, LUMP_LIGHTING }, { LUMP_WORLDLIGHTS_HDR, LUMP_WORLDLIGHTS },
+	{ LUMP_LEAF_AMBIENT_INDEX_HDR, LUMP_LEAF_AMBIENT_INDEX }, { LUMP_LEAF_AMBIENT_LIGHTING_HDR, LUMP_LEAF_AMBIENT_LIGHTING },
+};
+inline bool ShadowMap_NeedsLdrStandIns( uint64 hdrFaceBytes, uint64 hdrLightingBytes, uint64 ldrLightingBytes )
+{
+	return !hdrFaceBytes && !hdrLightingBytes && ldrLightingBytes;
+}
+inline uint32 ShadowMap_LdrStandInSource( uint32 lump )
+{
+	for ( int i = 0; i < ARRAYSIZE( kShadowMapLdrStandIns ); ++i )
+		if ( kShadowMapLdrStandIns[i].hdr == lump )
+			return kShadowMapLdrStandIns[i].ldr;
+	return lump;
+}
+
 inline bool ShadowMap_IsFiniteFloat( float f )				{ return f == f && f <= FLT_MAX && f >= -FLT_MAX; }
 inline bool ShadowMap_ValidSunAngularRadius( float degrees )	{ return ShadowMap_IsFiniteFloat( degrees ) && degrees >= 0.0f && degrees < SHADOWMAP_MAX_SUN_ANGULAR_RADIUS; }
 inline bool ShadowMap_ValidLocalSourceRadius( float units )	{ return ShadowMap_IsFiniteFloat( units ) && units >= 0.0f; }
@@ -144,7 +165,8 @@ inline uint32 ShadowMap_CRC32( const void *bytes, uint32 count )
 //-----------------------------------------------------------------------------
 
 // Reads the BSP header (and lump table) and the game-lump dictionary entry for 'rshd'. Returns false when the file
-// is not a readable version-19..21 BSP. `rshdOffset/rshdBytes/rshdVersion` are zero when absent; compressed game
+// is not a readable version-19..21 BSP. The LDR lumps of a map without HDR lighting are reported in the HDR lumps'
+// place (kShadowMapLdrStandIns). `rshdOffset/rshdBytes/rshdVersion` are zero when absent; compressed game
 // lumps (uncompressedSize != 0 / LZMA) are reported as absent with `compressed` = true (converted maps are never
 // written compressed by the baker).
 inline bool ShadowMap_ReadBspDirectory( ShadowMapBspReadFn read, void *context, ShadowMapBspLumpInfo lumps[HEADER_LUMPS],
@@ -170,6 +192,11 @@ inline bool ShadowMap_ReadBspDirectory( ShadowMapBspReadFn read, void *context, 
 		lumps[i].filelen = filelen;
 		lumps[i].version = version;
 		lumps[i].uncompressedSize = (uint32)lump.uncompressedSize;
+	}
+	if ( ShadowMap_NeedsLdrStandIns( lumps[LUMP_FACES_HDR].filelen, lumps[LUMP_LIGHTING_HDR].filelen, lumps[LUMP_LIGHTING].filelen ) )
+	{
+		for ( int i = 0; i < ARRAYSIZE( kShadowMapLdrStandIns ); ++i )
+			lumps[kShadowMapLdrStandIns[i].hdr] = lumps[kShadowMapLdrStandIns[i].ldr];
 	}
 	if ( lumps[LUMP_MAP_FLAGS].filelen >= sizeof( uint32 ) )
 	{
