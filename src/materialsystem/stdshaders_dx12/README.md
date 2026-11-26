@@ -1682,11 +1682,17 @@ the entire noisy HDR frame, not a denoiser applied to an isolated SSR texture. N
 | Depth / dense motion / jitter | Hardware D24 → typed R32F, and resolved camera/object motion XY → RG16F, at render size. NGX receives previous-minus-current in render pixels and the existing 32-phase DLSS pixel jitter/reset. |
 | Secondary motion | Rather than fabricated reflection motion vectors, use `length(worldHit − primarySurface)` from the raw SSR trace, in Source units, plus unjittered row-vector world-to-view and view-to-clip matrices. Miss/sky is 65504. The G-buffer **light** distance D is not this guide. |
 
-The raw SSR trace uses one independently hashed GGX ray per **render pixel**, mip-zero hit radiance, the
-ordinary confidence/cubemap fallback and direct-specular occlusion. It writes the signed RGB correction and
-hit distance directly. Neither the spatial reuse/upsample nor SSR history runs. `r_ssr_quality` still sets
-march/refinement counts; reduced trace grids are ignored. For a matched ray budget use `r_ssr_quality 2;
-r_ssr_resolution 1` in both modes. The forward translucent/viewmodel reflection path is not the opaque stochastic trace.
+At `r_ssr_resolution 1` the raw SSR trace uses one independently hashed GGX ray per **render pixel**,
+mip-zero hit radiance, the ordinary confidence/cubemap fallback and direct-specular occlusion. It writes
+the signed correction and world hit distance directly. At `0.5` it traces one ray per 2×2 render-pixel quad;
+the frame index rotates through all four receiver positions in four frames. The raw expansion chooses a
+single ray (hits **and** misses count), rejecting mismatched depth planes, normals and roughness. An edge
+can use the nearest compatible adjacent cell; without one it keeps the cubemap. It reapplies the target
+pixel's own material response and recomputes distance from that pixel to the chosen world hit. RR always
+receives render-size colour and guides. No spatial averaging or SSR history runs. This intentionally
+correlated input is an experimental cost/quality tradeoff against NVIDIA's independent-sample guidance.
+`r_ssr_quality` sets march/refinement counts; for a matched dense ray budget use `r_ssr_quality 2;
+r_ssr_resolution 1` in both SR and RR. Forward translucent/viewmodel reflections are separate.
 
 `r_upscaler_rr_raw_gtao 1` additionally applies the full-render-size raw GTAO horizon term, independently sampled
 per pixel/frame, with no spatial filter, upsample or temporal accumulation. Default `0` keeps ordinary GTAO.

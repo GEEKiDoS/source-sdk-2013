@@ -1017,7 +1017,8 @@ private:
 		float prevWorldToClip[16]{};
 		Rect_t prevRect{};
 		uint64_t prevFrame = ~0ull;
-		uint64_t rawTraceFrame = ~0ull; // trace.a is world-space hit distance only for a successful raw main-view trace
+		uint64_t rawTraceFrame = ~0ull;
+		ShaderAPITextureHandle_t rawDelta = 0; // render-size correction + hit distance; dense trace or expanded scene mip 0
 		// SetAmbientOcclusionTerm: the frame's AO term, used to occlude reflected hits when aoFrame is the current frame.
 		ShaderAPITextureHandle_t aoTerm = 0;
 		int aoWidth = 0, aoHeight = 0;

@@ -2715,7 +2715,8 @@ bool CShaderAPIDX12::PackRayReconstructionGuides( RayReconstructionInputsDX12 &i
 	if ( c.hasTrace )
 	{
 		dispatch.m_Srv[5].m_nKind = SHADERAPIDX12_COMPUTE_RESOURCE_TEXTURE;
-		dispatch.m_Srv[5].m_hTexture = m_SSR.trace.handle;
+		dispatch.m_Srv[5].m_hTexture = m_SSR.rawDelta;
+		dispatch.m_Srv[5].m_nMipCount = 1;
 	}
 	const ShaderAPITextureHandle_t targets[] = { m_RrDiffuse.handle, m_RrSpecular.handle, m_RrNormalRoughness.handle, m_RrHitDistance.handle };
 	for ( int i = 0; i < ARRAYSIZE( targets ); ++i )

@@ -290,6 +290,15 @@ SSRReceiver SSR_LoadReceiver( int2 localPixel )
 	}
 	return r;
 }
+
+#if SSR_HAS_ENVIRONMENT && defined( SSR_DISTANCE_REGISTER )
+float3 SSR_RawHitCorrection( SSRReceiver r, float3 color, float confidence, float hitDistance )
+{
+	float end = r.D - gSSRForward.w;
+	float occlusion = hitDistance < end ? 1.0 - smoothstep( 0.9 * end, end, hitDistance ) : 0.0;
+	return confidence * ( color * r.K - r.E - occlusion * r.S );
+}
+#endif
 #endif
 
 #endif // SSR_COMMON_HLSLI

@@ -9,7 +9,7 @@ class ssr_trace_cs51_Static_Index
 public:
 	void SetRAY_RECONSTRUCTION( int i )
 	{
-		Assert( i >= 0 && i <= 1 );
+		Assert( i >= 0 && i <= 2 );
 		m_nRAY_RECONSTRUCTION = i;
 #ifdef _DEBUG
 		m_bRAY_RECONSTRUCTION = true;

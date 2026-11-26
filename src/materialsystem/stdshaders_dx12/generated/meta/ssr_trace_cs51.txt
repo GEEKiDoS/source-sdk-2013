@@ -1,4 +1,4 @@
-logical=ssr_trace_cs51 stage=cs source=ssr_trace_cs51.fxc legacy=- legacyName=- profile=native static=2 dynamic=1 present=2
+logical=ssr_trace_cs51 stage=cs source=ssr_trace_cs51.fxc legacy=- legacyName=- profile=native static=3 dynamic=1 present=3
   cbuffer=DX12SSR space=1 register=b0 size=368 layoutHash=0xcd43a658cf1e3143 material
     member=gSSRWorldToClip type=3 class=2 offset=0 size=64 elements=0 arrayStride=0 legacy=
     member=gSSRClipToWorld type=3 class=2 offset=64 size=64 elements=0 arrayStride=0 legacy=

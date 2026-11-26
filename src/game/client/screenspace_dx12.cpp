@@ -22,7 +22,7 @@ extern ConVar building_cubemaps;
 
 static ConVar r_ssr( "r_ssr", "1", FCVAR_ARCHIVE, "DX12: screen-space reflections on reflective opaque PBR materials", true, 0, true, 1 );
 static ConVar r_ssr_quality( "r_ssr_quality", "1", FCVAR_ARCHIVE, "SSR quality: 0 low, 1 balanced, 2 high", true, 0, true, 2 );
-static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR trace resolution per axis relative to the quality profile: 1 unchanged, 0.5 half, 0.25 quarter; ray quality stays unchanged", true, 0.25f, true, 1.f );
+static ConVar r_ssr_resolution( "r_ssr_resolution", "1", FCVAR_ARCHIVE, "SSR trace resolution per axis relative to the quality profile (render size for DLSS-RR); 0.5 under RR traces one rotating sample per 2x2 quad", true, 0.25f, true, 1.f );
 static ConVar r_ssr_max_distance( "r_ssr_max_distance", "1024", FCVAR_ARCHIVE, "SSR ray distance in Source units", true, 16.f, true, 2048.f );
 static ConVar r_ssr_thickness( "r_ssr_thickness", "2", FCVAR_ARCHIVE, "SSR depth thickness in Source units", true, 0.1f, true, 16.f );
 static ConVar r_ssr_forward_steps( "r_ssr_forward_steps", "16", FCVAR_ARCHIVE, "SSR of translucents (car glass, windows) and viewmodels, traced in their own shaders: march steps, 0 off", true, 0, true, 32 );

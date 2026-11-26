@@ -1,0 +1,72 @@
+// Expand a rotating sparse RR trace without averaging radiance or reading history. The receiver keeps its own
+// material response. Recompute distance to the selected world hit from this pixel, not from the traced pixel.
+#define SSR_RESPONSE_REGISTER t5
+#define SSR_SCENE_DEPTH_REGISTER t6
+#define SSR_ENVIRONMENT_REGISTER t7
+#define SSR_SPECULAR_REGISTER t8
+#define SSR_DISTANCE_REGISTER t9
+#define SSR_HAS_ENVIRONMENT 1
+#include "ssr_common.hlsli"
+Texture2D<float4> gTrace : register( t0, space0 );
+Texture2D<float4> gRay : register( t1, space0 ); // w: <0 invalid receiver, 0 valid miss, >0 hit
+RWTexture2D<float4> gRawDelta : register( u0, space0 );
+
+bool Compatible( int2 source, SSRReceiver receiver, float rayStatus )
+{
+	if ( rayStatus < 0.0 ) return false;
+	if ( all( source == receiver.localPixel ) ) return true;
+	int3 p = int3( source + int2( gSSRViewport.xy ), 0 );
+	float3 n = PBR_UnpackNormal( gSSRNormal.Load( p ) );
+	if ( dot( n, receiver.N ) < SSR_REUSE_NORMAL || abs( gSSRSpec.Load( p ).a - receiver.roughness ) > 0.1 ) return false;
+	// A view-Z difference alone would reject grazing floors. Test both tangent planes in world units.
+	float3 offset = SSR_LocalToWorld( float2( source ) + 0.5, gSSRSceneDepth.Load( p ) ) - receiver.P;
+	return max( abs( dot( offset, n ) ), abs( dot( offset, receiver.N ) ) ) <= max( gSSRLimits.y, 0.001 * receiver.viewDepth );
+}
+
+[numthreads( 8, 8, 1 )]
+void main( uint3 id : SV_DispatchThreadID )
+{
+	if ( any( id.xy >= uint2( gSSRViewport.zw ) ) ) return;
+	int2 local = int2( id.xy );
+	SSRReceiver r = SSR_LoadReceiver( local );
+	float confidence = 0.0, hitDistance = 65504.0;
+	float3 delta = 0.0;
+	[branch] if ( r.valid )
+	{
+		int2 cell = SSR_TraceTexel( local ), chosen = cell;
+		float4 ray = gRay.Load( int3( cell, 0 ) );
+		[branch] if ( !Compatible( SSR_TracePixel( cell ), r, ray.w ) )
+		{
+			// At a silhouette the quad's single ray can belong to a different surface. Select the nearest
+			// compatible sample from the adjacent cells, irrespective of hit/miss. No candidate = cubemap.
+			ray = 0.0;
+			float nearest = 1e30;
+			[loop] for ( int y = -1; y <= 1; ++y )
+			[loop] for ( int x = -1; x <= 1; ++x )
+			{
+				int2 neighbor = cell + int2( x, y );
+				if ( ( x == 0 && y == 0 ) || any( neighbor < 0 ) || any( neighbor >= int2( gSSRSizes.zw ) ) ) continue;
+				int2 source = SSR_TracePixel( neighbor );
+				float2 d = float2( source - local );
+				float distanceSq = dot( d, d );
+				if ( distanceSq >= nearest ) continue;
+				float4 candidate = gRay.Load( int3( neighbor, 0 ) );
+				if ( Compatible( source, r, candidate.w ) )
+				{
+					nearest = distanceSq;
+					chosen = neighbor;
+					ray = candidate;
+				}
+			}
+		}
+		if ( ray.w > 0.0 )
+		{
+			float4 sample = gTrace.Load( int3( chosen, 0 ) );
+			confidence = sample.a;
+			hitDistance = length( ray.xyz - r.P );
+			delta = SSR_RawHitCorrection( r, sample.rgb, confidence, hitDistance );
+		}
+	}
+	float3 rgb = gSSRLimits.w != 0.0 ? ( r.valid ? float3( 1.0 - confidence, confidence, 0 ) : 0 ) : delta;
+	gRawDelta[id.xy] = float4( rgb, hitDistance );
+}

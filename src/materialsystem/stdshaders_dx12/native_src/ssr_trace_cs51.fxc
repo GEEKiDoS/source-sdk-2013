@@ -4,14 +4,16 @@
 // Outputs (trace size): u0 RGBA16F = hit radiance (HDR, no clamp; colour mip from the sample's filtered-importance
 // cone) and confidence, zero for a miss; u1 RGBA32F = the ray for the resolve's reuse: hit -> ( world hit, +pdf ),
 // miss -> ( unit direction, -pdf ), no ray (invalid receiver, direction below the surface) -> 0.
-// STATIC: "RAY_RECONSTRUCTION" "0..1"
+// RR 1: dense trace writes the final signed correction + hit distance directly. RR 2: the rotating sparse
+// grid publishes mip-zero radiance/confidence and a world hit for nearest-sample expansion (no ray reuse filter).
+// STATIC: "RAY_RECONSTRUCTION" "0..2"
 // Inputs: t0 view depth (ssr_depth), t1 scene color mips, t2 normal, t3 specular, t4 stencil, t5 response (K),
 // t6 native scene depth, t7 this frame's AO term (when gSSRAmbient.w); s1 linear clamp.
 // The scene copy precedes the GTAO apply, which later darkens every pixel by its AO; the hit radiance takes the AO
 // of the hit pixel so a reflection shows what the viewer sees there (the receiver's own AO arrives with the apply).
 #define SSR_RESPONSE_REGISTER t5
 #define SSR_SCENE_DEPTH_REGISTER t6
-#if RAY_RECONSTRUCTION
+#if RAY_RECONSTRUCTION == 1
 #define SSR_HAS_ENVIRONMENT 1
 #define SSR_ENVIRONMENT_REGISTER t8
 #define SSR_SPECULAR_REGISTER t9
@@ -25,7 +27,7 @@ Texture2D<float4> gSceneColor : register( t1, space0 );
 Texture2D<float> gAmbient : register( t7, space0 );
 SamplerState gLinearClamp : register( s1, space0 );
 RWTexture2D<float4> gTraceOut : register( u0, space0 );
-#if !RAY_RECONSTRUCTION
+#if RAY_RECONSTRUCTION != 1
 RWTexture2D<float4> gRayOut : register( u1, space0 );
 #endif
 
@@ -71,7 +73,13 @@ void main( uint3 id : SV_DispatchThreadID )
 {
 	if ( id.x >= uint( gSSRSizes.z ) || id.y >= uint( gSSRSizes.w ) ) return;
 	float4 result = 0.0;
-#if RAY_RECONSTRUCTION
+#if RAY_RECONSTRUCTION == 2
+	int2 sourcePixel = SSR_TracePixel( int2( id.xy ) );
+	SSRReceiver r = SSR_LoadReceiver( sourcePixel );
+	float4 rayOut = float4( 0.0, 0.0, 0.0, r.valid ? 0.0 : -1.0 ); // valid misses are samples, not holes to fill
+	uint seed = SSR_Hash( uint( sourcePixel.x ) + uint( sourcePixel.y ) * uint( gSSRSizes.x ) ^ SSR_Hash( gSSRControl.w ) );
+	float2 random = float2( seed & 0xffffu, seed >> 16 ) * ( 1.0 / 65536.0 );
+#elif RAY_RECONSTRUCTION == 1
 	// One independent GGX sample per render pixel. Misses leave the forward cubemap intact.
 	float distanceGuide = 65504.0;
 	SSRReceiver r = SSR_LoadReceiver( int2( id.xy ) );
@@ -182,11 +190,9 @@ void main( uint3 id : SV_DispatchThreadID )
 							( 1.0 - saturate( hitSeparation / gSSRTrace.y ) );
 						if ( confidence > 0.0 )
 						{
-#if RAY_RECONSTRUCTION
+#if RAY_RECONSTRUCTION == 1
 							distanceGuide = hitDistance;
-							float end = r.D - gSSRForward.w;
-							float occlusion = hitDistance < end ? 1.0 - smoothstep( 0.9 * end, end, hitDistance ) : 0.0;
-							result = float4( confidence * ( color * r.K - r.E - occlusion * r.S ), confidence );
+							result = float4( SSR_RawHitCorrection( r, color, confidence, hitDistance ), confidence );
 #else
 							result = float4( color, confidence );
 							rayOut = float4( hitWorld, pdf );
@@ -197,7 +203,7 @@ void main( uint3 id : SV_DispatchThreadID )
 			}
 		}
 	}
-#if RAY_RECONSTRUCTION
+#if RAY_RECONSTRUCTION == 1
 	float3 rgb = gSSRLimits.w != 0.0 ? ( r.valid ? float3( 1.0 - result.a, result.a, 0 ) : 0 ) : result.rgb;
 	gTraceOut[id.xy] = float4( rgb, distanceGuide );
 #else
