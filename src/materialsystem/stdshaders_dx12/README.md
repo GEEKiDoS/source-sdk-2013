@@ -1851,7 +1851,7 @@ AgX, LUT, noise and output arithmetic are unchanged. Client demand/consumer gate
 ## Layered bloom (MagicBloom on the compute pyramid)
 
 `postfx_downsample_cs51` `THRESHOLD 2` builds the first bloom level from the exposed scene with MagicBloom's soft
-threshold per tap, `c * clamp( luma601( c ) - t, 0, b )` with `t = mat_postfx_bloom_threshold` (default 1.25; MagicBloom uses 1) and the extraction boost cap `b = mat_postfx_bloom_boost` (default 0.015; MagicBloom uses 10, passed as `p2`), and writes the plain exposed level to `u1` for the lens
+threshold per tap, `c * clamp( luma601( c ) - t, 0, b )` with `t = mat_postfx_bloom_threshold * 2^mat_postfx_exposure` (default 1.25; MagicBloom uses 1; the EV bias raises it with the exposure so the same surfaces bloom at any bias and a brighter exposure cannot screen a white veil over diffuse whites) and the extraction boost cap `b = mat_postfx_bloom_boost` (default 0.015; MagicBloom uses 10, passed as `p2`), and writes the plain exposed level to `u1` for the lens
 flare (one pass feeds both chains). `postfx_upsample_cs51` sums layers instead of lerping: `up[last] = down[last]`,
 `up[n] = down[n] + tent3x3( up[n + 1] )`, so bloom mip 1 holds every layer; a dropped fine mip (lower
 `mat_postfx_bloom_quality`) passes `p0 = 0` and only carries the sum up. The client divides

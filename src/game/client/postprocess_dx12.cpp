@@ -283,12 +283,15 @@ static ConVar mat_postfx_dx12( "mat_postfx_dx12", "1", FCVAR_ARCHIVE, "DX12 post
 // (a GTX 1070 perftest config did). PostProcessDX12_ValidateConfig turns the stack back on once for such a config;
 // afterwards the archived mat_postfx_dx12 is the user's choice.
 static ConVar mat_postfx_dx12_set( "mat_postfx_dx12_set", "0", FCVAR_ARCHIVE | FCVAR_HIDDEN, "Set once the DX12 post stack was validated for this config" );
-static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap" );
+static ConVar mat_postfx_exposure( "mat_postfx_exposure", "0", FCVAR_ARCHIVE, "EV bias applied before bloom/tonemap; the bloom threshold rises with it, so a brighter exposure does not make diffuse surfaces bloom" );
 static ConVar mat_postfx_taau_reduction( "mat_postfx_taau_reduction", "1", FCVAR_ARCHIVE, "Produce compact bloom and the exposure meter from the reconstructed scene in one pass" );
 static ConVar mat_postfx_bloom_intensity( "mat_postfx_bloom_intensity", "300", FCVAR_ARCHIVE, "DX12 post bloom exposure: the bloom layer average is multiplied by this before its filmic tonemap (default 300; MagicBloom's 100; 0 off, 25..400 useful)" );
-static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
+static ConVar mat_postfx_bloom_threshold( "mat_postfx_bloom_threshold", "1.25", FCVAR_ARCHIVE, "DX12 post bloom threshold: scene luma (before mat_postfx_exposure) above which pixels feed the bloom, weighted by luma - threshold (MagicBloom uses 1)", true, 0.f, true, 10.f );
 static ConVar mat_postfx_bloom_boost( "mat_postfx_bloom_boost", "0.015", FCVAR_ARCHIVE, "DX12 post bloom extraction boost: maximum weight (luma - threshold) multiplying an extracted bright pixel (MagicBloom uses 10)", true, 0.f, true, 100.f );
 static ConVar mat_postfx_bloom_quality( "mat_postfx_bloom_quality", "2", FCVAR_ARCHIVE, "DX12 post bloom quality: 0 low (drops the two finest levels), 1 medium (drops the half-resolution level), 2 high (8 levels)", true, 0.f, true, 2.f );
+// The threshold is compared with the exposed scene, so it carries the EV bias: the same surfaces feed the bloom at any
+// mat_postfx_exposure (only brighter), and a raised exposure does not screen a white veil over every diffuse white.
+static float BloomThreshold() { return mat_postfx_bloom_threshold.GetFloat() * exp2f( mat_postfx_exposure.GetFloat() ); }
 static ConVar mat_postfx_compact( "mat_postfx_compact", "1", FCVAR_ARCHIVE,
 	"DX12 post quality: 1 Normal (one fused composite with the L4D2 grade, coarse bloom mip, detail sharpen before tonemapping), "
 	"0 Extra (separate native post passes followed by the original L4D2 engine post)" );
@@ -584,7 +587,7 @@ ITexture *PostProcessDX12_ReduceTemporal( IMatRenderContext *context, int w, int
 	// Compact grade excludes flare: its quarter-size target is free for metering.
 	PIXEVENT( context, "TAAU bloom and meter" );
 	SetPostPass( s_BloomFirst, s_PostScene, 0, s_BloomDown, 3, exp2f( mat_postfx_exposure.GetFloat() ),
-		mat_postfx_bloom_threshold.GetFloat(), 4 );
+		BloomThreshold(), 4 );
 	const float extract[4] = { mat_postfx_bloom_boost.GetFloat(), 1.f, 1.f, 0.f };
 	SetVector4( s_BloomFirst, POST_PARAMS1, extract );
 	SetTexture( s_BloomFirst, POST_DST_TEXTURE2, s_FlareInput );
@@ -655,7 +658,7 @@ void PostProcessDX12_Render( IMatRenderContext *pRenderContext, int x, int y, in
 		else if ( !reduced )
 		{
 			PostMaterial_t &first = s_BloomFirst;
-			SetPostPass( first, pScene, 0, s_BloomDown, nFirstMip, flExposure, mat_postfx_bloom_threshold.GetFloat(), 1 << nDropFinest,
+			SetPostPass( first, pScene, 0, s_BloomDown, nFirstMip, flExposure, BloomThreshold(), 1 << nDropFinest,
 				mat_postfx_bloom_boost.GetFloat() );
 			if ( pGrade )
 			{
