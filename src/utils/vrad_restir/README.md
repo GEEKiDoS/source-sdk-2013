@@ -67,7 +67,7 @@ The default options are:
 | `-restir_bouncescale F` | `1.0` | Bounce reflectivity multiplier, `0..10`: every lightmapped bounce surface reflects `F` times its reflectivity (the face's `dtexdata` reflectivity, or the per-texel albedo of `-restir_texturealbedo`), so bounce order `n` gains up to `F^n` and indirect light falls off more slowly with depth. Not energy conserving; an artistic fill control like Lightmass `DiffuseBoost`. Face reflectivity is capped at 0.99 by its largest channel (hue kept) and texel albedo at 0.99 per channel, so each bounce still loses energy and the bake converges. Applies to lightmaps, `.hlight`, dense probes, prop lighting and leaf ambient cubes; the OIDN albedo guide sees the boosted reflectivity. |
 | `-restir_ambientgrid N` | `32` | `-restir_shadowmaps` only: ambient probe spacing in units, `8..512`. See "Dense ambient probes". |
 | `-restir_ambientgrid_reach N` | `512` | `-restir_shadowmaps` only: a probe brick exists within this distance of lit world/static-prop geometry, `0..65536`; `0` allocates every brick. |
-| `-restir_ambientgrid_budget MB` | `1024` | `-restir_shadowmaps` only: largest probe grid (atlas plus indirection) in MiB, `1..2047`; over it the bake fails naming the three probe options. |
+| `-restir_ambientgrid_budget MB` | `1024` | `-restir_shadowmaps` only: largest probe grid (atlas plus indirection) in MiB, `1..2047`; over it the bake fails before any GPU work, naming the three probe options. |
 | `-restir_notexturealbedo` | albedo on | Disable per-texel bounce albedo. By default bounce light picks up each material's `$basetexture` per texel instead of VRAD's single reflectivity per material: the texture is linearized (2.2) and scaled so its average equals the material's reflectivity, so total bounced energy matches VRAD and only its spatial distribution changes (a dark stripe on a wall bounces less than its light neighbour). Applies to lightmap bounces, leaf ambient cubes and static/detail prop gathers; materials whose base texture cannot be loaded use their reflectivity. `-restir_texturealbedo` is accepted as the explicit default. |
 | `-StaticPropLighting` | off | Bake static-prop vertex and texel lighting. |
 | `-TextureShadows` | off | Evaluate alpha coverage for shadows. Every static-prop mesh whose material has `$alphatest`/`$translucent` casts its alpha cutout (chain-link fences, foliage); stock VRAD restricts this to models flagged `$casttextureshadows` or listed by `forcetextureshadow`, which this baker accepts and ignores. |
@@ -390,9 +390,10 @@ free distance along +x, -x, +y, -y, +z, or -z, in sixteenths of one probe spacin
 and the brick atlas exactly as the runtime uploads them. Up to 65,536 bricks the atlas is `min(n,256)` by
 `ceil(n/x)` by 1 bricks; above that it is 256 by `ceil(n/(256*z))` by `z = ceil(n/65536)`, so no unused 256x256 layer
 is paid for. There is no size cap in the format: up to 2^20 bricks, one signed pak member, 1,024 bricks per axis. The
-baker enforces `-restir_ambientgrid_budget` (1,024 MiB) and fails with `raise -restir_ambientgrid, lower
--restir_ambientgrid_reach or raise -restir_ambientgrid_budget` when the grid would exceed it; nothing is reduced
-silently. Once the grid is sized it logs `Ambient probes: N bricks, M MiB (spacing, reach, atlas)`. A grid the GPU cannot
+baker enforces `-restir_ambientgrid_budget` (1,024 MiB) right after building the scene, before any GPU work (stage
+`planning ambient probe grid`), and fails with `raise -restir_ambientgrid, lower -restir_ambientgrid_reach or raise
+-restir_ambientgrid_budget` when the grid would exceed it; nothing is reduced silently. Once the grid is sized it logs
+`Ambient probes: N bricks, M MiB (spacing, reach, atlas)`. A grid the GPU cannot
 hold leaves the map on the engine ambient cube with a warning. Probes inside solid, inside an opaque leaf brush, on a
 solid BSP boundary, or whose axis rays of one spacing start inside geometry or reach a displacement back face are
 invalid. On an exact split the BSP point walk can choose the open leaf even though the gather ray's minimum distance

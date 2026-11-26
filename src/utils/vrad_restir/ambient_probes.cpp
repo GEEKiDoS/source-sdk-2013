@@ -77,13 +77,22 @@ ReSTIRGpuRay MakeRay( const Vector &origin, const Vector &delta )
 	return ray;
 }
 
-struct ProbeBuild
+// The grid layout and brick allocation: CPU only, so the budget is known from the scene before any GPU work.
+struct ProbePlan
 {
 	const ReSTIROptions &options;
 	const ReSTIRScene &scene;
-	CReSTIRVulkanDevice &device;
 	hprobe::GridDisk grid;
 	CUtlVector<uint32> indirection;			// per brick cell: slot or hlight::kMissing
+	ProbePlan( const ReSTIROptions &o, const ReSTIRScene &s ) : options( o ), scene( s )
+	{
+		memset( &grid, 0, sizeof( grid ) );
+	}
+};
+
+struct ProbeBuild : ProbePlan
+{
+	CReSTIRVulkanDevice &device;
 	CUtlVector<int> texelProbe;				// [slot * 125 + (lz * 5 + ly) * 5 + lx] -> unique probe
 	CUtlHashtable<uint64, int> probeIds;	// ix | iy << 21 | iz << 42 -> unique probe
 	CUtlVector<uint64> keys;
@@ -93,13 +102,12 @@ struct ProbeBuild
 	CUtlVector<ProbeSh> sh;
 	int validCount, dilatedCount, deringedCount;
 	ProbeBuild( const ReSTIROptions &o, const ReSTIRScene &s, CReSTIRVulkanDevice &d )
-		: options( o ), scene( s ), device( d ), validCount( 0 ), dilatedCount( 0 ), deringedCount( 0 )
+		: ProbePlan( o, s ), device( d ), validCount( 0 ), dilatedCount( 0 ), deringedCount( 0 )
 	{
-		memset( &grid, 0, sizeof( grid ) );
 	}
 };
 
-bool OverBudget( const ProbeBuild &b, uint64 bytes )
+bool OverBudget( const ProbePlan &b, uint64 bytes )
 {
 	if ( bytes <= uint64( b.options.ambientGridBudgetMB ) << 20 )
 		return false;
@@ -121,7 +129,7 @@ void AddBox( CUtlVector<int> &delta, int sx, int sy, const int lo[3], const int 
 	}
 }
 
-bool PlanGrid( ProbeBuild &b )
+bool PlanGrid( ProbePlan &b )
 {
 	hprobe::GridDisk &g = b.grid;
 	const float brickEdge = float( b.options.ambientGridSpacing ) * hprobe::kBrickCells;
@@ -146,7 +154,7 @@ bool PlanGrid( ProbeBuild &b )
 
 // A brick is allocated iff it intersects the AABB, dilated by reach, of a lit world or static prop triangle.
 // The union of those boxes is rasterized once with a 3D difference array instead of per triangle.
-bool AllocateBricks( ProbeBuild &b )
+bool AllocateBricks( ProbePlan &b )
 {
 	hprobe::GridDisk &g = b.grid;
 	const int dims[3] = { (int)g.brickDims[0], (int)g.brickDims[1], (int)g.brickDims[2] };
@@ -613,6 +621,12 @@ bool SelfCheck( const ProbeBuild &b, const ReSTIRAmbientProbeGrid &out, int writ
 	}
 	return true;
 }
+}
+
+bool ReSTIR_PlanAmbientProbeGrid( const ReSTIROptions &options, const ReSTIRScene &scene )
+{
+	ProbePlan plan( options, scene );
+	return PlanGrid( plan ) && AllocateBricks( plan );
 }
 
 bool ReSTIR_BuildAmbientProbeGrid( const ReSTIROptions &options, const ReSTIRScene &scene, CReSTIRVulkanDevice &device, ReSTIRAmbientProbeGrid &out )

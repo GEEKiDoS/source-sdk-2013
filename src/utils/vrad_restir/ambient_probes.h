@@ -27,6 +27,10 @@ struct ReSTIRAmbientProbeGrid
 	}
 };
 
+// The grid's brick allocation and budget check alone, from the built scene (the same triangles the build uses):
+// run before the GPU bake so a grid over -restir_ambientgrid_budget fails in seconds, not after the lightmaps.
+bool ReSTIR_PlanAmbientProbeGrid( const ReSTIROptions &options, const ReSTIRScene &scene );
+
 // Runs after ReSTIR_ComputeLeafAmbientLighting (which flags the INAMBIENTCUBE surface worldlights) and
 // UploadFinalLightmap. Folds the full-source lightmap gather, the INAMBIENTCUBE surface worldlights and the
 // material emitters into per-probe SH L2 irradiance in the same units as the leaf cubes.

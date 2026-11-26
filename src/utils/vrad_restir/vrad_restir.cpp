@@ -12,6 +12,7 @@
 #include "restir_lightmap_rescale.h"
 #include "restir_sky_ambient.h"
 #include "hlight_output.h"
+#include "ambient_probes.h"
 #include "hprobe_bsp.h"
 #include "pacifier.h"
 #include "bsplib.h"
@@ -989,6 +990,8 @@ int CVRadRestirDLL::Bake()
 			Msg( "Shadowmaps: selected lights=%d sun light=%d\n", scene.shadowLights.Count(), sunLightIndex );
 		}
 	}
+	// The probe grid is planned again when it is captured; only its budget is checked this early.
+	RESTIR_STAGE( "planning ambient probe grid", !g_ReSTIROptions.shadowMaps || ReSTIR_PlanAmbientProbeGrid( g_ReSTIROptions, scene ) );
 	m_flProgress = 0.25f;
 	ReSTIR_BuildSkyEnvironment( g_ReSTIROptions, scene );
 	ApplyBounceScale( g_ReSTIROptions, scene );
