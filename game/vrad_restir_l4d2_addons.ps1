@@ -1,6 +1,7 @@
 # Bakes enhanced lighting (<map>.light) for every map inside L4D2 add-on VPKs.
-#   vrad_restir_l4d2_addons.bat [vrad_restir options] [addon.vpk ...]
+#   vrad_restir_l4d2_addons.bat [vrad_restir options] [-map name ...] [addon.vpk ...]
 # Without .vpk arguments every mod_l4d2\addons\*.vpk is processed (the folder the game mounts add-ons from).
+# -map name (repeatable, without maps\ or .bsp) bakes only those maps of the add-ons; without it every map is baked.
 # Options are passed to vrad_restir_l4d2.bat, which supplies its defaults for every option not given and prints the
 # final option list.
 # Each add-on's maps, materials and models are extracted to %TEMP% (the add-on itself is not modified) and every map is
@@ -8,9 +9,15 @@
 # and models are found. Results go to mod_l4d2\maps; the extracted files are deleted afterwards.
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
-$options = @(); $vpks = @()
-foreach ($a in $args) {
-    if ("$a" -like '*.vpk') { $vpks += (Resolve-Path -LiteralPath $a).ProviderPath } else { $options += "$a" }
+$options = @(); $vpks = @(); $only = @()
+for ($i = 0; $i -lt $args.Count; ++$i) {
+    $a = "$($args[$i])"
+    if ($a -eq '-map') {
+        if ($i + 1 -ge $args.Count) { Write-Host 'Error: expected a map name after -map'; exit 1 }
+        $only += [IO.Path]::GetFileNameWithoutExtension("$($args[++$i])")
+    }
+    elseif ($a -like '*.vpk') { $vpks += (Resolve-Path -LiteralPath $a).ProviderPath }
+    else { $options += $a }
 }
 if (-not $vpks.Count) {
     $vpks = @(Get-ChildItem -LiteralPath (Join-Path $here 'mod_l4d2\addons') -Filter *.vpk -File -ErrorAction SilentlyContinue |
@@ -70,7 +77,8 @@ foreach ($vpk in $vpks) {
     if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
     Write-Host "Extracting $([IO.Path]::GetFileName($vpk)) ..."
     $maps = @(Expand-VpkContent $vpk $root)
-    if (-not $maps.Count) { Write-Host "$vpk`: no maps"; Remove-Item -LiteralPath $root -Recurse -Force; continue }
+    if ($only.Count) { $maps = @($maps | Where-Object { $only -contains $_ }) }
+    if (-not $maps.Count) { Write-Host "$vpk`: no maps to bake"; Remove-Item -LiteralPath $root -Recurse -Force; continue }
     $env:L4D2_ADDON_PATH = $root
     foreach ($map in $maps) {
         Write-Host "=== $map ($([IO.Path]::GetFileName($vpk)))"
@@ -97,4 +105,7 @@ foreach ($vpk in $vpks) {
 }
 Remove-Item Env:L4D2_ADDON_PATH -ErrorAction SilentlyContinue
 Write-Host "Baked: $($baked.Count) map(s) $($baked -join ', ')"
+$missing = @($only | Where-Object { $baked -notcontains $_ -and $failed -notcontains $_ })
+if ($missing.Count) { Write-Host "Not found in the add-ons: $($missing -join ', ')" }
 if ($failed.Count) { Write-Host "FAILED: $($failed -join ', ')"; exit 1 }
+if ($missing.Count) { exit 1 }
