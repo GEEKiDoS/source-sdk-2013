@@ -1397,6 +1397,15 @@ static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, const ReS
 	ReSTIRGpuLight light = AllocLight( origin );
 	ParseLightGeneric( pEntity, light );
 	light.type = emit_skylight;
+	// -restir_sunscale scales the sun only; the default sky ambient (half the sun) keeps the authored sun.
+	const Vector authoredSun = ReSTIR_SceneV4( light.intensity );
+	if ( options.sunScale != 1.0f )
+	{
+		Vector scaled;
+		VectorScale( authoredSun, options.sunScale, scaled );
+		ReSTIR_SceneSet4( light.intensity, scaled, light.intensity[3] );
+		Msg( "VRAD ReSTIR: sun scaled by %g (-restir_sunscale)\n", options.sunScale );
+	}
 	if ( !SelectShadowLight( pEntity, entityIndex, options.shadowMaps, light ) )
 		return false;
 	const char *angle = ValueForKeyOrNull( pEntity, "SunSpreadAngle" );
@@ -1426,7 +1435,7 @@ static bool ParseLightEnvironment( entity_t *pEntity, int entityIndex, const ReS
 		}
 		else if ( !LightForKey( pEntity, "_ambient", intensity ) )
 		{
-			VectorScale( ReSTIR_SceneV4( light.intensity ), 0.5, intensity );
+			VectorScale( authoredSun, 0.5, intensity );
 		}
 		if ( g_bHDR )
 		{

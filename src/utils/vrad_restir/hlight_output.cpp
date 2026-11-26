@@ -72,6 +72,8 @@ bool s_Prepared = false;
 // against these records, and the manifest binds to the CRC of the lump bytes exactly as the engine loads them.
 CUtlVector<dworldlight_t> s_InputWorldlights;
 uint32 s_InputWorldlightsCRC32 = 0;
+// -restir_sunscale: the selected sun carries the scaled intensity, its BSP worldlight the authored one.
+float s_SunScale = 1.0f;
 bool Fail(const char *why)
 {
     Warning("Hlight: %s\n",why); return false;
@@ -487,15 +489,16 @@ void MatchRemovedWorldlights(const CUtlVector<ShadowMapLightDisk> &lights, CUtlV
     for (int li = 0; li < lights.Count(); ++li)
     {
         const dworldlight_t &want = lights[li].light;
+        const Vector wantIntensity = want.type == emit_skylight && s_SunScale > 0.0f ? want.intensity / s_SunScale : want.intensity;
         int match = -1;
         for (int i = 0; i < s_InputWorldlights.Count() && match < 0; ++i)
         {
             const dworldlight_t &have = s_InputWorldlights[i];
             if (used[i] || have.type != want.type || have.style != want.style) continue;
-            const float intensityScale = MAX(1.0f, want.intensity.LengthSqr());
+            const float intensityScale = MAX(1.0f, wantIntensity.LengthSqr());
             if (have.origin.DistToSqr(want.origin) <= 0.25f &&
                 have.normal.DistToSqr(want.normal) <= 1e-6f &&
-                have.intensity.DistToSqr(want.intensity) <= 1e-8f * intensityScale)
+                have.intensity.DistToSqr(wantIntensity) <= 1e-8f * intensityScale)
                 match = i;
         }
         if (match < 0)
@@ -571,7 +574,7 @@ bool ReSTIR_BakedLocalDirectFace(const ReSTIRScene &scene, const ReSTIRLightmapR
 bool ReSTIR_PrepareShadowMapStorage(const ReSTIROptions &options)
 {
     s_Prepared = false; s_Density = 0; memset(s_AssetPath,0,sizeof(s_AssetPath));
-    s_Storage.Clear(); s_InputWorldlights.Purge(); s_InputWorldlightsCRC32 = 0;
+    s_Storage.Clear(); s_InputWorldlights.Purge(); s_InputWorldlightsCRC32 = 0; s_SunScale = options.sunScale;
     // Enhanced lighting lives only in <map>.light; a BSP rewritten by an older vrad_restir is not a valid input.
     if (g_GameLumps.GetGameLumpHandle(GAMELUMP_RESTIR_SHADOWMAPS) != g_GameLumps.InvalidGameLump() ||
         (g_LevelFlags & (LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_HDR|LVLFLAGS_RUNTIME_SHADOWMAP_DIRECT_NONHDR)))

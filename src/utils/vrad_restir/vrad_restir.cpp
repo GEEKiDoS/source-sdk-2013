@@ -431,6 +431,17 @@ static bool ParseRestirOptions( int argc, char **argv, ReSTIROptions &options )
 				return false;
 			continue;
 		}
+		if ( IsOption( pArg, "-restir_sunscale" ) )
+		{
+			if ( i + 1 >= argc )
+			{
+				Warning( "Error: expected a value after '%s'\n", pArg );
+				return false;
+			}
+			if ( !ParseFloatValue( pArg, argv[++i], 0.0f, 100.0f, options.sunScale ) )
+				return false;
+			continue;
+		}
 		if ( IsOption( pArg, "-restir_skyibl" ) )
 		{
 			options.skyAmbientIbl = true;

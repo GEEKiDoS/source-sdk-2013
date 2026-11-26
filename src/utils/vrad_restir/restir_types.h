@@ -92,6 +92,8 @@ struct ReSTIROptions
 	float		skyAmbientScale;		// -restir_skyambientscale (1.0): multiplier on the light_environment sky ambient
 										// (_ambient/_ambientHDR x _AmbientScaleHDR) for every output; the 2D skybox match
 										// (_skyscale_hdr) keeps using the unscaled ambient
+	float		sunScale;				// -restir_sunscale (1.0): multiplier on the light_environment sun for every output (lightmaps,
+										// .hlight, probes, props, runtime manifest); its sky ambient and the 2D skybox are unchanged
 	bool		skyAmbientIbl;			// -restir_skyibl: an HDR skybox composited into ReSTIRScene::skyEnvironment is the
 										// sky ambient radiance per direction (normalized to the ambient luminance, so the
 										// sky ambient scale still applies); otherwise, or when the sky has no HDR faces, the
@@ -131,7 +133,7 @@ struct ReSTIROptions
 
 	ReSTIROptions()
 		: staticPropLighting( false ), textureShadows( false ),
-		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), skyAmbientIbl( false ), bounceScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
+		  smoothingThreshold( 0.7071067f ), lightmapScale( 1.0f ), textureAlbedo( true ), emissiveScale( 1.0f ), skyAmbientScale( 1.0f ), sunScale( 1.0f ), skyAmbientIbl( false ), bounceScale( 1.0f ), shadowMaps( false ), highresDensity( 4 ),
 		  ambientGridSpacing( 32 ), ambientGridReach( 512 ), ambientGridBudgetMB( 1024 ), preset( RESTIR_PRESET_DEFAULT ),
 		  iterations( 128 ), candidates( 8 ), maxBounces( -1 ),
 		  seed( 1 ), gpuIndex( -1 ), vramBudgetMB( 0 ), pushConstantLimit( 0 ), forceComputeBvh( false ), probeEnabled( false ),
