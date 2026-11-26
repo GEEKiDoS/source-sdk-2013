@@ -1162,7 +1162,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 			pszName = highresName;
 			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
 			{
-				m_pDevice->Highres().OnNativeFailure( "required native highres shader variant unavailable" );
+				m_pDevice->Highres().DisableMap( "required native highres shader variant unavailable" );
 				return nullptr;
 			}
 		}
@@ -1178,7 +1178,7 @@ ShaderRecordDX12 *CShaderAPIDX12::ResolveActiveNamedShader( bool bPixel, int nDy
 				ResolveNamedShader( earlyName, true, nStaticIndex, nDynamicIndex ) : nullptr;
 			if ( !record || !record->highresAbi || !record->legacyBytecode.IsEmpty() )
 			{
-				m_pDevice->Highres().OnNativeFailure( "required native early-depth shader variant unavailable" );
+				m_pDevice->Highres().DisableMap( "required native early-depth shader variant unavailable" );
 				return nullptr;
 			}
 		}
@@ -1497,7 +1497,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		( ( !m_hBoundVS && V_strstr( m_ActiveSnapshot.vertexShaderName.c_str(), "_shadowmap_" ) ) ||
 		  ( !m_hBoundPS && V_strstr( m_ActiveSnapshot.pixelShaderName.c_str(), "_shadowmap_" ) ) ) )
 	{
-		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "native highres material shader unavailable" );
+		if ( highresMap ) m_pDevice->Highres().DisableMap( "native highres material shader unavailable" );
 		else m_pDevice->Lighting().RejectUnsupportedLitShader( m_ActiveSnapshot.pixelShaderName.c_str() );
 		return;
 	}
@@ -1656,7 +1656,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			psRecord = ResolveNamedShader( coverage, true, m_ActiveSnapshot.staticPixelIndex, m_nPixelShaderIndex );
 			if ( !psRecord || !psRecord->legacyBytecode.IsEmpty() )
 			{
-				if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "native depth-prepass coverage shader unavailable" );
+				if ( highresMap ) m_pDevice->Highres().DisableMap( "native depth-prepass coverage shader unavailable" );
 				return;
 			}
 			m_BoundNamedCombos[1] = m_NamedShaderCombos[m_NamedComboHints[1]];
@@ -1664,7 +1664,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	}
 	if ( ( vsRecord && !ReflectNativeCBuffersDX12( vsRecord ) ) || ( psRecord && !ReflectNativeCBuffersDX12( psRecord ) ) )
 	{
-		if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres native shader reflection failed" );
+		if ( highresMap ) m_pDevice->Highres().DisableMap( "highres native shader reflection failed" );
 		return;
 	}
 	const auto samplerMask = [&]( const ShaderRecordDX12 *record, uint32_t all )
@@ -2296,7 +2296,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 					const TextureRecord *texture = FindTexture( m_BoundTextures[stage] );
 					if ( texture && texture->highresPage != 0xffffffffu )
 					{
-						m_pDevice->Highres().OnNativeFailure( "fixed lightmap RGB stage lacks an explicit lightmap coordinate role" );
+						m_pDevice->Highres().DisableMap( "fixed lightmap RGB stage lacks an explicit lightmap coordinate role" );
 						return;
 					}
 				}
@@ -2337,7 +2337,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 			ShaderRecordDX12 *pRecord = CreateFixedFunctionShaderDX12( m_pDevice, state, pixel, vsRecord ? &vsRecord->translated.outputLinkage : nullptr );
 			if ( !pRecord )
 			{
-				if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "fixed highres shader compilation failed" );
+				if ( highresMap ) m_pDevice->Highres().DisableMap( "fixed highres shader compilation failed" );
 				Warning( "ShaderAPIDX12: unable to compile generated %s shader\n", pixel ? "pixel" : "vertex" );
 				return nullptr;
 			}
@@ -2452,7 +2452,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		}
 		if ( !ReflectRecordInputsDX12( psRecord ) )
 		{
-			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres participating shader reflection failed" );
+			if ( highresMap ) m_pDevice->Highres().DisableMap( "highres participating shader reflection failed" );
 			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
 		}
@@ -2506,7 +2506,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		};
 		if ( !validateNative( vsRecord, false ) || !validateNative( psRecord, true ) )
 		{
-			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres native material constant ABI mismatch" );
+			if ( highresMap ) m_pDevice->Highres().DisableMap( "highres native material constant ABI mismatch" );
 			else if ( m_pDevice->Lighting().ReceiverFeatureGeneration() ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_SHADER_UNAVAILABLE );
 			return;
 		}
@@ -2528,7 +2528,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 					char reason[256];
 					V_snprintf( reason, sizeof( reason ), "lightmap shader %s sampler %u lacks explicit sampler-role metadata",
 						m_ActiveSnapshot.pixelShaderName.c_str(), sampler );
-					m_pDevice->Highres().OnNativeFailure( reason );
+					m_pDevice->Highres().DisableMap( reason );
 					return;
 				}
 			}
@@ -2978,7 +2978,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 	bindingInput.lightingVisibilityRequired = !highresMap && !cheapAuxiliary;
 	if ( highresMap && !shadowPass && psRecord && psRecord->sunVisibilityAbi )
 	{
-		m_pDevice->Highres().OnNativeFailure( "new highres receiver shader retains the abandoned sun carrier" );
+		m_pDevice->Highres().DisableMap( "new highres receiver shader retains the abandoned sun carrier" );
 		return;
 	}
 	if ( !shadowPass && psRecord && psRecord->lightingAbi && !psRecord->propVisibilityAbi &&
@@ -3045,7 +3045,7 @@ void CShaderAPIDX12::DrawBuffers( const VertexBindingDX12 ( &bindings )[16], CIn
 		ZoneNamedN( ___tracy_scoped_zone, "DX12 PrepareBindings", DX12_DRAW_ZONES_ACTIVE );
 		if ( !m_Pipeline.PrepareBindings( list, bindingInput ) )
 		{
-			if ( highresMap ) m_pDevice->Highres().OnNativeFailure( "highres draw descriptor allocation failed" );
+			if ( highresMap ) m_pDevice->Highres().DisableMap( "highres draw descriptor allocation failed" );
 			else if ( shadowPass || bindingInput.lightingAbi ) m_pDevice->Lighting().FailRecording( SHADOWMAP_ERR_RESIDENCY );
 			Warning( "ShaderAPIDX12: binding descriptors unavailable\n" );
 			return;

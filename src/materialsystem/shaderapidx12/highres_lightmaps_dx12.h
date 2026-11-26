@@ -60,6 +60,7 @@ public:
     void EndClientLevelShutdown() override;
     bool BeginClientResourceReadmission() override;
     void EndClientResourceReadmission() override;
+    void DisableMap(const char *reason) override;
     bool EnhancedMap() const;
     bool Rejected() const;
     void ForgetTexture(ShaderAPITextureHandle_t handle, uint64 allocationSerial);

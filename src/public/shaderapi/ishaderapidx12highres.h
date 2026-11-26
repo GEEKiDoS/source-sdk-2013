@@ -7,14 +7,14 @@
 #include "tier0/platform.h"
 #include "tier1/interface.h"
 
-#define SHADERAPIDX12_HIGHRES_INTERFACE_VERSION "ShaderAPIDX12HighresLightmaps_003"
+#define SHADERAPIDX12_HIGHRES_INTERFACE_VERSION "ShaderAPIDX12HighresLightmaps_004"
 
 enum DX12HighresMapState
 {
     DX12_HIGHRES_ORDINARY,
     DX12_HIGHRES_PENDING,
     DX12_HIGHRES_READY,
-    DX12_HIGHRES_REJECTED
+    DX12_HIGHRES_REJECTED // the native engine bridge broke its contract; the map cannot be rendered safely
 };
 struct DX12HighresMapStatus
 {
@@ -49,6 +49,9 @@ public:
     // On success, pair with End to restore exact queue permission/mode/service.
     virtual bool BeginClientResourceReadmission() = 0;
     virtual void EndClientResourceReadmission() = 0;
+    // Drops the map's enhanced lighting (an invalid .light or a failed runtime step): the map continues with its own
+    // native lighting and state becomes ORDINARY. A REJECTED map stays rejected.
+    virtual void DisableMap(const char *reason) = 0;
 protected:
     virtual ~IShaderAPIDX12HighresLightmaps() = default;
 };

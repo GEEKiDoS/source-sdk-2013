@@ -1302,6 +1302,9 @@ struct LightingViewStateDX12
 	ID3D12Resource *structured[4]{};
 	uint64_t structuredOffsets[4]{};
 	bool highresScope = false, cheapAuxiliary = false, receiverVisibility = false;
+	// The packet failed validation: the view keeps its stack slot, and its draws take the neutral packet (no selected
+	// sun/local irradiance, as outside any receiver view) instead of being skipped.
+	bool neutralized = false;
 };
 
 struct CLightingDX12::Impl
@@ -1548,7 +1551,7 @@ struct CLightingDX12::Impl
 	void Fail( const char *error, uint32 map = 0, uint32 view = 0 )
 	{
 		if ( device && device->Highres().EnhancedMap() )
-			device->Highres().OnNativeFailure( error );
+			device->Highres().DisableMap( error );
 		if ( !map ) map = activeMap.load() ? activeMap.load() : receiverGeneration.load();
 		if ( !view && views.Count() && views.Tail()->packet->view.mapGeneration == map ) view = views.Tail()->packet->view.viewGeneration;
 		Status( map, view, DX12_LIGHTING_STATUS_FAILED, error );
@@ -1556,6 +1559,13 @@ struct CLightingDX12::Impl
 		const uint32 active = activeMap.load();
 		if ( active && active != map ) Status( active, 0, DX12_LIGHTING_STATUS_FAILED, error );
 	}
+	// One view's packet failed validation: only that view's status fails; the map and its enhanced lighting continue.
+	void FailView( const char *error, uint32 map, uint32 view )
+	{
+		Status( map, view, DX12_LIGHTING_STATUS_FAILED, error );
+	}
+	// The innermost view that draws with its own packet; null inside a neutralized view or outside any view.
+	ViewState *Scope() { return views.Count() && !views.Tail()->neutralized ? views.Tail() : nullptr; }
 	bool Failed( uint32 map, uint32 view = 0 )
 	{
 		AUTO_LOCK( mutex );
@@ -1879,7 +1889,7 @@ void CLightingDX12::RejectUnsupportedLitShader( const char *name )
 	V_snprintf( error, sizeof( error ), "%s: %s", SHADOWMAP_ERR_SHADER_UNAVAILABLE, name ? name : "<unknown>" );
 	if ( m_Impl->device && m_Impl->device->Highres().EnhancedMap() )
 	{
-		m_Impl->device->Highres().OnNativeFailure( error );
+		m_Impl->device->Highres().DisableMap( error );
 		return;
 	}
 	const uint32 generation = ReceiverFeatureGeneration();
@@ -2159,8 +2169,9 @@ void CLightingDX12::PrepareMap( const DX12LightingMapDesc &map )
 bool CLightingDX12::GetSunContactDirection( float out[4] )
 {
 	Impl &s = *m_Impl;
-	if ( !s.views.Count() ) return false;
-	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	const Impl::ViewState *scope = s.Scope();
+	if ( !scope ) return false;
+	const LightingPacketDX12 &packet = *scope->packet;
 	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return false;
 	const uint32 flags = packet.view.constants.cShadowView1[3];
 	if ( !( flags & DX12_SHADOW_VIEW_HAS_SUN ) || ( flags & DX12_SHADOW_VIEW_UNSHADOWED ) ) return false;
@@ -2170,8 +2181,9 @@ bool CLightingDX12::GetSunContactDirection( float out[4] )
 int CLightingDX12::GetContactLights( const float eye[3], int limit, float origins[][4], uint32 *lightIds )
 {
 	Impl &s = *m_Impl;
-	if ( limit <= 0 || !s.views.Count() ) return 0;
-	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	const Impl::ViewState *scope = s.Scope();
+	if ( limit <= 0 || !scope ) return 0;
+	const LightingPacketDX12 &packet = *scope->packet;
 	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return 0;
 	if ( packet.view.constants.cShadowView1[3] & DX12_SHADOW_VIEW_UNSHADOWED ) return 0;
 	// The shader applies a mask only to a charted light, so only those are candidates.
@@ -2202,8 +2214,9 @@ int CLightingDX12::GetContactLights( const float eye[3], int limit, float origin
 float CLightingDX12::GetLocalShadowNear()
 {
 	Impl &s = *m_Impl;
-	if ( !s.views.Count() ) return 0.f;
-	const LightingPacketDX12 &packet = *s.views.Tail()->packet;
+	const Impl::ViewState *scope = s.Scope();
+	if ( !scope ) return 0.f;
+	const LightingPacketDX12 &packet = *scope->packet;
 	if ( s.Failed( packet.view.mapGeneration, packet.view.viewGeneration ) ) return 0.f;
 	float nearest = 0.f;
 	for ( const RuntimeShadowLightGpu &light : packet.lights )
@@ -2258,8 +2271,8 @@ int CLightingDX12::CaptureModelRows( int limit, std::shared_ptr<DrawModelRowsDX1
 {
 	Impl &s = *m_Impl;
 	static const auto neutral = std::make_shared<Impl::ModelJob>();
-	if ( !s.views.Count() ) { out = neutral; return 4; }
-	auto &scope = *s.views.Tail();
+	if ( !s.Scope() ) { out = neutral; return 4; }
+	auto &scope = *s.Scope();
 	const LightingPacketDX12 &packet = *scope.packet;
 	const auto &lights = packet.lights;
 	// Every prop is lit by the same carriers: probes (or the ambient cube) plus the runtime light table, which holds
@@ -2914,7 +2927,11 @@ void CLightingDX12::Execute( LightingPacketDX12 *packet )
 		// CSR and resident tail entries are view light indices; the canonical map (index + 1) was validated above.
 		for ( uint32 i = 0, checked = v.tileIndexCount - ( residentTail ? v.canonicalMapCount : 0 ); !failure && i < checked; ++i )
 			if ( packet->indices[i] >= v.lightCount ) failure = kPacketError;
-		if ( failure ) s.Fail( failure, v.mapGeneration, v.viewGeneration );
+		if ( failure )
+		{
+			s.FailView( failure, v.mapGeneration, v.viewGeneration );
+			scope->neutralized = true;
+		}
 		else
 		{
 			CPipelineCacheDX12::BindingInputDX12 input( s.api->m_Pipeline.NullShaderResourceView() );
@@ -3650,7 +3667,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	const float modelToWorld[12], CPipelineCacheDX12::BindingInputDX12 &input )
 {
 	Impl &s = *m_Impl;
-	if ( !input.lightingAbi || !s.views.Count() || !s.views.Tail()->receiverVisibility )
+	if ( !input.lightingAbi || !s.Scope() || !s.Scope()->receiverVisibility )
 		return true; // PrepareReceiverDraw installed disabled constants and a legal SRV.
 	const VertexInputDX12 *position = nullptr;
 	if ( draw.layout )
@@ -3804,7 +3821,7 @@ bool CLightingDX12::PrepareStaticPropDraw( uint64 meshToken, const SunReceiverDr
 	constants.entriesAndTriangles[3] = proof.count;
 	memcpy( constants.modelToWorld, modelToWorld, sizeof(constants.modelToWorld) );
 	memcpy( constants.direct, proof.direct.direct, sizeof(constants.direct) );
-	const auto &view = s.views.Tail()->packet->view;
+	const auto &view = s.Scope()->packet->view;
 	for ( uint32 style = 0; style < proof.direct.styleCount; ++style )
 		constants.styles[style] = view.styles[proof.direct.styles[style]];
 	if ( proof.constantsFence != fence || memcmp( &proof.constants, &constants, sizeof(constants) ) )
@@ -3915,13 +3932,13 @@ bool CLightingDX12::PrepareReceiverDraw( bool lightingAbi, CPipelineCacheDX12::B
 	Impl &s = *m_Impl;
 	input.lightingAbi = lightingAbi;
 	if ( !lightingAbi ) return true;
-	Impl::ViewState &scope = s.views.Count() ? *s.views.Tail() : s.neutral;
-	if ( !s.views.Count() && !scope.nullTable )
+	Impl::ViewState &scope = s.Scope() ? *s.Scope() : s.neutral;
+	if ( &scope == &s.neutral && !scope.nullTable )
 	{
 		if ( !LightingNullTable( s.device->NativeDevice(), scope.nullTable ) ) { s.Fail( SHADOWMAP_ERR_RESIDENCY ); return false; }
 	}
 	const DX12LightingViewPacket &view = scope.packet->view;
-	if ( s.views.Count() && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
+	if ( &scope != &s.neutral && s.Failed( view.mapGeneration, view.viewGeneration ) ) return false;
 	if ( !PrepareViewTables( scope, !cheapAuxiliary, cheapAuxiliary, input ) ) return false;
 	if ( s.highresMap ) return !s.device->Highres().Rejected();
 	ID3D12Device *device = s.device->NativeDevice();
@@ -4042,7 +4059,7 @@ void CLightingDX12::CaptureVolumetricView()
 	s.ReleaseVolumetricView();
 	s.volume.valid = true;
 	// No lighting view (no map snapshot / shadow maps off): the volume draws projected lights over neutral space 2.
-	if ( s.views.Count() ) s.volume.pending = s.views.Tail();
+	s.volume.pending = s.Scope();
 }
 bool CLightingDX12::PrepareVolumetricDraw( CPipelineCacheDX12::BindingInputDX12 &input )
 {

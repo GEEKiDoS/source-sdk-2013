@@ -1821,8 +1821,8 @@ void CHLClient::LevelInitPreEntity( char const* pMapName )
 	ResetToneMapping(1.0);
 
 	// Validate the rshd-v4 manifest and require exact native high-resolution
-	// admission before client systems initialize. Rejected enhanced maps disconnect;
-	// ordinary maps retain their original lighting and rendering mode.
+	// admission before client systems initialize. A map whose enhanced lighting
+	// cannot be admitted keeps its own lighting; only a rejected native bridge disconnects.
 	{
 		char szShadowError[256] = {};
 		if ( !ShadowMapsDX12_LevelInitPreEntity( pMapName, szShadowError, sizeof( szShadowError ) ) )

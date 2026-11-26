@@ -601,6 +601,14 @@ CUtlVector<SparePage_t> g_PageSpares;
 int g_Sun = -1;
 uint32 g_SelectionFrame=0xffffffffu, g_FramePromotions=0, g_FrameDemotions=0;
 bool g_FrameShadowsEnabled=true;
+// Failure resolution. A failed receiver view (its CPU build, or the backend's check of its packet) only costs that view
+// its realtime lights: its draws take the backend's neutral packet. Main views failing kViewFailureLimit frames in a row
+// suspend realtime shadows for the map (views stay unshadowed, lit by the selected lights). A map-level failure keeps
+// the map on its own lighting; only a REJECTED native bridge disconnects.
+static const int kViewFailureLimit=3;
+bool g_BuildingView=false, g_ViewFailed=false, g_ShadowsSuspended=false, g_TransmitWarned=false;
+int g_FailedMainViews=0;
+char g_ViewError[256]="";
 CShadowCameraPvs g_CameraPvs;
 // Sun sky clip (shadow_sky_clip.hlsli): the map's sky faces, read once at admission, keyed by sealed region
 // (areas joined through their area portals) so a 3D-skybox room's sky never clips the main map. The entry
@@ -689,6 +697,7 @@ void ResetMapState()
 	g_SkyRegionSlots.Purge();
 	g_State.worldMins.Init(); g_State.worldMaxs.Init();
 	g_RequestedResLevel=-1;
+	g_ViewFailed=false; g_ShadowsSuspended=false; g_TransmitWarned=false; g_FailedMainViews=0; g_ViewError[0]='\0';
 }
 
 class CShadowViewData;
@@ -697,17 +706,77 @@ int g_OrdinaryAutoexecFrames = 0;
 CShadowViewData *g_LastMain = NULL;
 ShadowStats_t g_LastStats = {};
 
+bool HighresRejected()
+{
+	if ( !g_Highres ) return false;
+	DX12HighresMapStatus native={};
+	g_Highres->GetStatus(native,NULL,0);
+	return native.state==DX12_HIGHRES_REJECTED;
+}
+
+// The map continues on its own lighting: enhanced lighting off in the backend, the lighting map unloaded (its failed
+// status would otherwise block presentation), and no client runtime. g_State.error keeps the reason for r_shadowmap_stats.
+void FallBackToNativeLighting()
+{
+	Warning( "Shadowmaps: %s continues with its own lighting\n", g_MapName[0] ? g_MapName : "the map" );
+	if ( g_Highres ) g_Highres->DisableMap( g_Error );
+	if ( g_Lighting )
+	{
+		g_Lighting->SetReceiverFeatureGeneration(0);
+		if ( g_MapGeneration ) g_Lighting->UnloadMap(g_MapGeneration);
+	}
+	g_MapGeneration=0; g_State.mapGeneration=0;
+	g_Admitted=false; g_State.runtimeActive=false;
+	g_Error[0]='\0';
+}
+
+bool FailView( const char *error )
+{
+	if ( !g_ViewFailed ) V_strncpy( g_ViewError, error && *error ? error : SHADOWMAP_ERR_RESIDENCY, sizeof(g_ViewError) );
+	g_ViewFailed=true;
+	return false;
+}
+// Shadow work of the current receiver view stops on a map-level error or on this view's own failure.
+bool ShadowWorkFailed()
+{
+	return g_Error[0] || g_ViewFailed;
+}
+
+// A failed view resolves itself (the next frame rebuilds it); repeated main-view failures suspend realtime shadows.
+void NoteViewFailure( const char *error, bool mainView )
+{
+	static double lastWarning=-1.0;
+	const double now=Plat_FloatTime();
+	if ( lastWarning<0.0 || now-lastWarning>5.0 )
+	{
+		Warning( "Shadowmaps: view skipped its realtime lights this frame: %s\n", error );
+		lastWarning=now;
+	}
+	if ( !mainView || g_ShadowsSuspended ) return;
+	if ( ++g_FailedMainViews>=kViewFailureLimit )
+	{
+		g_ShadowsSuspended=true;
+		Warning( "Shadowmaps: realtime shadows suspended on %s after %d failed frames (%s); enhanced lighting stays\n",
+			g_MapName, g_FailedMainViews, error );
+	}
+}
+
 bool Fail( const char *error, char *dst = NULL, int bytes = 0 )
 {
+	if ( !dst && g_BuildingView ) return FailView( error );
 	V_strncpy( g_Error, error && *error ? error : SHADOWMAP_ERR_RESIDENCY, sizeof(g_Error) );
 	g_Admitted = false;
 	g_State.failed=g_State.featureMap; g_State.runtimeActive=false;
 	V_strncpy(g_State.error,g_Error,sizeof(g_State.error));
 	if ( dst && bytes > 0 ) V_strncpy( dst, g_Error, bytes );
 	Warning( "%s\n", g_Error );
-	// Admission failures are disconnected by CHLClient's caller. Runtime
-	// failures reject receiver geometry immediately and request safe disconnect.
-	if ( !dst && !g_ClientLevelShutdown ) engine->ClientCmd_Unrestricted("disconnect\n");
+	// Admission failures are resolved by ShadowMapsDX12_LevelInitPreEntity. A runtime failure keeps the map on its own
+	// lighting; only a rejected native bridge (the engine is not what the hooks expect) disconnects.
+	if ( !dst && !g_ClientLevelShutdown )
+	{
+		if ( HighresRejected() ) engine->ClientCmd_Unrestricted("disconnect\n");
+		else FallBackToNativeLighting();
+	}
 	return false;
 }
 
@@ -1276,7 +1345,8 @@ void UpdateRealtimeSelection( const CViewSetup &setup )
 	g_CameraPvs.UpdateCamera(setup.origin);
 	g_SelectionFrame=(uint32)gpGlobals->framecount;
 	g_FramePromotions=g_FrameDemotions=0;
-	g_FrameShadowsEnabled=ShadowMapsDX12_ShadowsEnabled();
+	// Realtime shadows need the server's caster transmission and stay off once repeated view failures suspended them.
+	g_FrameShadowsEnabled=ShadowMapsDX12_ShadowsEnabled() && g_TransmitReady && !g_ShadowsSuspended;
 	const float setting=HybridNonnegativeSetting(r_shadowmap_max_realtime_lights.GetString(),4.0f);
 	const int cap=setting==0 ? 0 : setting>=INT_MAX ? INT_MAX : MAX((int)setting,1);
 	const int limit=g_FrameShadowsEnabled ? (cap ? MIN(cap,g_Locals.Count()) : g_Locals.Count()) : 0;
@@ -1416,7 +1486,8 @@ bool PollCompletedViews()
 			}
 			if ( data->packet.mapGeneration==g_MapGeneration )
 			{
-				if ( status==DX12_LIGHTING_STATUS_FAILED && !g_Error[0] ) Fail(error);
+				if ( status==DX12_LIGHTING_STATUS_FAILED && !g_Error[0] ) NoteViewFailure(error,data->kind==SHADOWMAP_VIEW_MAIN);
+				else if ( status==DX12_LIGHTING_STATUS_READY && data->kind==SHADOWMAP_VIEW_MAIN ) g_FailedMainViews=0;
 				if ( status==DX12_LIGHTING_STATUS_READY )
 				{
 					g_LastStats=data->stats;
@@ -2129,7 +2200,7 @@ bool CreatePage( CShadowViewData &data, int index )
 	for ( int t=0;t<3;++t ) if ( previous[t] )
 	{
 		CopyDepthRect(data,next[t],previous[t],0,0,page.width,page.height);
-		if ( g_Error[0] )
+		if ( ShadowWorkFailed() )
 		{
 			for ( int n=0;n<3;++n ) DestroyTarget(next[n]);
 			return false;
@@ -2225,7 +2296,7 @@ bool WritablePage( CShadowViewData &data, int pageIndex )
 	}
 	if ( !next ) return false;
 	CopyDepthRect(data,next,previous,0,0,page.width,page.height);
-	if ( g_Error[0] ) { DestroyTarget(next); return false; }
+	if ( ShadowWorkFailed() ) { DestroyTarget(next); return false; }
 	++data.stats.pageCopies;
 	if ( g_PageCopyFrame!=(uint32)gpGlobals->framecount )
 	{
@@ -2482,7 +2553,7 @@ bool WritableSunTarget( CShadowViewData &data, DX12ShadowTarget_t &work, int siz
 	// Preserve the old pixels for every other case (especially cascade atlases).
 	const bool overwriteWholeTarget=count==1 && caches[0].pending && !caches[0].pendingReady && !caches[0].pendingClean;
 	if ( !overwriteWholeTarget ) CopyDepthRect(data,next,previous,0,0,size);
-	if ( g_Error[0] ) { DestroyTarget(next); return false; }
+	if ( ShadowWorkFailed() ) { DestroyTarget(next); return false; }
 	for ( int c=0;c<count;++c )
 	{
 		ShadowCache_t &cache=caches[c];
@@ -2719,7 +2790,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 	// Every caster pass of a sun chart (clean, rigid, overlay) is clipped by the same sky map.
 	DX12ShadowSkyClip skyClip, *sunSkyClip=NULL;
 	if ( chartLight<0 && BuildSunSkyClip(data,cache,chartLight,skyClip) ) sunSkyClip=&skyClip;
-	if ( g_Error[0] ) return false;
+	if ( ShadowWorkFailed() ) return false;
 	// Required work is synchronous; no throttling or deferred visible updates.
 	if ( !cache.pendingClean )
 	{
@@ -2757,7 +2828,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 			}
 			baseRebuilt=true;
 			CopyDepthRect(data,rigidTarget,clean,x,y,size);
-			if ( g_Error[0] ) return false;
+			if ( ShadowWorkFailed() ) return false;
 			if ( cache.pendingRigidCasters && !RenderDepth(data,rigidTarget,x,y,size,cache.pendingView,cache.pendingVolume,
 				false,false,false,true,false,false,SHADOWMAP_DYNAMIC_RIGID,NULL,NULL,sunSkyClip) ) return false;
 			++data.stats.rigidLayerRebuilds;
@@ -2843,7 +2914,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 			r.boundsCoverChart+=partial && !why;
 		}
 	}
-	if ( g_Error[0] ) return false;
+	if ( ShadowWorkFailed() ) return false;
 	ShadowMapDepthFootprint_t footprint;
 	footprint.Reset(cache.pendingMatrix,size);
 	if ( overlayDynamic ) cache.pendingRopeFootprint=AcquireRopeFootprint(cache,size);
@@ -2853,7 +2924,7 @@ bool RenderChart( CShadowViewData &data, ShadowCache_t &cache, DX12ShadowTarget_
 		if ( !RenderDepth(data,work,x,y,size,cache.pendingView,cache.pendingVolume,false,false,false,
 			overlayDynamic,cache.pendingBillboards,true,overlayLayer,&footprint,cache.pendingRopeFootprint.GetObject(),sunSkyClip) ) return false;
 	}
-	if ( g_Error[0] ) return false;
+	if ( ShadowWorkFailed() ) return false;
 	cache.pendingFootprint.x0=footprint.x0; cache.pendingFootprint.y0=footprint.y0;
 	cache.pendingFootprint.x1=footprint.x1; cache.pendingFootprint.y1=footprint.y1;
 	cache.pendingFootprintReasons=footprint.reasons;
@@ -3196,7 +3267,7 @@ bool AddViewModelSelfShadow( CShadowViewData &data, const SunCascadeTargets_t &s
 		const ShadowCache_t &cache=source.caches[i];
 		const bool current=cache.valid && !memcmp(cache.matrix,constants.cSunWorldToClip[i],sizeof(cache.matrix));
 		CopyDepthRect(data,g_ViewModelSelfSun,current ? source.clean : shared,x+x0,y+y0,x1-x0,y1-y0);
-		if ( g_Error[0] ) return false;
+		if ( ShadowWorkFailed() ) return false;
 		if ( !current ) continue;
 		// Dynamic casters in the column through the viewmodel along the sun, widened by the filter reach.
 		const float reach=receiverRadius+margin*constants.cShadowDepthRecords[i][2];
@@ -3296,7 +3367,7 @@ bool AddViewModelSelfLocals( CShadowViewData &data )
 		const int sx=(int)gpu.faces[chart.face][1], sy=(int)gpu.faces[chart.face][2];
 		CopyDepthRectTo(data,target,px+chart.x0,py+chart.y0,g_Pages[gpu.faces[chart.face][0]].clean,
 			sx+chart.x0,sy+chart.y0,chart.x1-chart.x0,chart.y1-chart.y0);
-		if ( g_Error[0] ) return false;
+		if ( ShadowWorkFailed() ) return false;
 		// This light's dynamic casters inside the box spanned by the emitter and the receivers, widened by the filter
 		// reach at the receivers' distance.
 		const Vector origin(gpu.origin[0],gpu.origin[1],gpu.origin[2]);
@@ -4324,7 +4395,7 @@ void ParseMapLightEntities()
 		data=MapEntity_SkipToNextEntity(data,token);
 	}
 }
-bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int bytes )
+static bool AdmitMap( const char *mapName, char *error, int bytes )
 {
 	if ( g_ClientLevelShutdown ) return Fail("Highres lightmaps: admission attempted during client level shutdown",error,bytes);
 	if ( g_MapGeneration || g_State.featureMap ) ShadowMapsDX12_LevelShutdown();
@@ -4451,6 +4522,17 @@ bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int by
 	// Sign-on DT_World can arrive after PreEntity. Check its capability before
 	// the FIRST receiver draw, not prematurely while the map is still loading.
 	g_State.runtimeActive=true; g_Admitted=true;
+	return true;
+}
+
+// An enhanced map that cannot be admitted (invalid or mismatched .light, backend validation) keeps its own lighting;
+// false only when the native bridge rejected the map or the client is shutting the level down.
+bool ShadowMapsDX12_LevelInitPreEntity( const char *mapName, char *error, int bytes )
+{
+	if ( AdmitMap(mapName,error,bytes) ) return true;
+	if ( g_ClientLevelShutdown || HighresRejected() ) return false;
+	FallBackToNativeLighting();
+	if ( error && bytes>0 ) error[0]='\0';
 	return true;
 }
 
@@ -4811,6 +4893,8 @@ void ShadowMapsDX12_PrepareMainView( const CViewSetup &setup )
 	UpdateDynamicShadowBudget(setup.origin);
 }
 
+static bool BuildReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth,
+	const ShadowMapViewModelCasters_t *viewModel, uint64 nativeMapGeneration );
 bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth,
 	const ShadowMapViewModelCasters_t *viewModel )
 {
@@ -4835,8 +4919,23 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 	if ( native.state!=DX12_HIGHRES_READY || native.nativeMapGeneration!=g_State.nativeMapGeneration ||
 		native.faceLump!=mode.faceLump || native.lightingLump!=mode.lightingLump )
 		return Fail(nativeError[0]?nativeError:"Highres lightmaps: receiver requires READY exact native generation/mode");
-	if ( !g_TransmitReady ) return Fail(SHADOWMAP_ERR_TRANSMIT_UNAVAILABLE);
+	if ( !g_TransmitReady && kind==SHADOWMAP_VIEW_MAIN && !g_TransmitWarned )
+	{
+		g_TransmitWarned=true;
+		Warning( "%s; realtime shadows stay off until the server provides it\n", SHADOWMAP_ERR_TRANSMIT_UNAVAILABLE );
+	}
 	if ( setup.width<=0 || setup.height<=0 ) return Fail(SHADOWMAP_ERR_INVALID_METADATA);
+	g_ViewFailed=false; g_BuildingView=true;
+	const bool begun=BuildReceiverView(setup,kind,maxReceiverDepth,viewModel,native.nativeMapGeneration);
+	g_BuildingView=false;
+	if ( g_ViewFailed ) NoteViewFailure(g_ViewError,kind==SHADOWMAP_VIEW_MAIN);
+	return begun;
+}
+// The CPU build of one receiver view. A Fail inside it fails only this view (FailView): the view is not published and
+// its draws take the backend's neutral packet.
+static bool BuildReceiverView( const CViewSetup &setup, ShadowMapReceiverViewKind_t kind, float maxReceiverDepth,
+	const ShadowMapViewModelCasters_t *viewModel, uint64 nativeMapGeneration )
+{
 	CShadowViewData *data=AcquireView(setup,kind); data->receiver=setup; data->kind=kind; data->receiverMaxDepth=maxReceiverDepth;
 	data->selfCasters.RemoveAll();
 	if ( viewModel )
@@ -4864,7 +4963,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 		ShadowMapsDX12_PrepareStaticPropReceivers();
 	if ( !++g_ViewGeneration ) ++g_ViewGeneration;
 	data->packet.mapGeneration=g_MapGeneration; data->packet.viewGeneration=g_ViewGeneration;
-	data->packet.highresRoute=1; data->packet.nativeMapGeneration=native.nativeMapGeneration;
+	data->packet.highresRoute=1; data->packet.nativeMapGeneration=nativeMapGeneration;
 	for ( uint32 i=0;i<hlight::kLightstyleCount;++i )
 		data->packet.styles[i]=engine->LightStyleValue(i);
 	data->stats.selectedLights=g_Selected.Count();
@@ -5039,6 +5138,7 @@ bool ShadowMapsDX12_BeginReceiverView( const CViewSetup &setup, ShadowMapReceive
 			debugoverlay->AddBoxOverlay(vec3_origin,caster.mins,caster.maxs,vec3_angle,caster.immutable?0:255,caster.immutable?255:64,64,32,0);
 		}
 	}
+	if ( g_ViewFailed ) return AbortView(*data);
 	// Nonzero-view status remains Pending until EndView replay completes.
 	// PollCompletedViews owns its sole terminal consumption after that point.
 	{

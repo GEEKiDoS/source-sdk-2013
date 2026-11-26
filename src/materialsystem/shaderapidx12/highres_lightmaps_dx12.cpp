@@ -501,7 +501,15 @@ struct CHighresLightmapsDX12::Impl
     {
         draws[drawCount++ % kDrawRing] = {draw.vertexShader, draw.pixelShader, fence, draw.meshToken, page, draw.firstIndex, draw.indexCount};
     }
+    // Anything wrong with the .light or a runtime step only drops the enhanced lighting: the map keeps its native lighting.
     void Fail(const char *reason)
+    {
+        // A map already on its own lighting (no enhanced asset) has nothing left to drop.
+        if (status.state == DX12_HIGHRES_REJECTED || (status.state == DX12_HIGHRES_ORDINARY && !enhancedRequired && !mode)) return;
+        Disable(reason && *reason ? reason : "Highres lightmaps: native boundary failed");
+    }
+    // The native engine bridge broke its contract: nothing of this map can be drawn safely.
+    void Reject(const char *reason)
     {
         if (status.state != DX12_HIGHRES_REJECTED)
         {
@@ -512,8 +520,8 @@ struct CHighresLightmapsDX12::Impl
     }
     void Disable(const char *reason)
     {
-        V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: enhanced sidecar is incompatible with native materials", sizeof(error));
-        Warning("Highres lightmaps: enhanced sidecar disabled; continuing with native lighting: %s\n", error);
+        if (reason != error) V_strncpy(error, reason && *reason ? reason : "Highres lightmaps: enhanced sidecar is incompatible with native materials", sizeof(error));
+        Warning("Highres lightmaps: enhanced lighting disabled; continuing with the map's own lighting: %s\n", error);
         ClearGpu();
         ClearProbes();
         atlas.reset();
@@ -1181,7 +1189,7 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         std::vector<uint8> manifest(bytes);
         if (!BspFile::Read(&bsp,offset,bytes,manifest.data())) { s.Fail("Highres lightmaps: cannot read manifest"); return false; }
         hlight::ManifestView manifestView{};
-        if (!hlight::ValidateManifest(manifest.data(),bytes,flags,manifestView,s.error,sizeof(s.error))) { s.status.state=DX12_HIGHRES_REJECTED; return false; }
+        if (!hlight::ValidateManifest(manifest.data(),bytes,flags,manifestView,s.error,sizeof(s.error))) { s.Fail(s.error); return false; }
         const uint32 nativeMode=s.domain->lightingLump==LUMP_LIGHTING?SHADOWMAP_MODE_LDR:
             s.domain->lightingLump==LUMP_LIGHTING_HDR?SHADOWMAP_MODE_HDR:SHADOWMAP_MODE_COUNT;
         if (nativeMode==SHADOWMAP_MODE_COUNT) { s.Fail("Highres lightmaps: unknown selected native lighting lump"); return false; }
@@ -1205,9 +1213,9 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         else if (prefetched && prefetched->Matches(members)) s.assets=std::move(prefetched);
         else { held.reset(); prefetched.reset(); s.assets=BuildAssets(bsp,members,probePath); }
         COM_TimestampedLog("Highres lightmaps: assets - end");
-        if (!s.assets->valid) { V_strncpy(s.error,s.assets->error,sizeof(s.error)); s.status.state=DX12_HIGHRES_REJECTED; s.assets.reset(); return false; }
+        if (!s.assets->valid) { V_strncpy(s.error,s.assets->error,sizeof(s.error)); s.assets.reset(); s.Fail(s.error); return false; }
         s.file=s.assets->file;
-        if (!hlight::ValidateManifestAsset(s.file,manifestView,s.error,sizeof(s.error))) { s.status.state=DX12_HIGHRES_REJECTED; return false; }
+        if (!hlight::ValidateManifestAsset(s.file,manifestView,s.error,sizeof(s.error))) { s.Fail(s.error); return false; }
         COM_TimestampedLog("Highres lightmaps: native domain - start");
         s.mode=hlight::FindMode(s.file,s.domain->faceLump,s.domain->lightingLump);
         if (!s.mode || s.mode->record->faceCount!=s.domain->faces.size()) { s.Fail("Highres lightmaps: effective face/lighting domain mismatch"); return false; }
@@ -1617,7 +1625,8 @@ void CHighresLightmapsDX12::OnNativeResourceRelease(uint64 generation)
     s.ClearGpu(); if (!rejected) s.status.state=DX12_HIGHRES_PENDING;
     s.status.layoutGeneration=0; s.status.pageCount=0;
 }
-void CHighresLightmapsDX12::OnNativeFailure(const char *reason) { std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex); m_Impl->Fail(reason); }
+void CHighresLightmapsDX12::OnNativeFailure(const char *reason) { std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex); m_Impl->Reject(reason); }
+void CHighresLightmapsDX12::DisableMap(const char *reason) { std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex); m_Impl->Fail(reason); }
 bool CHighresLightmapsDX12::EnhancedMap() const { std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex); return m_Impl->enhancedRequired; }
 bool CHighresLightmapsDX12::Rejected() const { std::lock_guard<std::recursive_mutex> lock(m_Impl->mutex); return m_Impl->status.state==DX12_HIGHRES_REJECTED; }
 void CHighresLightmapsDX12::GetStatus(DX12HighresMapStatus &out,char *error,int bytes)
