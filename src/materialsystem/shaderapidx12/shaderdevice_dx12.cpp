@@ -1229,7 +1229,6 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 	const int nNewHeight = info.m_DisplayMode.m_nHeight > 0 ? info.m_DisplayMode.m_nHeight : newRect.bottom - newRect.top;
 	const bool bResize = m_pCurrentView && ( nNewWidth != m_nWidth || nNewHeight != m_nHeight );
 	const bool bDropFrameGen = !info.m_bWindowed && m_FrameGen.Kind() != FrameGenKindDX12::None;
-	const bool bChangesResources = bDropFrameGen || info.m_bWindowed != m_bWindowed || MAX( 1, info.m_nAASamples ) != m_nSampleCount || info.m_nAAQuality != m_nSampleQuality || ( m_pCurrentView && ( nNewWidth != m_pCurrentView->width || nNewHeight != m_pCurrentView->height ) );
 	m_bChangingMode = true;
 
 	struct ChangeScope
@@ -1310,7 +1309,9 @@ bool CShaderDeviceDX12::ChangeMode( const ShaderDeviceInfo_t &info )
 		pShaderUtil->ReleaseShaderObjects();
 		pShaderUtil->RestoreShaderObjects( Sys_GetFactoryThis() );
 	}
-	if ( bChangesResources && g_pShaderDeviceMgrDX12 )
+	// The engine's listener applies the window style and placement, so a change that touches no D3D resource
+	// (only the window border) still needs it, as every DX9 mode change reset the device and notified.
+	if ( g_pShaderDeviceMgrDX12 )
 		g_pShaderDeviceMgrDX12->NotifyModeChange();
 	return true;
 }
