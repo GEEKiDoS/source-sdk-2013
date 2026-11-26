@@ -294,9 +294,11 @@ DX12ShadowTarget_t g_StaticSunClean=0, g_StaticSunWork=0;
 // (r_shadowmap_viewmodel_self); one csm square.
 DX12ShadowTarget_t g_ViewModelSelfSun=0;
 // Per-frame private copies of the local charts the viewmodel reads (r_shadowmap_viewmodel_self, AddViewModelSelfLocals):
-// one local slot each in a grid kViewModelLocalColumns wide that grows by whole rows.
-DX12ShadowTarget_t g_ViewModelSelfLocal=0;
-int g_ViewModelSelfLocalRows=0, g_ViewModelSelfLocalSize=0;
+// one local slot each in grids kViewModelLocalColumns wide. The backend accepts only power-of-two local pages no larger
+// than DX12_SHADOW_LOCAL_PAGE_SIZE, so a target grows by doubling its rows and charts past a full one go to the next.
+struct ViewModelLocalTarget_t { DX12ShadowTarget_t target; int rows; };
+CUtlVector<ViewModelLocalTarget_t> g_ViewModelSelfLocals;
+int g_ViewModelSelfLocalSize=0;
 const int kViewModelLocalColumns=4;
 // What the main view published for its dynamic sun cascades this frame. The viewmodel receiver view that follows
 // it has the same eye and forward and a projection inside the main one, so its receivers lie inside these charts.
@@ -1977,7 +1979,8 @@ bool ShadowResolutionTargetsIdle()
 		const SunCascadeTargets_t &sun=g_CascadeTargets[v];
 		if ( !TargetIdle(sun.clean) || !TargetIdle(sun.work) || !TargetIdle(sun.rigid) ) return false;
 	}
-	if ( !TargetIdle(g_StaticSunWork) || !TargetIdle(g_StaticSunClean) || !TargetIdle(g_ViewModelSelfSun) || !TargetIdle(g_ViewModelSelfLocal) ) return false;
+	if ( !TargetIdle(g_StaticSunWork) || !TargetIdle(g_StaticSunClean) || !TargetIdle(g_ViewModelSelfSun) ) return false;
+	for ( int t=0;t<g_ViewModelSelfLocals.Count();++t ) if ( !TargetIdle(g_ViewModelSelfLocals[t].target) ) return false;
 	for ( int s=0;s<g_SunSpares.Count();++s ) if ( !TargetIdle(g_SunSpares[s].target) ) return false;
 	if ( !TargetIdle(g_SunSkyTarget) ) return false;
 	return true;
@@ -1991,7 +1994,8 @@ void ResetSunTargets()
 {
 	for ( int v=0;v<ARRAYSIZE(g_CascadeTargets);++v ) ResetCascadeTargets(g_CascadeTargets[v]);
 	DestroyTarget(g_StaticSunClean); DestroyTarget(g_StaticSunWork); DestroyTarget(g_ViewModelSelfSun);
-	DestroyTarget(g_ViewModelSelfLocal); g_ViewModelSelfLocalRows=0; g_ViewModelSelfLocalSize=0;
+	for ( int t=0;t<g_ViewModelSelfLocals.Count();++t ) DestroyTarget(g_ViewModelSelfLocals[t].target);
+	g_ViewModelSelfLocals.RemoveAll(); g_ViewModelSelfLocalSize=0;
 	g_StaticSunCache=ShadowCache_t();
 	for ( int s=0;s<g_SunSpares.Count();++s ) DestroyTarget(g_SunSpares[s].target);
 	g_SunSpares.RemoveAll();
@@ -3248,18 +3252,34 @@ bool AddViewModelSelfLocals( CShadowViewData &data )
 		}
 	}
 	if ( !charts.Count() ) return true;
-	const int rows=(charts.Count()+kViewModelLocalColumns-1)/kViewModelLocalColumns;
-	if ( g_ViewModelSelfLocalSize!=size || g_ViewModelSelfLocalRows<rows )
+	const int perTarget=kViewModelLocalColumns*(DX12_SHADOW_LOCAL_PAGE_SIZE/size);
+	const int targetCount=(charts.Count()+perTarget-1)/perTarget;
+	if ( data.targets.Count()>DX12_SHADOW_MAX_LOCAL_PAGES-targetCount ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+	if ( g_ViewModelSelfLocalSize!=size )
 	{
-		// Packets that still sample the old target hold backend leases on it.
-		DestroyTarget(g_ViewModelSelfLocal);
-		g_ViewModelSelfLocalRows=0;
-		g_ViewModelSelfLocal=g_Lighting->CreateShadowDepthTarget("shadow_local_viewmodel_self",kViewModelLocalColumns*size,rows*size);
-		if ( !g_ViewModelSelfLocal ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-		g_ViewModelSelfLocalSize=size; g_ViewModelSelfLocalRows=rows;
+		// Packets that still sample the old targets hold backend leases on them.
+		for ( int t=0;t<g_ViewModelSelfLocals.Count();++t ) DestroyTarget(g_ViewModelSelfLocals[t].target);
+		g_ViewModelSelfLocals.RemoveAll();
+		g_ViewModelSelfLocalSize=size;
 	}
-	if ( data.targets.Count()>=DX12_SHADOW_MAX_LOCAL_PAGES || !data.Lease(g_ViewModelSelfLocal) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
-	const int privatePage=data.targets.AddToTail(g_ViewModelSelfLocal);
+	while ( g_ViewModelSelfLocals.Count()<targetCount ) { ViewModelLocalTarget_t empty={0,0}; g_ViewModelSelfLocals.AddToTail(empty); }
+	CUtlVectorFixedGrowable<int,4> privatePages;
+	for ( int t=0;t<targetCount;++t )
+	{
+		const int slots=MIN(charts.Count()-t*perTarget,perTarget);
+		int rows=1; while ( rows*kViewModelLocalColumns<slots ) rows*=2;
+		ViewModelLocalTarget_t &vm=g_ViewModelSelfLocals[t];
+		if ( vm.rows<rows )
+		{
+			DestroyTarget(vm.target);
+			vm.rows=0;
+			vm.target=g_Lighting->CreateShadowDepthTarget("shadow_local_viewmodel_self",kViewModelLocalColumns*size,rows*size);
+			if ( !vm.target ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+			vm.rows=rows;
+		}
+		if ( !data.Lease(vm.target) ) return Fail(SHADOWMAP_ERR_RESIDENCY);
+		privatePages.AddToTail(data.targets.AddToTail(vm.target));
+	}
 	const Vector receiverCenter=(data.selfReceiverMins+data.selfReceiverMaxs)*0.5f;
 	const float receiverRadius=(data.selfReceiverMaxs-data.selfReceiverMins).Length()*0.5f;
 	CMatRenderContextPtr pRenderContext( materials );
@@ -3270,9 +3290,11 @@ bool AddViewModelSelfLocals( CShadowViewData &data )
 		RuntimeShadowLightGpu &gpu=data.lights[chart.light];
 		const LocalLight_t &local=LightByOwner(data.relevant[chart.light]);
 		const ShadowCache_t &cache=local.cache[chart.face];
-		const int px=(k%kViewModelLocalColumns)*size, py=(k/kViewModelLocalColumns)*size;
+		const int t=k/perTarget, slot=k%perTarget;
+		const DX12ShadowTarget_t target=g_ViewModelSelfLocals[t].target;
+		const int px=(slot%kViewModelLocalColumns)*size, py=(slot/kViewModelLocalColumns)*size;
 		const int sx=(int)gpu.faces[chart.face][1], sy=(int)gpu.faces[chart.face][2];
-		CopyDepthRectTo(data,g_ViewModelSelfLocal,px+chart.x0,py+chart.y0,g_Pages[gpu.faces[chart.face][0]].clean,
+		CopyDepthRectTo(data,target,px+chart.x0,py+chart.y0,g_Pages[gpu.faces[chart.face][0]].clean,
 			sx+chart.x0,sy+chart.y0,chart.x1-chart.x0,chart.y1-chart.y0);
 		if ( g_Error[0] ) return false;
 		// This light's dynamic casters inside the box spanned by the emitter and the receivers, widened by the filter
@@ -3289,8 +3311,8 @@ bool AddViewModelSelfLocals( CShadowViewData &data )
 			const ShadowMapSceneCaster_t &caster=data.casters[index];
 			if ( !caster.immutable && QuickBoxIntersectTest(caster.mins,caster.maxs,mins,maxs) ) data.viewModelCasters.AddToTail(index);
 		}
-		DrawViewModelChart(data,g_ViewModelSelfLocal,px,py,size,cache.view,local.faceVolumes[chart.face]);
-		gpu.faces[chart.face][0]=privatePage; gpu.faces[chart.face][1]=px; gpu.faces[chart.face][2]=py;
+		DrawViewModelChart(data,target,px,py,size,cache.view,local.faceVolumes[chart.face]);
+		gpu.faces[chart.face][0]=privatePages[t]; gpu.faces[chart.face][1]=px; gpu.faces[chart.face][2]=py;
 	}
 	return true;
 }
