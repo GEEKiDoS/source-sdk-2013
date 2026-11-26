@@ -10,6 +10,7 @@
 #include "collisionutils.h"
 #include "debugoverlay_shared.h"
 #include "in_buttons.h"
+#include "cl_animevent.h"
 #include "gamerules.h"
 #include "l4d2/weapons/c_base_mounted_weapon.h"
 #include "l4d2/infected/special/ability_tongue.h"
@@ -522,6 +523,13 @@ void C_TerrorPlayer::FireEvent( const Vector &origin, const QAngle &angles, int 
 {
 	// C252390: ghost suppresses BOTH receivers; model handler precedes CS.
 	if ( IsGhost() )
+		return;
+	// Seen in first person, the local survivor's first-person sounds are the viewmodel's sequence events (the
+	// remote reload sound skips the owner for that reason, and ReloadEffect skips the local player). The hidden
+	// third-person gestures repeated them at their own timing: a second Shotgun.Pump 0.23 s after each shot, a pump
+	// after every reload, a second Shotgun.LoadShell per shell. Footstep (50/51/7001/7002) and presentation events
+	// still run.
+	if ( ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND ) && IsFirstPersonLocalBody() )
 		return;
 	GetTerrorAnimState()->FireEvent( origin, angles, event, options );
 	BaseClass::FireEvent( origin, angles, event, options );

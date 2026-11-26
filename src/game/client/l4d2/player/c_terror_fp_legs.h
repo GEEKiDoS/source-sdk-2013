@@ -38,6 +38,7 @@ public:
 	virtual int DrawModel( int flags ) OVERRIDE;
 	virtual bool SetupBones( matrix3x4_t *bones, int maximum, int mask, float time ) OVERRIDE;
 	virtual void ClientThink() OVERRIDE;
+	virtual void DoAnimationEvents( CStudioHdr *pStudio ) OVERRIDE;
 	virtual ShadowType_t ShadowCastType() OVERRIDE { return SHADOWS_NONE; }
 	virtual CStudioHdr *OnNewModel() OVERRIDE;
 	virtual void BuildTransformations( CStudioHdr *studio, Vector *pos, Quaternion q[], const matrix3x4_t &cameraTransform,

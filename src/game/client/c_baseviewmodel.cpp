@@ -1006,6 +1006,9 @@ void C_BaseViewModel::UpdateReceivedLayer()
 			*previous = *layer; // Native full36-byte record copy includes owner.
 			previous->SetOrder( 1 );
 			previous->m_flLayerFadeOuttime = now;
+			// The fading copy continues from where its source is: its events up to this cycle were the source's. A
+			// stale layer-1 cursor below the copied cycle would fire them again (double pump, shell and flash).
+			m_flOverlayPrevEventCycle[1] = previous->m_flCycle;
 		}
 
 		const float start = m_flLayerStartTime > now ? now : static_cast< float >( m_flLayerStartTime ); // C6C251 JBE includes unordered.

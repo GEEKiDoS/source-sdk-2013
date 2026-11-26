@@ -128,6 +128,12 @@ void C_TerrorFirstPersonBody::ClientThink()
 	SyncFromPlayer();
 }
 
+void C_TerrorFirstPersonBody::DoAnimationEvents( CStudioHdr * )
+{
+	// Presentation copies of the local survivor fire no model events: the real player and the viewmodel already
+	// did. Each copy replayed the player's sound events (three extra Shotgun.Pump per pump-shotgun shot).
+}
+
 int C_TerrorFirstPersonBody::DrawModel( int flags )
 {
 	// Legs: the local main view only. Shadow copies: native shadowmaps only, never the flashlight's projected depth

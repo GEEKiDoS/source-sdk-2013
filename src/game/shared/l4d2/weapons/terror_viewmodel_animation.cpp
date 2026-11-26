@@ -102,7 +102,8 @@ void CBaseViewModel::ApplyTerrorLayerSequence( int nSequence, int nLayer, float 
 	// Restart the event cursor of the layer this sequence starts on. Native 0x022F50 resets index zero even for a
 	// layer-three shove: a shove during a layer-zero fire then rewound the fire's cursor while the shove masked it
 	// (weight 0, events skipped), and when the shove faded out every event from cycle 0 replayed in one frame: muzzle
-	// flash, pump sound, shell eject. Events the shove masked play once, at the cycle the layer resumes from.
+	// flash, pump sound, shell eject. A layer masked to weight 0 now consumes the events it passes
+	// (C_BaseAnimatingOverlay::DoAnimationEvents), so a shove skips the pump it covers, as in retail.
 	if ( prediction->IsFirstTimePredicted() )
 		m_flOverlayPrevEventCycle[nLayer] = -0.01f;
 #endif

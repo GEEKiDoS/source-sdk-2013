@@ -556,9 +556,14 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 		}
 #if defined( L4D2 )
 		// Native 1003E610 excludes inactive layers before reading their events.
-		// A shove resets event cursor zero even when it starts on layer three.
 		if ( m_AnimOverlay[j].m_flWeight == 0.0f || m_AnimOverlay[j].m_nOrder == MAX_OVERLAYS )
 		{
+			// A viewmodel layer masked to weight 0 (a shove over a pump shotgun's fire layer) consumes the events it
+			// passes. Left behind, the cursor made every masked event fire at once when the shove faded out: a late
+			// pump sound and shell eject for a pump the shove had hidden. A layer still at cycle 0 keeps its cursor,
+			// so a sequence whose first frame is faded in still fires its cycle-0 events.
+			if ( IsViewModel() && m_AnimOverlay[j].m_flCycle > 0.0f )
+				m_flOverlayPrevEventCycle[j] = m_AnimOverlay[j].m_flCycle;
 			continue;
 		}
 #endif
