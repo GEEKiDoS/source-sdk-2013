@@ -941,7 +941,11 @@ void C_BaseViewModel::UpdateReceivedLayer()
 	if ( GetNumAnimOverlays() != 4 || ( m_bRefreshVariantLayer && IsDynamicModelLoading() ) )
 		return;
 
+	// Server values only: m_nLayer and m_flLayerStartTime are predicted, and a predicted start (a reload right after a
+	// shot) mixed with the server's previous sequence restarted that sequence: the fire replayed its flash and sound.
 	const int networkSequence = m_nReceivedLayerSequence;
+	const int receivedLayer = m_nReceivedLayer;
+	const float receivedStartTime = m_flReceivedLayerStartTime;
 	const bool modelChanged = m_bRefreshVariantLayer;
 	m_bRefreshVariantLayer = false;
 	if ( modelChanged )
@@ -952,15 +956,15 @@ void C_BaseViewModel::UpdateReceivedLayer()
 	}
 	if ( vm_fade.GetInt() != 0 &&
 		( modelChanged || m_nLastReceivedLayerSequence != networkSequence ||
-		  m_flLastReceivedLayerStartTime != m_flLayerStartTime ||
-		  m_nLastReceivedLayer != m_nLayer ) )
+		  m_flLastReceivedLayerStartTime != receivedStartTime ||
+		  m_nLastReceivedLayer != receivedLayer ) )
 	{
-		m_flLastReceivedLayerStartTime = m_flLayerStartTime;
+		m_flLastReceivedLayerStartTime = receivedStartTime;
 		m_nLastReceivedLayerSequence = networkSequence;
-		m_nLastReceivedLayer = m_nLayer;
+		m_nLastReceivedLayer = receivedLayer;
 		if ( cl_anim_event_debug.GetInt() )
 			Msg( "AnimEvent %d t=%.3f VM-RECV layer=%d netseq=%d start=%.3f parity=%d/%d\n", gpGlobals->tickcount, gpGlobals->curtime,
-				m_nLayer.Get(), networkSequence, (float)m_flLayerStartTime, (int)m_nAnimationParity, (int)m_nOldAnimationParity );
+				receivedLayer, networkSequence, receivedStartTime, (int)m_nAnimationParity, (int)m_nOldAnimationParity );
 
 		C_BaseEntity *owner = GetOwner();
 		C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
@@ -976,7 +980,7 @@ void C_BaseViewModel::UpdateReceivedLayer()
 				now = 0.0f;
 		}
 
-		CAnimationLayer *layer = GetAnimOverlay( m_nLayer );
+		CAnimationLayer *layer = GetAnimOverlay( receivedLayer );
 		const int sequence = MapNetworkedSequence( networkSequence );
 		if ( sequence < 0 )
 		{
@@ -1001,12 +1005,12 @@ void C_BaseViewModel::UpdateReceivedLayer()
 				break;
 			}
 		}
-		if ( layer->m_nSequence > 0 && m_nLayer != 3 &&
+		if ( layer->m_nSequence > 0 && receivedLayer != 3 &&
 			 layer->m_flWeight > 0.0f && layer->m_nOrder != 15 &&
 			 layer->m_flCycle < 1.0f && !IsSequenceLooping( layer->m_nSequence ) && canFadePrevious )
 		{
 			if ( cl_anim_event_debug.GetInt() )
-				Msg( "AnimEvent %d VM-FADECOPY L%d seq=%d cyc=%.3f -> L1 (old L1 cursor %.3f)\n", gpGlobals->tickcount, m_nLayer.Get(),
+				Msg( "AnimEvent %d VM-FADECOPY L%d seq=%d cyc=%.3f -> L1 (old L1 cursor %.3f)\n", gpGlobals->tickcount, receivedLayer,
 					layer->m_nSequence.GetRaw(), (float)layer->m_flCycle, m_flOverlayPrevEventCycle[1] );
 			CAnimationLayer *previous = GetAnimOverlay( 1 );
 			*previous = *layer; // Native full36-byte record copy includes owner.
@@ -1017,7 +1021,7 @@ void C_BaseViewModel::UpdateReceivedLayer()
 			m_flOverlayPrevEventCycle[1] = previous->m_flCycle;
 		}
 
-		const float start = m_flLayerStartTime > now ? now : static_cast< float >( m_flLayerStartTime ); // C6C251 JBE includes unordered.
+		const float start = receivedStartTime > now ? now : receivedStartTime; // C6C251 JBE includes unordered.
 		bool restart = layer->m_nSequence != sequence || layer->m_nOrder == 15;
 		if ( !restart )
 		{
@@ -1034,14 +1038,14 @@ void C_BaseViewModel::UpdateReceivedLayer()
 		if ( restart )
 		{
 			if ( cl_anim_event_debug.GetInt() )
-				Msg( "AnimEvent %d VM-RESTART L%d seq %d->%d cyc=%.3f cursor=%.3f\n", gpGlobals->tickcount, m_nLayer.Get(),
-					layer->m_nSequence.GetRaw(), sequence, (float)layer->m_flCycle, m_flOverlayPrevEventCycle[m_nLayer] );
+				Msg( "AnimEvent %d VM-RESTART L%d seq %d->%d cyc=%.3f cursor=%.3f\n", gpGlobals->tickcount, receivedLayer,
+					layer->m_nSequence.GetRaw(), sequence, (float)layer->m_flCycle, m_flOverlayPrevEventCycle[receivedLayer] );
 			layer->SetCycle( 0.0f );
-			m_flOverlayPrevEventCycle[m_nLayer] = -0.01f; // The restarted layer (terror_viewmodel_animation.cpp).
+			m_flOverlayPrevEventCycle[receivedLayer] = -0.01f; // The restarted layer (terror_viewmodel_animation.cpp).
 			layer->SetSequence( sequence );
 			layer->m_flPlaybackRate = static_cast< float >( GetEffectivePlaybackRate() );
 			layer->SetWeight( 1.0f );
-			layer->SetOrder( m_nLayer );
+			layer->SetOrder( receivedLayer );
 			layer->m_flPrevCycle = 0.0f;
 			layer->m_flLayerAnimtime = start;
 			m_nOldAnimationParity = m_nAnimationParity;

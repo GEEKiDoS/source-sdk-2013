@@ -83,6 +83,8 @@ CBaseViewModel::CBaseViewModel()
 	m_iCameraAttachment = -1;
 	m_nReceivedMainSequence = -1;
 	m_nReceivedLayerSequence = 0;
+	m_nReceivedLayer = 0;
+	m_flReceivedLayerStartTime = 0.0f;
 	m_bReceivedMainSequencePending = false;
 	m_bRefreshVariantLayer = false;
 #else
@@ -766,6 +768,18 @@ static void RecvProxy_ViewModelLayerSequence( const CRecvProxyData *pData, void 
 	static_cast< CBaseViewModel * >( pStruct )->ReceiveLayerSequence( pData->m_Value.m_Int );
 }
 
+static void RecvProxy_ViewModelLayer( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	RecvProxy_Int32ToInt32( pData, pStruct, pOut );
+	static_cast< CBaseViewModel * >( pStruct )->ReceiveLayer( pData->m_Value.m_Int );
+}
+
+static void RecvProxy_ViewModelLayerStartTime( const CRecvProxyData *pData, void *pStruct, void *pOut )
+{
+	RecvProxy_FloatToFloat( pData, pStruct, pOut );
+	static_cast< CBaseViewModel * >( pStruct )->ReceiveLayerStartTime( pData->m_Value.m_Float );
+}
+
 // Whole C226F0. Generic real handle decoding FIRST; preserve layer0. This does
 // NOT compare old/new weapons, reset main cycle or write m_flAnimTime.
 static void RecvProxy_Weapon( const CRecvProxyData *pData, void *pStruct, void *pOut )
@@ -846,7 +860,7 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	RecvPropInt		(RECVINFO(m_nSequence), 0, RecvProxy_SequenceNum ),
 #if defined( L4D2 )
 	RecvPropInt( RECVINFO( m_nLayerSequence ), 0, RecvProxy_ViewModelLayerSequence ),
-	RecvPropInt( RECVINFO( m_nLayer ) ),
+	RecvPropInt( RECVINFO( m_nLayer ), 0, RecvProxy_ViewModelLayer ),
 #endif
 	RecvPropInt		(RECVINFO(m_nViewModelIndex)),
 	RecvPropFloat	(RECVINFO(m_flPlaybackRate)),
@@ -863,7 +877,7 @@ BEGIN_NETWORK_TABLE_NOBASE(CBaseViewModel, DT_BaseViewModel)
 	RecvPropInt( RECVINFO( m_nResetEventsParity )),
 	RecvPropInt( RECVINFO( m_nMuzzleFlashParity )),
 #if defined( L4D2 )
-	RecvPropFloat( RECVINFO( m_flLayerStartTime ) ),
+	RecvPropFloat( RECVINFO( m_flLayerStartTime ), 0, RecvProxy_ViewModelLayerStartTime ),
 #endif
 
 #if !defined( INVASION_DLL ) && !defined( INVASION_CLIENT_DLL ) && !defined( L4D2 )

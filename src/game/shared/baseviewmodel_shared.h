@@ -156,6 +156,8 @@ public:
 	int RestoreData( const char *context, int slot, int type ) OVERRIDE;
 	void ReceiveMainSequence( int sequence );
 	void ReceiveLayerSequence( int sequence ) { m_nReceivedLayerSequence = sequence; }
+	void ReceiveLayer( int layer ) { m_nReceivedLayer = layer; }
+	void ReceiveLayerStartTime( float startTime ) { m_flReceivedLayerStartTime = startTime; }
 	int MapPredictedWeaponSequence( CStudioHdr *weaponModel, int sequence );
 	int ToNetworkLayerSequence( int sequence );
 	virtual void CalcViewModelCamera( Vector &origin, QAngle &angles, float &fov );
@@ -250,6 +252,10 @@ private:
 	int m_nReceivedMainSequence;
 	int m_nMappedMainSequence = -1; // Authoritative base pose in the local render model.
 	int m_nReceivedLayerSequence;
+	// The server's m_nLayer / m_flLayerStartTime as received. The fields themselves are predicted: the client's next
+	// layer start (a reload right after a shot) is already in them when the server's previous sequence arrives.
+	int m_nReceivedLayer;
+	float m_flReceivedLayerStartTime;
 	bool m_bReceivedMainSequencePending;
 	bool m_bRefreshVariantLayer;
 	int MapNetworkedSequence( int sequence );
