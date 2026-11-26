@@ -282,6 +282,7 @@ static const DX12NativeBlockRegistryEntry kDX12NativeBlockRegistry[] = {
 	{ "portalstaticoverlay_vs51", dx12native::kStageVertex, nullptr },
 	{ "postfx_composite_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::PostComposite > },
 	{ "postfx_rcas_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::RcasParams > },
+	{ "pso_fallback_ps51", dx12native::kStagePixel, nullptr },
 	{ "refract_ps51", dx12native::kStagePixel, &DX12WriteBlockFromStaging< dx12cb::refract_ps2x > },
 	{ "refract_vs51", dx12native::kStageVertex, &DX12WriteBlockFromStaging< dx12cb::Refract_vs20 > },
 	{ "rendertargetblit_ps51", dx12native::kStagePixel, nullptr },

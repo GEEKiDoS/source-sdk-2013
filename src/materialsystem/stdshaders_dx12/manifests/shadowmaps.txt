@@ -16,3 +16,5 @@ shadow_sky_depth_vs51.fxc vs shadow_sky_depth_vs51 native -
 # noparity shadow_sky_depth_vs51 - native-only
 shadow_sky_clip_ps51.fxc ps shadow_sky_clip_ps51 native -
 # noparity shadow_sky_clip_ps51 - native-only
+pso_fallback_ps51.fxc ps pso_fallback_ps51 native -
+# noparity pso_fallback_ps51 - native-only
