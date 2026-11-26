@@ -296,6 +296,13 @@ independently of the main sequence's playback rate. In particular, a stopped
 main idle sequence must not freeze the chainsaw startup layer and prevent its
 normal transition to continuous contact damage and fuel consumption.
 
+In first person the local survivor's weapon sounds come only from the viewmodel's sequence events: the hidden
+third-person model's sound events and the first-person body copies (legs, self-shadow) stay silent, and a viewmodel
+layer masked to weight 0 (a shove over the pump shotgun's fire layer) consumes the events it passes, so the shove
+skips that pump. `cl_anim_event_debug 1` traces viewmodel events, viewmodel layer starts/restarts/fade copies,
+masked events skipped and every client sound with its source entity; `2` adds every entity's model events and the
+player's FireEvent (first-person skips marked). Lines start with `AnimEvent <tick>`.
+
 L4D2 ladder movement uses the native shared climb-speed virtual: ghosts climb at
 200 units per second; every non-ghost, including survivors, climbs at 100.
 Both prediction and the server use this policy instead of the SDK's fixed 200.

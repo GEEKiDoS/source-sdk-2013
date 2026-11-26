@@ -958,6 +958,9 @@ void C_BaseViewModel::UpdateReceivedLayer()
 		m_flLastReceivedLayerStartTime = m_flLayerStartTime;
 		m_nLastReceivedLayerSequence = networkSequence;
 		m_nLastReceivedLayer = m_nLayer;
+		if ( cl_anim_event_debug.GetInt() )
+			Msg( "AnimEvent %d t=%.3f VM-RECV layer=%d netseq=%d start=%.3f parity=%d/%d\n", gpGlobals->tickcount, gpGlobals->curtime,
+				m_nLayer.Get(), networkSequence, (float)m_flLayerStartTime, (int)m_nAnimationParity, (int)m_nOldAnimationParity );
 
 		C_BaseEntity *owner = GetOwner();
 		C_BasePlayer *player = owner && owner->IsPlayer() ? static_cast< C_BasePlayer * >( owner ) : NULL;
@@ -1002,6 +1005,9 @@ void C_BaseViewModel::UpdateReceivedLayer()
 			 layer->m_flWeight > 0.0f && layer->m_nOrder != 15 &&
 			 layer->m_flCycle < 1.0f && !IsSequenceLooping( layer->m_nSequence ) && canFadePrevious )
 		{
+			if ( cl_anim_event_debug.GetInt() )
+				Msg( "AnimEvent %d VM-FADECOPY L%d seq=%d cyc=%.3f -> L1 (old L1 cursor %.3f)\n", gpGlobals->tickcount, m_nLayer.Get(),
+					layer->m_nSequence.GetRaw(), (float)layer->m_flCycle, m_flOverlayPrevEventCycle[1] );
 			CAnimationLayer *previous = GetAnimOverlay( 1 );
 			*previous = *layer; // Native full36-byte record copy includes owner.
 			previous->SetOrder( 1 );
@@ -1027,6 +1033,9 @@ void C_BaseViewModel::UpdateReceivedLayer()
 		}
 		if ( restart )
 		{
+			if ( cl_anim_event_debug.GetInt() )
+				Msg( "AnimEvent %d VM-RESTART L%d seq %d->%d cyc=%.3f cursor=%.3f\n", gpGlobals->tickcount, m_nLayer.Get(),
+					layer->m_nSequence.GetRaw(), sequence, (float)layer->m_flCycle, m_flOverlayPrevEventCycle[m_nLayer] );
 			layer->SetCycle( 0.0f );
 			m_flOverlayPrevEventCycle[m_nLayer] = -0.01f; // The restarted layer (terror_viewmodel_animation.cpp).
 			layer->SetSequence( sequence );

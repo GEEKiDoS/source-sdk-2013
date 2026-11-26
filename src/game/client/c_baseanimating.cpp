@@ -233,6 +233,10 @@ const float RUN_SPEED_ESTIMATE_SQR = 150.0f * 150.0f;
 #ifdef DEBUG
 static ConVar dbganimmodel( "dbganimmodel", "" );
 #endif
+ConVar cl_anim_event_debug( "cl_anim_event_debug", "0", 0,
+	"Trace animation events to the console. 1: viewmodel events, viewmodel layer starts/restarts/fade copies and every "
+	"client sound with its source entity; 2: also the model events of every entity and the player's FireEvent "
+	"(first-person skips marked)." );
 
 
 mstudioevent_t *GetEventIndexForSequence( mstudioseqdesc_t &seqdesc );
@@ -4143,6 +4147,9 @@ void C_BaseAnimating::DoAnimationEvents( CStudioHdr *pStudioHdr )
 			}
 				
 				
+			if ( cl_anim_event_debug.GetInt() >= 2 )
+				Msg( "AnimEvent %d BASE-LOOP %s#%d seq=%d(%s) ev=%d opt=%s cyc=%.3f vis=%d\n", gpGlobals->tickcount, GetClassname(),
+					entindex(), GetSequence(), GetSequenceName( GetSequence() ), pevent[i].event, pevent[i].pszOptions(), flEventCycle, IsVisible() ? 1 : 0 );
 			FireEvent( GetAbsOrigin(), GetAbsAngles(), pevent[ i ].event, pevent[ i ].pszOptions() );
 		}
 
@@ -4174,6 +4181,10 @@ void C_BaseAnimating::DoAnimationEvents( CStudioHdr *pStudioHdr )
 					gpGlobals->curtime );
 			}
 
+			if ( cl_anim_event_debug.GetInt() >= 2 )
+				Msg( "AnimEvent %d BASE %s#%d seq=%d(%s) ev=%d opt=%s evc=%.3f prev=%.3f cyc=%.3f vis=%d\n", gpGlobals->tickcount,
+					GetClassname(), entindex(), GetSequence(), GetSequenceName( GetSequence() ), pevent[i].event, pevent[i].pszOptions(),
+					pevent[i].cycle, m_flPrevEventCycle, flEventCycle, IsVisible() ? 1 : 0 );
 			FireEvent( GetAbsOrigin(), GetAbsAngles(), pevent[ i ].event, pevent[ i ].pszOptions() );
 		}
 	}

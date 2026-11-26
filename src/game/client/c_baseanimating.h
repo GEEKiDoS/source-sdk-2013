@@ -61,6 +61,9 @@ FORWARD_DECLARE_HANDLE( memhandle_t );
 typedef unsigned short MDLHandle_t;
 
 extern ConVar vcollide_wireframe;
+// Animation event / viewmodel layer / client sound trace (c_baseanimating.cpp). 1: viewmodel events, viewmodel layer
+// starts, restarts and fade copies, client sounds; 2: also every entity's model events and the player's FireEvent.
+extern ConVar cl_anim_event_debug;
 
 
 struct ClientModelRenderInfo_t : public ModelRenderInfo_t

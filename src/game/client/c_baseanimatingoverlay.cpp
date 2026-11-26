@@ -532,6 +532,19 @@ void C_BaseAnimatingOverlay::AccumulateLayers( IBoneSetup &boneSetup, Vector pos
 #if defined( L4D2 ) && defined( _MSC_VER )
 #pragma float_control( precise, on, push )
 #endif
+// cl_anim_event_debug: 1 traces viewmodel layers, 2 every entity's.
+static void TraceOverlayEvent( C_BaseAnimatingOverlay *entity, int layer, const C_AnimationLayer &overlay, float previous,
+	const mstudioevent_t *event, const char *kind )
+{
+	const int level = cl_anim_event_debug.GetInt();
+	if ( level >= 2 || ( level == 1 && entity->IsViewModel() ) )
+		Msg( "AnimEvent %d t=%.3f %s %s#%d L%d seq=%d(%s) ev=%d opt=%s evc=%.3f prev=%.3f cyc=%.3f w=%.3f ord=%d vis=%d\n",
+			gpGlobals->tickcount, gpGlobals->curtime, kind, entity->GetClassname(), entity->entindex(), layer,
+			overlay.m_nSequence.GetRaw(), entity->GetSequenceName( overlay.m_nSequence ), event ? event->event : -1,
+			event ? event->pszOptions() : "", event ? event->cycle : 0.0f, previous, (float)overlay.m_flCycle,
+			(float)overlay.m_flWeight, (int)overlay.m_nOrder, entity->IsVisible() ? 1 : 0 );
+}
+
 void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 {
 	if ( !pStudioHdr || !pStudioHdr->SequencesAvailable() )
@@ -563,7 +576,19 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 			// pump sound and shell eject for a pump the shove had hidden. A layer still at cycle 0 keeps its cursor,
 			// so a sequence whose first frame is faded in still fires its cycle-0 events.
 			if ( IsViewModel() && m_AnimOverlay[j].m_flCycle > 0.0f )
+			{
+				if ( cl_anim_event_debug.GetInt() )
+				{
+					mstudioseqdesc_t &masked = pStudioHdr->pSeqdesc( m_AnimOverlay[j].m_nSequence );
+					for ( int i = 0; i < masked.numevents; ++i )
+					{
+						const mstudioevent_t *event = masked.pEvent( i );
+						if ( event->cycle > m_flOverlayPrevEventCycle[j] && event->cycle <= m_AnimOverlay[j].m_flCycle )
+							TraceOverlayEvent( this, j, m_AnimOverlay[j], m_flOverlayPrevEventCycle[j], event, "MASKED-SKIP" );
+					}
+				}
 				m_flOverlayPrevEventCycle[j] = m_AnimOverlay[j].m_flCycle;
+			}
 			continue;
 		}
 #endif
@@ -629,6 +654,7 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 				}
 					
 					
+				TraceOverlayEvent( this, j, m_AnimOverlay[j], m_flOverlayPrevEventCycle[j], &pevent[i], "LOOPED" );
 				FireEvent( GetAbsOrigin(), GetAbsAngles(), pevent[ i ].event, pevent[ i ].pszOptions() );
 			}
 
@@ -660,6 +686,7 @@ void C_BaseAnimatingOverlay::DoAnimationEvents( CStudioHdr *pStudioHdr )
 						gpGlobals->curtime );
 				}
 
+				TraceOverlayEvent( this, j, m_AnimOverlay[j], m_flOverlayPrevEventCycle[j], &pevent[i], "FIRE" );
 				FireEvent( GetAbsOrigin(), GetAbsAngles(), pevent[ i ].event, pevent[ i ].pszOptions() );
 			}
 		}

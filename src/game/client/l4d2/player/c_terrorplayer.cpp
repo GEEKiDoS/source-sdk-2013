@@ -529,7 +529,11 @@ void C_TerrorPlayer::FireEvent( const Vector &origin, const QAngle &angles, int 
 	// third-person gestures repeated them at their own timing: a second Shotgun.Pump 0.23 s after each shot, a pump
 	// after every reload, a second Shotgun.LoadShell per shell. Footstep (50/51/7001/7002) and presentation events
 	// still run.
-	if ( ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND ) && IsFirstPersonLocalBody() )
+	const bool skipFirstPersonSound = ( event == AE_CL_PLAYSOUND || event == CL_EVENT_SOUND ) && IsFirstPersonLocalBody();
+	if ( cl_anim_event_debug.GetInt() >= 2 )
+		Msg( "AnimEvent %d PLAYER-FE %s#%d ev=%d opt=%s%s\n", gpGlobals->tickcount, GetClassname(), entindex(), event,
+			options ? options : "", skipFirstPersonSound ? " (skipped: first-person body sound)" : "" );
+	if ( skipFirstPersonSound )
 		return;
 	GetTerrorAnimState()->FireEvent( origin, angles, event, options );
 	BaseClass::FireEvent( origin, angles, event, options );

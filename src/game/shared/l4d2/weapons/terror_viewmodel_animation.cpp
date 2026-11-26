@@ -104,6 +104,9 @@ void CBaseViewModel::ApplyTerrorLayerSequence( int nSequence, int nLayer, float 
 	// (weight 0, events skipped), and when the shove faded out every event from cycle 0 replayed in one frame: muzzle
 	// flash, pump sound, shell eject. A layer masked to weight 0 now consumes the events it passes
 	// (C_BaseAnimatingOverlay::DoAnimationEvents), so a shove skips the pump it covers, as in retail.
+	if ( cl_anim_event_debug.GetInt() )
+		Msg( "AnimEvent %d t=%.3f VM-START L%d seq=%d(%s) firstPredicted=%d cursorWas=%.3f\n", gpGlobals->tickcount, gpGlobals->curtime,
+			nLayer, nSequence, GetSequenceName( nSequence ), prediction->IsFirstTimePredicted() ? 1 : 0, m_flOverlayPrevEventCycle[nLayer] );
 	if ( prediction->IsFirstTimePredicted() )
 		m_flOverlayPrevEventCycle[nLayer] = -0.01f;
 #endif

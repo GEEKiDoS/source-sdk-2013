@@ -5,6 +5,9 @@
 //=============================================================================//
 
 #include "cbase.h"
+#ifdef CLIENT_DLL
+#include "prediction.h"
+#endif
 #include <ctype.h>
 #include <KeyValues.h>
 #include "engine/IEngineSound.h"
@@ -588,6 +591,16 @@ public:
 
 	void EmitSoundByHandle( IRecipientFilter& filter, int entindex, const EmitSound_t & ep, HSOUNDSCRIPTHANDLE& handle )
 	{
+#ifdef CLIENT_DLL
+		if ( cl_anim_event_debug.GetInt() )
+		{
+			C_BaseEntity *source = C_BaseEntity::Instance( entindex );
+			// predicted: 0 outside prediction, 1 first-time predicted, 2 re-predicted.
+			Msg( "AnimEvent %d t=%.3f SOUND %s source=%d(%s) predicted=%d\n", gpGlobals->tickcount, gpGlobals->curtime,
+				ep.m_pSoundName ? ep.m_pSoundName : "?", entindex, source ? source->GetClassname() : "-",
+				prediction->InPrediction() ? ( prediction->IsFirstTimePredicted() ? 1 : 2 ) : 0 );
+		}
+#endif
 		// Pull data from parameters
 		CSoundParameters params;
 
