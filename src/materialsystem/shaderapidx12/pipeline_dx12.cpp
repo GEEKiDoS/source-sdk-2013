@@ -9,6 +9,7 @@
 #include "shaderapi/ishaderapidx12lighting.h"
 #include "tier0/dbg.h"
 #include "tier0/icommandline.h"
+#include "tier1/convar.h"
 #include "tracy_dx12.h"
 #include <utility>
 #include <thread>
@@ -30,6 +31,7 @@ bool CPipelineCacheDX12::Initialize( ID3D12Device *pDevice, bool lowTier, IFileS
 	if ( *m_Library.RecipePath() && !CommandLine()->CheckParm( "-dx12noprecache" ) )
 		m_Recipes.Open( m_Library.RecipePath(), filesystem );
 	m_bVramFit = lowTier && !( CommandLine() && CommandLine()->CheckParm( "-dx12novramfit" ) );
+	m_bSyncPipelines = CommandLine() && CommandLine()->CheckParm( "-dx12syncpso" );
 	m_nResourceStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV );
 	m_nSamplerStride = pDevice->GetDescriptorHandleIncrementSize( D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER );
 	if ( !m_Bindings.Initialize( pDevice ) )
@@ -366,6 +368,12 @@ void CPipelineCacheDX12::WarmRecipes( unsigned budget, unsigned &done, unsigned 
 
 void CPipelineCacheDX12::Shutdown()
 {
+	// Workers hold requests and use the library, the recipes and the device: join them before any of those go.
+	StopAsync();
+	{
+		std::lock_guard<std::mutex> lock( m_FallbackMutex );
+		m_Fallbacks.clear();
+	}
 	m_Recipes.Close();
 	m_Library.Close();
 	m_Entries.Purge();
@@ -1326,20 +1334,168 @@ RecordedPipelineDX12 *CPipelineCacheDX12::CapturePipeline( const PipelineKeyDX12
 
 ID3D12PipelineState *CPipelineCacheDX12::PipelineRequest::Resolve()
 {
-	std::call_once( once, [this] {
+	if ( ready.load( std::memory_order_acquire ) )
+		return pso.Get();
+	std::lock_guard<std::mutex> lock( resolveMutex );
+	if ( !ready.load( std::memory_order_relaxed ) )
+	{
 		auto bytes = [this]( unsigned i ) -> D3D12_SHADER_BYTECODE { const auto &b = source->stages[i]; return { b.empty() ? nullptr : b.data(), b.size() }; };
 		pso = owner->ResolvePipeline( key, bytes(0), bytes(1), bytes(2), { source->elements.data(), UINT( source->elements.size() ) } );
 		source.reset();
-	} );
+		ready.store( true, std::memory_order_release );
+	}
 	return pso.Get();
 }
 
-Microsoft::WRL::ComPtr<ID3D12PipelineState> CPipelineCacheDX12::ResolvePipeline( const PipelineKeyDX12 &key,
-	const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs,
-	const D3D12_INPUT_LAYOUT_DESC &layout )
+ID3D12PipelineState *CPipelineCacheDX12::PipelineRequest::ResolveForDraw()
 {
-	ZoneNamedN( ___tracy_scoped_zone, "DX12 PSOCreateMiss", DX12_ZONES_ACTIVE );
+	if ( ready.load( std::memory_order_acquire ) )
+		return pso.Get();
+	// buildcubemaps reads every face back once: a fallback surface would be baked into the cubemap.
+	static const ConVarRef buildingCubemaps( "building_cubemaps", true );
+	if ( owner->m_bSyncPipelines || ( buildingCubemaps.IsValid() && buildingCubemaps.GetBool() ) )
+		return Resolve();
+	if ( !queued.load( std::memory_order_relaxed ) )
+	{
+		// Already created in an earlier run or warmed for this level: take it now, no fallback frame.
+		{
+			std::unique_lock<std::mutex> lock( resolveMutex, std::try_to_lock );
+			if ( lock.owns_lock() && !ready.load( std::memory_order_relaxed ) )
+			{
+				auto bytes = [this]( unsigned i ) -> D3D12_SHADER_BYTECODE { const auto &b = source->stages[i]; return { b.empty() ? nullptr : b.data(), b.size() }; };
+				Microsoft::WRL::ComPtr<ID3D12PipelineState> cached = owner->ResolvePipeline( key, bytes(0), bytes(1), bytes(2),
+					{ source->elements.data(), UINT( source->elements.size() ) }, false );
+				if ( cached )
+				{
+					pso = std::move( cached );
+					source.reset();
+					ready.store( true, std::memory_order_release );
+				}
+			}
+		}
+		if ( ready.load( std::memory_order_acquire ) )
+			return pso.Get();
+		if ( !queued.exchange( true, std::memory_order_acq_rel ) && !owner->EnqueueAsync( shared_from_this() ) )
+			return Resolve(); // No worker thread could start.
+	}
+	return fallback.load( std::memory_order_acquire );
+}
+
+bool CPipelineCacheDX12::EnqueueAsync( std::shared_ptr<PipelineRequest> request )
+{
+	std::lock_guard<std::mutex> lock( m_AsyncMutex );
+	if ( m_AsyncWorkers.empty() )
+	{
+		const unsigned hardware = std::thread::hardware_concurrency();
+		const unsigned count = hardware >= 16 ? 4u : hardware >= 8 ? 2u : 1u;
+		try
+		{
+			for ( unsigned i = 0; i < count; ++i )
+				m_AsyncWorkers.emplace_back( &CPipelineCacheDX12::AsyncWorker, this );
+		}
+		catch ( const std::system_error & ) {}
+		if ( m_AsyncWorkers.empty() )
+			return false;
+	}
+	m_AsyncQueue.push_back( std::move( request ) );
+	m_AsyncWake.notify_one();
+	return true;
+}
+
+void CPipelineCacheDX12::AsyncWorker()
+{
+	for ( ;; )
+	{
+		std::shared_ptr<PipelineRequest> request;
+		{
+			std::unique_lock<std::mutex> lock( m_AsyncMutex );
+			m_AsyncWake.wait( lock, [this] { return m_bAsyncStop || !m_AsyncQueue.empty(); } );
+			if ( m_bAsyncStop )
+				return;
+			request = std::move( m_AsyncQueue.front() );
+			m_AsyncQueue.pop_front();
+		}
+		// The fallback first (one per vertex stage and fixed-function state, shared by every material on it), from a
+		// copy of the request's source: a blocking Resolve() elsewhere may release it meanwhile.
+		std::vector<unsigned char> vs, gs;
+		std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
+		std::vector<std::string> semantics;
+		bool haveSource = false;
+		{
+			std::lock_guard<std::mutex> lock( request->resolveMutex );
+			if ( !request->ready.load( std::memory_order_relaxed ) && request->source )
+			{
+				vs = request->source->stages[0];
+				gs = request->source->stages[2];
+				elements = request->source->elements;
+				semantics = request->source->semantics;
+				haveSource = true;
+			}
+		}
+		if ( haveSource )
+		{
+			for ( size_t i = 0; i < elements.size(); ++i )
+				elements[i].SemanticName = semantics[i].c_str();
+			request->fallback.store( FallbackPipeline( request->key, { vs.empty() ? nullptr : vs.data(), vs.size() },
+				{ gs.empty() ? nullptr : gs.data(), gs.size() }, { elements.data(), UINT( elements.size() ) } ), std::memory_order_release );
+		}
+		// Testing aid: -dx12psoasyncdelay <ms> holds every asynchronous creation, as a cold driver cache would.
+		static const int delay = CommandLine() ? CommandLine()->ParmValue( "-dx12psoasyncdelay", 0 ) : 0;
+		if ( delay > 0 )
+			Sleep( DWORD( delay ) );
+		request->Resolve();
+	}
+}
+
+void CPipelineCacheDX12::StopAsync()
+{
+	{
+		std::lock_guard<std::mutex> lock( m_AsyncMutex );
+		m_bAsyncStop = true;
+	}
+	m_AsyncWake.notify_all();
+	for ( std::thread &worker : m_AsyncWorkers )
+		worker.join();
+	std::lock_guard<std::mutex> lock( m_AsyncMutex );
+	m_AsyncWorkers.clear();
+	m_AsyncQueue.clear();
+	m_bAsyncStop = false;
+}
+
+// Only opaque geometry: depth-tested, depth-writing draws into a depth buffer (world, models, viewmodels, shadow
+// casters). A flat surface in a blended or alpha-to-coverage pass (particles, glass, foliage cards) or a full-screen
+// pass (post effects, screen overlays: they covered the whole view) is worse than the draw arriving late. Writes only
+// render target 0; the G-buffer targets keep what they had, rather than being undefined.
+ID3D12PipelineState *CPipelineCacheDX12::FallbackPipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs,
+	const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout )
+{
+	if ( key.blend || key.alphaToCoverage || !key.depthTest || !key.depthWrite || key.depth == DXGI_FORMAT_UNKNOWN ||
+		!vs.BytecodeLength )
+		return nullptr;
+	PipelineKeyDX12 shape = key;
+	shape.ps = shape.psVariant = 0;
+	std::lock_guard<std::mutex> lock( m_FallbackMutex );
+	if ( m_FallbackPixelShader.empty() )
+		return nullptr;
+	for ( const FallbackEntry &entry : m_Fallbacks )
+		if ( entry.key == shape )
+			return entry.pso.Get();
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+	DescribePipeline( key, vs, { m_FallbackPixelShader.data(), m_FallbackPixelShader.size() }, gs, layout, desc );
+	for ( UINT i = 1; i < ARRAYSIZE( desc.BlendState.RenderTarget ); ++i )
+		desc.BlendState.RenderTarget[i].RenderTargetWriteMask = 0;
+	desc.BlendState.AlphaToCoverageEnable = FALSE;
+	FallbackEntry entry;
+	entry.key = shape;
+	if ( FAILED( m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &entry.pso ) ) ) )
+		entry.pso.Reset(); // Remembered: the shape is not retried; its draws wait for their own pipeline.
+	m_Fallbacks.push_back( entry );
+	return entry.pso.Get();
+}
+
+void CPipelineCacheDX12::DescribePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps,
+	const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc ) const
+{
 	desc.pRootSignature = key.highresAbi ? m_pHighresRoot.Get() : key.lightingAbi ? m_pLightingRoot.Get() : m_pRoot.Get();
 	desc.VS = vs;
 	desc.PS = ps;
@@ -1398,38 +1554,61 @@ Microsoft::WRL::ComPtr<ID3D12PipelineState> CPipelineCacheDX12::ResolvePipeline(
 	desc.DepthStencilState.FrontFace.StencilPassOp = StencilOpDX12( key.stencilPass );
 	desc.DepthStencilState.FrontFace.StencilFunc = StencilFunctionDX12( key.stencilFunction );
 	desc.DepthStencilState.BackFace = desc.DepthStencilState.FrontFace;
+}
+
+Microsoft::WRL::ComPtr<ID3D12PipelineState> CPipelineCacheDX12::ResolvePipeline( const PipelineKeyDX12 &key,
+	const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs,
+	const D3D12_INPUT_LAYOUT_DESC &layout, bool create )
+{
+	ZoneNamedN( ___tracy_scoped_zone, "DX12 PSOCreateMiss", DX12_ZONES_ACTIVE );
+	D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+	DescribePipeline( key, vs, ps, gs, layout, desc );
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
 	const UINT root = key.highresAbi ? 2 : key.lightingAbi ? 1 : 0;
-	std::lock_guard<std::mutex> lock( m_RecipeMutex );
-	const uint64_t diskKey = m_Library.Key( desc, root );
-	HRESULT hr = S_OK;
-	pso = m_Recipes.Find( diskKey );
-	const bool resident = pso != nullptr;
-	if ( !pso && m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
-		++g_FirstUse.libraryHits;
-	else if ( !pso )
+	uint64_t diskKey;
 	{
-		static const bool trace = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
-		LARGE_INTEGER begin{}, end, frequency;
-		if ( trace )
-			QueryPerformanceCounter( &begin );
-		hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
-		if ( trace )
+		// The lock covers the recipe and library bookkeeping, not the driver compile, so workers create in parallel.
+		std::unique_lock<std::mutex> lock( m_RecipeMutex, std::defer_lock );
+		if ( create )
+			lock.lock();
+		else if ( !lock.try_lock() )
+			return nullptr;
+		diskKey = m_Library.Key( desc, root );
+		pso = m_Recipes.Find( diskKey );
+		const bool resident = pso != nullptr;
+		if ( !pso && m_Library.Load( diskKey, desc, pso.GetAddressOf() ) )
+			++g_FirstUse.libraryHits;
+		if ( pso )
 		{
-			QueryPerformanceCounter( &end );
-			QueryPerformanceFrequency( &frequency );
-			Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
-				begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
+			if ( !resident )
+				m_Recipes.Record( diskKey, root, desc, pso.Get() );
+			return pso;
 		}
-		m_ReplayCreates.fetch_add( 1, std::memory_order_relaxed );
-		++g_FirstUse.creates;
-		if ( SUCCEEDED( hr ) )
-			m_Library.Store( diskKey, pso.Get() );
 	}
-	if ( !resident && pso )
-		m_Recipes.Record( diskKey, root, desc, pso.Get() );
+	if ( !create )
+		return nullptr;
+	static const bool trace = CommandLine()->CheckParm( "-dx12psotrace" ) != nullptr;
+	LARGE_INTEGER begin{}, end, frequency;
+	if ( trace )
+		QueryPerformanceCounter( &begin );
+	const HRESULT hr = m_pDevice->CreateGraphicsPipelineState( &desc, IID_PPV_ARGS( &pso ) );
+	if ( trace )
+	{
+		QueryPerformanceCounter( &end );
+		QueryPerformanceFrequency( &frequency );
+		Msg( "DX12 PSO create %016llx qpc_ms %.4f duration_ms %.4f hr %08x\n", diskKey,
+			begin.QuadPart * 1000.0 / frequency.QuadPart, ( end.QuadPart - begin.QuadPart ) * 1000.0 / frequency.QuadPart, unsigned( hr ) );
+	}
+	m_ReplayCreates.fetch_add( 1, std::memory_order_relaxed );
+	++g_FirstUse.creates;
 	if ( FAILED( hr ) )
+	{
 		Warning( "ShaderAPIDX12: graphics pipeline creation failed 0x%08x\n", static_cast<unsigned>( hr ) );
+		return nullptr;
+	}
+	std::lock_guard<std::mutex> lock( m_RecipeMutex );
+	m_Library.Store( diskKey, pso.Get() );
+	m_Recipes.Record( diskKey, root, desc, pso.Get() );
 	return pso;
 }
 } // namespace shaderapidx12

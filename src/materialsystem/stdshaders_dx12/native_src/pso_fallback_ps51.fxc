@@ -1,0 +1,11 @@
+// Native-only pixel stage of the asynchronous pipeline fallback (shaderapidx12 CPipelineCacheDX12): while a draw's
+// real pipeline is still being created on a worker, the draw is replayed with its own vertex shader and this flat
+// neutral surface. It reads only SV_Position, so it links with every vertex shader (like shadow_sky_clip_ps51), and
+// binds nothing, so it fits every root signature. Only opaque depth-writing geometry uses it; other draws are skipped.
+#define DX12_NATIVE_PS 1
+#include "dx12_preamble.h"
+
+float4 main( float4 position : SV_Position ) : SV_Target0
+{
+	return float4( 0.18, 0.18, 0.18, 1.0 ); // linear middle grey: stays dark under strong bloom
+}

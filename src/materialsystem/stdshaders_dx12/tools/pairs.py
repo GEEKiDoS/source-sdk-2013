@@ -177,6 +177,7 @@ NATIVE_ONLY = [
     native_only('shadowmaps', 'dx12_detailshadowlit_depth_ps51.fxc', 'ps', 'dx12_detailshadowlit_depth_ps51'),
     native_only('shadowmaps', 'shadow_sky_depth_vs51.fxc', 'vs', 'shadow_sky_depth_vs51'),
     native_only('shadowmaps', 'shadow_sky_clip_ps51.fxc', 'ps', 'shadow_sky_clip_ps51'),
+    native_only('shadowmaps', 'pso_fallback_ps51.fxc', 'ps', 'pso_fallback_ps51'),
     native_only('lightmapped', 'worldvertextransition_editor_highres_vs51.fxc', 'vs', 'worldvertextransition_editor_highres_vs51'),
     native_only('lightmapped', 'worldvertextransition_editor_highres_ps51.fxc', 'ps', 'worldvertextransition_editor_highres_ps51'),
     native_only('pbr', 'pbr_world_vs51.fxc', 'vs', 'pbr_world_vs51'),

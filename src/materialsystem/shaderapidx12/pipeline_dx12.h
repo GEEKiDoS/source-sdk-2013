@@ -17,7 +17,11 @@
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <cstdint>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
+#include <thread>
 #include <memory>
 #include <string>
 #include <vector>
@@ -369,7 +373,10 @@ public:
 	}
 
 private:
-	struct PipelineRequest final : RecordedPipelineDX12
+	// Resolve() creates the pipeline, blocking. ResolveForDraw() never blocks on a creation: a pipeline already in the
+	// resident recipes or the disk library is taken at once; otherwise a worker creates it while the draw replays with
+	// the fallback pipeline (the draw's own vertex stage, pso_fallback_ps51) or is dropped (dxvk-gplasync style).
+	struct PipelineRequest final : RecordedPipelineDX12, std::enable_shared_from_this<PipelineRequest>
 	{
 		CPipelineCacheDX12 *owner;
 		PipelineKeyDX12 key;
@@ -379,13 +386,43 @@ private:
 			std::vector<D3D12_INPUT_ELEMENT_DESC> elements;
 			std::vector<std::string> semantics;
 		};
-		std::unique_ptr<Source> source;
-		std::once_flag once;
-		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso;
+		std::unique_ptr<Source> source; // Guarded by resolveMutex; released once the pipeline is resolved.
+		std::mutex resolveMutex;
+		std::atomic<bool> ready{ false }, queued{ false };
+		std::atomic<ID3D12PipelineState *> fallback{ nullptr }; // Owned by the cache's fallback list.
+		Microsoft::WRL::ComPtr<ID3D12PipelineState> pso; // Written once under resolveMutex before ready.
 		ID3D12PipelineState *Resolve() override;
+		ID3D12PipelineState *ResolveForDraw() override;
 	};
+	void DescribePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &ps,
+		const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, D3D12_GRAPHICS_PIPELINE_STATE_DESC &desc ) const;
+	// create=false: only the resident recipes or the disk library, and only if the recipe lock is free; NULL otherwise.
 	Microsoft::WRL::ComPtr<ID3D12PipelineState> ResolvePipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs,
-		const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout );
+		const D3D12_SHADER_BYTECODE &ps, const D3D12_SHADER_BYTECODE &gs, const D3D12_INPUT_LAYOUT_DESC &layout, bool create = true );
+	bool EnqueueAsync( std::shared_ptr<PipelineRequest> request );
+	void AsyncWorker();
+	void StopAsync();
+	ID3D12PipelineState *FallbackPipeline( const PipelineKeyDX12 &key, const D3D12_SHADER_BYTECODE &vs, const D3D12_SHADER_BYTECODE &gs,
+		const D3D12_INPUT_LAYOUT_DESC &layout );
+	bool m_bSyncPipelines = false; // -dx12syncpso: draws wait for their pipeline, as before.
+	std::mutex m_AsyncMutex;
+	std::condition_variable m_AsyncWake;
+	std::deque<std::shared_ptr<PipelineRequest>> m_AsyncQueue;
+	std::vector<std::thread> m_AsyncWorkers;
+	bool m_bAsyncStop = false;
+	struct FallbackEntry { PipelineKeyDX12 key; Microsoft::WRL::ComPtr<ID3D12PipelineState> pso; };
+	std::mutex m_FallbackMutex;
+	std::vector<FallbackEntry> m_Fallbacks;
+	std::vector<unsigned char> m_FallbackPixelShader;
+public:
+	// pso_fallback_ps51 from the shader pack; without it, draws whose pipeline is still compiling are dropped.
+	void SetFallbackPixelShader( const D3D12_SHADER_BYTECODE &ps )
+	{
+		std::lock_guard<std::mutex> lock( m_FallbackMutex );
+		const auto *bytes = static_cast<const unsigned char *>( ps.pShaderBytecode );
+		m_FallbackPixelShader.assign( bytes, bytes + ps.BytecodeLength );
+	}
+private:
 	mutable std::mutex m_RecipeMutex; // Portable recipe/library publication; never taken on a realized draw.
 	std::atomic<uint64_t> m_ReplayCreates{0};
 public:

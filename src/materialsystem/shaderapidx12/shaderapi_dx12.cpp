@@ -5356,6 +5356,11 @@ bool CShaderAPIDX12::InitializeDeviceResources( CShaderDeviceDX12 *pDevice )
 		ShutdownDeviceResources();
 		return false;
 	}
+	// Pipelines still compiling on the pipeline cache's workers draw with this pixel stage (pipeline_dx12.h).
+	if ( ShaderRecordDX12 *fallback = ResolveNamedShader( "pso_fallback_ps51", true, 0, 0 ) )
+		m_Pipeline.SetFallbackPixelShader( fallback->Bytecode() );
+	else
+		DevWarning( "ShaderAPIDX12: pso_fallback_ps51 missing; draws whose pipeline is compiling are skipped\n" );
 	pDevice->Lighting().Initialize( pDevice, this );
 	SetShaderPrecacheAccepting( true );
 	return true;

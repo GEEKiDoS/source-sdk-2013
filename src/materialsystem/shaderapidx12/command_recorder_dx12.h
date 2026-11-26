@@ -31,6 +31,8 @@ struct DrawModelRowsDX12
 struct RecordedPipelineDX12
 {
 	virtual ID3D12PipelineState *Resolve() = 0;
+	// Replayed draws: never waits for a pipeline creation. May return a fallback pipeline, or NULL to drop the draw.
+	virtual ID3D12PipelineState *ResolveForDraw() { return Resolve(); }
 	virtual ~RecordedPipelineDX12() = default;
 };
 

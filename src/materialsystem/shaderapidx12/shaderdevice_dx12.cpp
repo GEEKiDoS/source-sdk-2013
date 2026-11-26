@@ -1617,8 +1617,8 @@ void CCommandRecorderDX12::Replay( ID3D12GraphicsCommandList *list, ID3D12Device
 			RecordedPipelineDX12 *request;
 			UINT stencil, indexed, count, instances, first;
 			get( request ); get( stencil ); get( indexed ); get( count ); get( instances ); get( first );
-			ID3D12PipelineState *pso = request->Resolve();
-			if ( !pso ) break; // A refusal drops this draw, never uses the preceding PSO.
+			ID3D12PipelineState *pso = request->ResolveForDraw();
+			if ( !pso ) break; // A refusal, or a pipeline still compiling without a fallback, drops this draw.
 			if ( drawPipeline != pso ) { list->SetPipelineState( pso ); ++binds[Pipelines]; }
 			if ( drawStencil != stencil ) list->OMSetStencilRef( stencil );
 			drawPipeline = pso; drawStencil = stencil;

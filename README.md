@@ -82,6 +82,16 @@ Native DX12 SpriteCard uses retail's zero alpha-test reference; the SDK's
 0.01 reference cuts faint particle glow falloff into a visible hard-edged disc.
 The renderer's fast pipeline memo renews each reused PSO's retirement fence, so
 cache reclamation cannot release it while recorded or GPU work still references it.
+Material pipelines that are neither in the pipeline library nor warmed by the
+recipe cache are created on background threads (1, 2 or 4 by core count) instead
+of stalling replay, in the style of dxvk-gplasync. Until a pipeline is ready, its
+opaque depth-writing draws use their own vertex shader with the flat middle-grey
+`pso_fallback_ps51`; blended, alpha-to-coverage and depth-less draws (particles,
+glass, foliage cards, post effects) are skipped for those frames. `buildcubemaps`
+and the renderer's own passes (lighting, motion vectors, screen-space effects)
+always create synchronously. `-dx12syncpso` restores synchronous creation for
+every draw; `-dx12psoasyncdelay <ms>` holds each background creation, to test the
+fallback on a warm driver cache.
 On DX12 the L4D2 client routes its remaining SpriteCard materials to the
 renderer's `L4D2_SpriteCard`, which draws the retail shader's colour paths
 rather than the SDK's. `$addself` adds `$addself` times the premultiplied
