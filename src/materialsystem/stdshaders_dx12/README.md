@@ -1330,12 +1330,13 @@ selects the legacy per-vertex fog evaluation, so those models take the PBR path 
 Conversion of legacy inputs: dielectric F0 0.04; roughness from explicit PBR inputs, else the Phong exponent
 (`exp = 1 + 149 * R` in `l4d2_phong_ps20b.fxc` / `skin_ps20b.fxc`, unless a nonzero `$phongexponent` overrides it,
 converted as `(2/(exp+2))^0.25`), else an authored `$envmap`'s mask as gloss (roughness = 1 - mask, the mask no longer
-scales the reflection; `$envmaptint` does), else the `$surfaceprop` class default below. A legacy material without an
-authored `$envmap` still receives the adapter's fallback `env_cubemap`, but does not treat that synthetic cubemap as a
-gloss mask. The class comes from the engine's physics surface table (`IPhysicsSurfaceProps`, which resolves `base`
-inheritance and mod entries), read once at `SHADER_INIT_PARAMS` into the internal `$pbr_legacy_roughness`: masonry and
-ground (concrete, asphalt, brick, plaster, sheetrock, rock, dirt/gravel/sand/snow, mud) 0.85; grass, foliage, carpet,
-upholstery, cardboard/paper 0.95; rubber 0.8; wood 0.7; flesh 0.6; plastic, computer and every metal class 0.45; tile,
+scales the reflection; `$envmaptint` does), else the `$surfaceprop` class default below. Opaque world adapters fall back
+to the engine's local `env_cubemap` when `$envmap` is absent or still the unpatched literal. That fallback does not use
+envmap masks to derive gloss, and named or BSP-patched cubemaps take precedence. The engine's `IPhysicsSurfaceProps`
+table resolves `base` inheritance and mod entries. The class is read once at `SHADER_INIT_PARAMS` into the internal
+`$pbr_legacy_roughness`: masonry and ground (concrete, asphalt, brick, plaster, sheetrock, rock, dirt/gravel/sand/snow,
+mud) 0.85; grass, foliage, carpet, upholstery, cardboard/paper 0.95; rubber 0.8; wood 0.7; flesh 0.6; plastic, computer
+and every metal class 0.45; tile,
 porcelain (by name: retail files it under rock), clay 0.3; glass 0.1; water, wet, slime, puddle 0.15. Absent, unknown and
 `default` surface props keep 0.6. Metalness stays 0 for every class: most legacy "metal" textures are painted, with
 lighting baked into the albedo. Blends use `$surfaceprop` for both layers, and model materials rarely carry one (a
@@ -1705,8 +1706,9 @@ offset before rounding to their working grid. The shared default
 ### Screen-space reflections
 
 `shaderapidx12/screenspace_ssr_dx12.cpp` runs stochastic SSR on single-sample scenes (MSAA scenes skip it) over the
-receivers above, every roughness included. A miss keeps the cubemap term `E`; partial confidence interpolates
-between `E` and the reflected scene radiance.
+receivers above, every roughness included. Opaque PBR brush surfaces with a named, BSP-patched or local fallback cubemap
+can receive SSR on both native and enhanced lightmap paths. A miss keeps the cubemap term `E`; partial confidence
+interpolates between `E` and the reflected scene radiance.
 
 `r_ssr_debug 1` (`sv_cheats 1`, SSR must be enabled) shows the resolved replacement confidence on both paths:
 black means no eligible PBR receiver, red is a miss, and green means full replacement. Later passes such as

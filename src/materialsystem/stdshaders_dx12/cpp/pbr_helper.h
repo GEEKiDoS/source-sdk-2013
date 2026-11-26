@@ -131,6 +131,13 @@
 	( v ).legacyEnvmapAuthored = PBR_LEGACY_ENVMAP_AUTHORED; \
 	( v ).legacyRoughness = PBR_LEGACY_ROUGHNESS
 
+#define PBR_LEGACY_WORLD_ADAPTER_PARAMS \
+	PBR_LEGACY_ADAPTER_PARAMS \
+	SHADER_PARAM( PBR_FALLBACK_ENVMAP, SHADER_PARAM_TYPE_TEXTURE, "", "Internal PBR brush cubemap fallback" )
+#define PBR_FILL_LEGACY_WORLD_ADAPTER_VARS( v ) \
+	PBR_FILL_LEGACY_ADAPTER_VARS( v ); \
+	( v ).worldFallbackEnvmap = PBR_FALLBACK_ENVMAP
+
 //-----------------------------------------------------------------------------
 // Material var indices, -1 = absent. Filled by every PBR shader / wrapper.
 //-----------------------------------------------------------------------------
@@ -170,6 +177,7 @@ struct PBR_Vars_t
 	int base2Tint, f0, blendTintByMraoAlpha;
 	// Legacy adapters only (PBR_LEGACY_ADAPTER_PARAMS); -1 elsewhere.
 	int surfaceProp, legacyEnvmapAuthored, legacyRoughness;
+	int worldFallbackEnvmap; // legacy world adapters only
 
 	// Legacy features the PBR shaders still decline (read by PBR_LegacySupported)
 	int seamlessScale, lightWarp, outline, softEdges;

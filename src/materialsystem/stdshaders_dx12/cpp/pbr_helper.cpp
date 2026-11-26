@@ -144,8 +144,8 @@ public:
 	DX12ShadowmapSnapshot m_Snapshot;
 	float m_SelfIllumTint[3] = {};
 	float m_TreeSwayParams[5][4] = {};
+	int m_nEnvmap = -1;
 	bool m_bModel = false;
-	bool m_bEnvmap = false;
 	bool m_bBump = false;
 	bool m_bAmbientOnly = false;
 	bool m_bAllowDiffuseModulation = true;
@@ -233,6 +233,7 @@ struct PBRState
 {
 	bool model, layered, hasBase, hasBase2, hasBump, ssBump, hasBump2, hasBumpMask, hasBlendModulate, hasMrao, hasSpecular, hasEnvmap, maskedBlending;
 	bool hasDetail, detailAdditive, hasEmission, hasSelfIllumMask, hasThickness, alphaTested, fullyOpaque, lightingOnly, vertexColor, noDiffuseBump;
+	bool fallbackEnvmap; // legacy brush adapter's local cube, not authored gloss
 	int envmapMask;		// 0 none, 1 $envmapmask, 2 base alpha, 3 normal map alpha
 	int emissionMode;	// 0 none, 1 $selfillum (base alpha), 2 $emissiontexture
 	int phong;			// bit 0 legacy phong, bit 1 $phongexponenttexture, bit 2 phong mask in base alpha
@@ -262,6 +263,8 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	s.hasSpecular = ( v.specularWorkflow || v.dynamicSpecularWorkflow ) && IsTextureSet( v.specularTexture, params );
 	// A sphere map is a 2D texture; the shaders only sample cubemaps.
 	s.hasEnvmap = IsTextureSet( v.envmap, params ) && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE );
+	s.fallbackEnvmap = !s.hasEnvmap && IsTextureSet( v.worldFallbackEnvmap, params );
+	s.hasEnvmap = s.hasEnvmap || s.fallbackEnvmap;
 	// A model's triplanar $seamless_detail has no UV carrier in pbr_model_*: that layer is skipped.
 	s.hasDetail = IsTextureSet( v.detail, params ) && GetIntParam( v.detailBlendMode, params ) != 12 && !( s.model && IsBoolSet( v.seamlessDetail, params ) );
 	// $bumpmask (static mask normal over two scrolling ones) excludes the layers the legacy helper excludes it from.
@@ -294,7 +297,7 @@ PBRState Evaluate( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_
 	// Some retail model VMTs spell their reflection-strength parameter
 	// $basemapalphaenvmapmask. Unlike a roughness input it attenuates the cubemap.
 	const bool baseMapAlphaEnvmapMask = s.hasBase && IsBoolSet( v.baseMapAlphaEnvmapMask, params );
-	if ( s.hasEnvmap )
+	if ( s.hasEnvmap && !s.fallbackEnvmap )
 	{
 		if ( s.hasBump && IS_FLAG_SET( MATERIAL_VAR_NORMALMAPALPHAENVMAPMASK ) )
 			s.envmapMask = 3;
@@ -373,7 +376,7 @@ void Snapshot( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderShadow 
 		enable( sm.lightmap, hdrNone );
 	if ( s.hasBump )
 		enable( sm.bump, false );
-	if ( s.hasEnvmap )
+	if ( s.hasEnvmap && ( !s.fallbackEnvmap || s.blendType == BT_NONE ) )
 	{
 		enable( sm.envmap, hdrNone );
 		if ( s.model && lightPass != 2 )
@@ -714,7 +717,7 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	ctx.m_bModel = s.model;
 	ctx.m_nBlendTexture = s.blendTexture;
 	ctx.m_bBlendIsBase = s.hasBase;
-	ctx.m_bEnvmap = s.hasEnvmap;
+	ctx.m_nEnvmap = s.hasEnvmap ? ( s.fallbackEnvmap ? v.worldFallbackEnvmap : v.envmap ) : -1;
 	ctx.m_bBump = s.hasBump;
 	ctx.m_bAmbientOnly = IsBoolSet( v.ambientOnly, params );
 	ctx.m_bAllowDiffuseModulation = allowDiffuseModulation;
@@ -745,7 +748,7 @@ void StageMaterial( CPBRContext &ctx, CBaseVSShaderDX12 *pShader, IMaterialVar *
 	if ( s.hasBase )
 		cmds.BindTexture( pShader, sampler( sm.base ), v.base, v.baseFrame );
 	else
-		cmds.BindStandardTexture( sampler( sm.base ), s.hasEnvmap ? TEXTURE_BLACK : TEXTURE_WHITE );
+		cmds.BindStandardTexture( sampler( sm.base ), s.hasEnvmap && !s.fallbackEnvmap ? TEXTURE_BLACK : TEXTURE_WHITE );
 	if ( !s.model )
 		cmds.BindStandardTexture( sampler( sm.lightmap ), TEXTURE_LIGHTMAP );
 	if ( s.hasBump )
@@ -1084,6 +1087,14 @@ void InitPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, const PBR_Vars_
 	load( v.detail, DetailSRGB( params, v ) ? TEXTUREFLAGS_SRGB : 0 );
 	if ( IS_PARAM_DEFINED( v.envmap ) && !params[v.envmap]->IsTexture() && !IS_FLAG_SET( MATERIAL_VAR_ENVMAPSPHERE ) )
 		pShader->LoadCubeMap( v.envmap, g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE ? TEXTUREFLAGS_SRGB : 0 );
+	// Legacy brush init discards unpatched "env_cubemap" and leaves missing $envmap unset. Retain the
+	// engine's local cube in a PBR-only slot so the legacy draw and BSP-patched cubemaps stay unchanged.
+	if ( v.worldFallbackEnvmap != -1 && !params[v.envmap]->IsDefined() && GetIntParam( v.localEnvmap, params, 0 ) != 0 &&
+		g_pConfig->UseSpecular() && ( params[FLAGS]->GetIntValue() & ( MATERIAL_VAR_ENVMAPSPHERE | MATERIAL_VAR_DECAL | MATERIAL_VAR_ADDITIVE ) ) == 0 )
+	{
+		params[v.worldFallbackEnvmap]->SetStringValue( "env_cubemap" );
+		pShader->LoadCubeMap( v.worldFallbackEnvmap, g_pHardwareConfig->GetHDRType() == HDR_TYPE_NONE ? TEXTUREFLAGS_SRGB : 0 );
+	}
 	load( v.envmapMask );
 	load( v.mrao );
 	load( v.specularTexture, TEXTUREFLAGS_SRGB );
@@ -1206,6 +1217,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			StageMaterial( *pContextData, pShader, params, v, s );
 		}
 	}
+	const bool blended = pShader->EvaluateBlendRequirements( pContextData->m_nBlendTexture, pContextData->m_bBlendIsBase ) != BT_NONE;
 	DYNAMIC_STATE
 	{
 		CCommandBufferBuilder< CFixedCommandStorageBuffer< 750 > > DynamicCmdsOut;
@@ -1216,8 +1228,10 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			0.0f };
 		DynamicCmdsOut.SetPixelShaderConstant( kPbrNMSRegister, nms, 1 );
 		const PBRSamplers &sm = pContextData->m_bModel ? kModelSamplers : kWorldSamplers;
-		if ( pContextData->m_bEnvmap )
-			DynamicCmdsOut.BindTexture( pShader, Sampler_t( sm.envmap ), v.envmap, v.envmapFrame );
+		const int envmap = pContextData->m_nEnvmap;
+		const bool skipFallback = blended && envmap != -1 && envmap == v.worldFallbackEnvmap;
+		if ( envmap != -1 && !skipFallback )
+			DynamicCmdsOut.BindTexture( pShader, Sampler_t( sm.envmap ), envmap, v.envmapFrame );
 
 		const bool bWaterFog = pShaderAPI->GetSceneFogMode() == MATERIAL_FOG_LINEAR_BELOW_FOG_Z;
 		if ( pContextData->m_bModel && pContextData->m_nTreeSway != 0 )
@@ -1362,6 +1376,13 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 		}
 		DynamicCmdsOut.End();
 		pContextData->ApplyMaterial( pShaderAPI );
+		// Modulation can make an opaque brush translucent without changing its staged material.
+		if ( skipFallback )
+		{
+			const float *staged = pContextData->m_StaticPixel[4];
+			const float flags[4] = { 0.0f, staged[1], staged[2], staged[3] };
+			DX12SetPixelShaderConstant( 4, flags, 1 );
+		}
 		DX12ExecuteCommandBuffer( pShaderAPI, DynamicCmdsOut.Base() );
 
 		// c0 sits inside the semi-static c0..c14 block: stage it after the replay.
@@ -1387,8 +1408,7 @@ void DrawPBR( CBaseVSShaderDX12 *pShader, IMaterialVar **params, IShaderDynamicA
 			g_DX12Constants.shadowmapPassAdmitted = true;
 	}
 	// The same condition LightPassesEligible applied when this modulation's snapshot was recorded.
-	if ( pShader->EvaluateBlendRequirements( pContextData->m_nBlendTexture, pContextData->m_bBlendIsBase ) != BT_NONE ||
-		( pContextData->m_bModel && !bEnhanced ) )
+	if ( blended || ( pContextData->m_bModel && !bEnhanced ) )
 	{
 		pShader->Draw();
 		return;

@@ -81,7 +81,7 @@ BEGIN_VS_SHADER( LightmappedGeneric,
 		SHADER_PARAM( OUTLINEEND1, SHADER_PARAM_TYPE_FLOAT, "0.0", "outer end value for outline")
 
 		PBR_SHADER_PARAMS
-		PBR_LEGACY_ADAPTER_PARAMS
+		PBR_LEGACY_WORLD_ADAPTER_PARAMS
 END_SHADER_PARAMS
 
 	void SetupVars( LightmappedGeneric_DX9_Vars_t& info )
@@ -157,7 +157,7 @@ END_SHADER_PARAMS
 			PBR_Vars_t v;
 			PBR_FillWorldVars( v, info );
 			PBR_FILL_EXTRA_VARS( v );
-			PBR_FILL_LEGACY_ADAPTER_VARS( v );
+			PBR_FILL_LEGACY_WORLD_ADAPTER_VARS( v );
 			return v;
 		}();
 		return s_vars;
