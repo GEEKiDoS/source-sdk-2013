@@ -1254,17 +1254,27 @@ bool CHighresLightmapsDX12::OnNativeDomain(std::shared_ptr<const HlightNativeDom
         for (uint32 f=0;f<s.domain->faces.size();++f)
         {
             const auto &native=s.domain->faces[f]; const auto &face=s.mode->faces[f];
-            bool matchingExtents=true;
+            bool matchingExtents=true, matchingMins=true;
             for (uint32 axis=0;axis<2;++axis)
             {
                 // The file canonicalizes the native -1 unlit sentinel to a one-sample
                 // zero-extent domain. Actual eligibility is checked against the atlas.
                 const uint32 extent=!face.styleCount && native.extents[axis]==hlight::kMissing?0:native.extents[axis];
                 matchingExtents=matchingExtents && face.nativeExtents[axis]==extent;
+                // dface_t stores 32-bit luxel mins; the engine keeps them as int16, so a face whose
+                // lightmap vectors place it beyond +-32767 luxels arrives wrapped. Its native UVs
+                // come from that wrapped value, which is the one the replacement follows.
+                matchingMins=matchingMins && int16(face.nativeMins[axis])==native.mins[axis];
             }
-            if (face.faceOrdinal!=f || memcmp(face.nativeMins,native.mins,sizeof(native.mins)) || !matchingExtents ||
+            if (face.faceOrdinal!=f || !matchingMins || !matchingExtents ||
                 (face.styleCount && ((face.flags^native.flags)&hlight::kFaceDisplacement)))
-            { s.Fail("Highres lightmaps: immutable face metadata mismatch"); return false; }
+            {
+                char message[256];
+                V_snprintf(message,sizeof(message),"Highres lightmaps: immutable face metadata mismatch at face %u (.light ordinal %u mins %d,%d extents %u,%u styles %u flags 0x%x; map mins %d,%d extents %d,%d flags 0x%x)",
+                    f,face.faceOrdinal,face.nativeMins[0],face.nativeMins[1],face.nativeExtents[0],face.nativeExtents[1],face.styleCount,face.flags,
+                    native.mins[0],native.mins[1],int32(native.extents[0]),int32(native.extents[1]),native.flags);
+                s.Fail(message); return false;
+            }
             // Every native style must be one of the asset's authored styles. Their order may differ: a .light can sit
             // beside a BSP compiled by another VRAD, and only the asset's style list drives the high-resolution page.
             for (uint32 n=0;face.styleCount && n<4 && native.styles[n]!=255;++n)
